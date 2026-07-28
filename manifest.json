@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "VIVA Labs Helper",
+  "version": "1.0.0",
+  "description": "Ferramenta de benchmark e espionagem de funis para Meta Ads Library, integrada ao VIVA Labs Monitor.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "declarativeNetRequest",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.facebook.com/ads/library/*",
+    "https://www.proxysite.com/*",
+    "https://*.instagram.com/*",
+    "https://*.facebook.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.facebook.com/ads/library/*"],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    },
+    {
+      "matches": ["https://www.facebook.com/ads/library/*"],
+      "js": ["react_sniffer.js"],
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.proxysite.com/*"],
+      "js": ["proxy_helper.js"]
+    },
+    {
+      "matches": [
+        "https://*.instagram.com/*",
+        "https://*.facebook.com/*"
+      ],
+      "exclude_matches": [
+        "https://www.facebook.com/ads/library/*"
+      ],
+      "js": ["social_helper.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,1220 @@
+/* VIVA Labs Helper - Content Injected Styles (Apple-inspired Design) */
+
+/* ─── Variables & Root-Like Theme ────────────────────────────────────────── */
+:root {
+  --viva-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --viva-bg: rgba(255, 255, 255, 0.72);
+  --viva-bg-dark: rgba(28, 28, 30, 0.85);
+  --viva-border: rgba(0, 0, 0, 0.08);
+  --viva-border-dark: rgba(255, 255, 255, 0.12);
+  --viva-text: #1d1d1f;
+  --viva-text-dark: #f5f5f7;
+  --viva-muted: #86868b;
+  --viva-accent: #007aff; /* Apple Blue */
+  --viva-success: #34c759; /* Apple Green */
+  --viva-warning: #ff9500; /* Apple Orange */
+  --viva-danger: #ff3b30; /* Apple Red */
+  --viva-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.08);
+}
+
+/* REMOVIDO: a regra "html, body { overflow-x: hidden }" quebrava o position:sticky nativo
+   da Meta (barra de Filtros/Classificar por/Salvar pesquisa), porque forçar overflow-x
+   sem overflow-y faz o navegador recalcular overflow-y como 'auto', mudando o contêiner
+   de rolagem da página inteira. O painel VIVA é position:fixed e nunca precisou disso. */
+
+/* Força fonte Apple nos componentes da extensão */
+.viva-el {
+  font-family: var(--viva-font) !important;
+  box-sizing: border-box !important;
+}
+
+/* ─── VIVA RAM-Lock 10K Engine: Virtualização Nativa Apenas Para Cartões Reais Processados ─── */
+.viva-processed {
+  contain: layout style !important;
+  contain-intrinsic-size: 480px !important;
+  position: relative !important;
+  z-index: 1 !important;
+}
+
+/* ─── Destaques Graduais de Bordas (Média Ponderada no Scroll) ───────────── */
+
+/* ─── Sistema de Destaque de Escala em 3 Graus ───────────────────────────── */
+/*
+ * Nível 1 — Em Escala   : 7-29 dias OU 2-3 repetições → Âmbar
+ * Nível 2 — Escalando   : 30-89 dias OU 4-5 repetições → Laranja
+ * Nível 3 — Escalado Pesado: 90+ dias OU 6+ repetições → Vermelho Apple
+ *
+ * Princípio: borda esquerda sólida + tint de fundo suave.
+ * O olho lê a barra esquerda como um semáforo de prioridade.
+ */
+.viva-border-level-1 {
+  border-left: 4px solid #FF9F0A !important;
+  background-color: rgba(255, 159, 10, 0.05) !important;
+  border-radius: 8px !important;
+}
+
+.viva-border-level-2 {
+  border-left: 5px solid #FF6300 !important;
+  background-color: rgba(255, 99, 0, 0.07) !important;
+  border-radius: 8px !important;
+  box-shadow: inset 4px 0 12px rgba(255, 99, 0, 0.12) !important;
+}
+
+.viva-border-level-3,
+.viva-border-escala {
+  border: 2px solid #FF3B30 !important;
+  background-color: rgba(255, 59, 48, 0.04) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 0 14px rgba(255, 59, 48, 0.35), inset 0 0 10px rgba(255, 59, 48, 0.1) !important;
+}
+
+/* Escala Potencial Modular Apple Banner (32px / 13px Bold) */
+.viva-escala-strip {
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  margin: 6px 12px 8px 12px !important;
+  width: fit-content !important;
+  box-sizing: border-box !important;
+}
+
+.viva-escala-chip {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 5px 10px !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  box-sizing: border-box !important;
+}
+
+.viva-escala-chip-hot {
+  background: linear-gradient(135deg, #FF3B30, #FF9500) !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 2px 8px rgba(255, 59, 48, 0.3) !important;
+}
+
+.viva-escala-chip-whatsapp {
+  background: linear-gradient(135deg, #25D366, #128C7E) !important;
+  color: #FFFFFF !important;
+  font-weight: 800 !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  box-shadow: 0 2px 10px rgba(37, 211, 102, 0.45) !important;
+  letter-spacing: 0.3px !important;
+}
+
+.viva-escala-chip-normal {
+  background: rgba(142, 142, 147, 0.15) !important;
+  color: var(--viva-text) !important;
+}
+
+.viva-escala-chip-sub {
+  background: rgba(0, 0, 0, 0.06) !important;
+  color: var(--viva-text) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Twin Creative Badge (Gêmeos de Criativo) */
+.viva-twin-badge {
+  background: rgba(94, 92, 230, 0.12) !important;
+  color: #5E5CE6 !important;
+  border: 1px solid rgba(94, 92, 230, 0.25) !important;
+  cursor: pointer !important;
+  font-weight: 700 !important;
+  transition: all 0.2s ease !important;
+}
+
+.viva-twin-badge:hover {
+  background: #5E5CE6 !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 4px 12px rgba(94, 92, 230, 0.35) !important;
+}
+
+/* Holofote Magnético para Criativos Gêmeos */
+.viva-twin-highlighted {
+  border: 3px solid #5E5CE6 !important;
+  box-shadow: 0 0 24px rgba(94, 92, 230, 0.5), inset 0 0 12px rgba(94, 92, 230, 0.15) !important;
+  transform: scale(1.01) !important;
+  z-index: 999 !important;
+}
+
+/* ─── Painel Modular VIVA Labs (Linha 2 In-Flow - ZERO SOBREPOSIÇÃO NO TOPO) ─── */
+.viva-card-badge-container {
+  position: relative !important;
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  align-items: center !important;
+  margin: 2px 12px 10px 12px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.viva-domain-badge {
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+}
+
+.viva-domain-badge.viva-badge-active-blue {
+  background: #007AFF !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.4) !important;
+}
+
+.viva-domain-locked {
+  border: 3px solid #007AFF !important;
+  box-shadow: 0 0 24px rgba(0, 122, 255, 0.45), inset 0 0 12px rgba(0, 122, 255, 0.12) !important;
+  z-index: 998 !important;
+  overflow: visible !important;
+}
+
+.viva-twin-badge.viva-badge-active-indigo {
+  background: #5E5CE6 !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 4px 12px rgba(94, 92, 230, 0.4) !important;
+}
+
+.viva-twin-locked {
+  border: 3px solid #5E5CE6 !important;
+  box-shadow: 0 0 24px rgba(94, 92, 230, 0.5), inset 0 0 12px rgba(94, 92, 230, 0.15) !important;
+  z-index: 999 !important;
+  overflow: visible !important;
+}
+
+.viva-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 12px;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  background: transparent !important;
+}
+
+.viva-badge-success {
+  color: var(--viva-success) !important;
+}
+
+.viva-badge-warning {
+  color: #ff9500 !important;
+}
+
+.viva-badge-gray {
+  color: #8e8e93 !important;
+}
+
+.viva-badge-blue {
+  color: var(--viva-accent) !important;
+}
+
+
+/* O Divisor da Cápsula */
+.viva-badge-divider {
+  width: 1px;
+  height: 12px;
+  background-color: rgba(0,0,0,0.1);
+  margin: 0 2px;
+}
+
+/* O botão pílula Apple Pro Action (Chamativo, Elegante & Imersivo) */
+.viva-actions-btn {
+  background: linear-gradient(135deg, #007AFF 0%, #0056B3 100%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  color: #FFFFFF !important;
+  cursor: pointer !important;
+  height: 32px !important;
+  padding: 0 12px !important;
+  border-radius: 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.3px !important;
+  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+  box-shadow: 0 3px 8px rgba(0, 122, 255, 0.32) !important;
+  flex-shrink: 0 !important;
+}
+
+.viva-actions-btn:hover {
+  background: linear-gradient(135deg, #0084FF 0%, #0062CC 100%) !important;
+  transform: translateY(-1px) scale(1.03) !important;
+  box-shadow: 0 5px 12px rgba(0, 122, 255, 0.45) !important;
+}
+
+.viva-actions-btn svg {
+  fill: none !important;
+  stroke: currentColor !important;
+  width: 15px !important;
+  height: 15px !important;
+  transition: transform 0.3s ease !important;
+}
+
+.viva-actions-btn:hover svg {
+  transform: rotate(45deg) !important;
+}
+
+/* ─── Layout do Rodapé Nativo Imersivo no Card ──────────────────────── */
+.viva-card-footer {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin: 10px 14px 14px 14px !important;
+  position: relative !important;
+  box-sizing: border-box !important;
+}
+
+/* Input da URL Copiável */
+.viva-url-input-container {
+  flex: 1 !important;
+  position: relative !important;
+}
+
+.viva-url-input {
+  width: 100% !important;
+  background-color: #f2f2f7 !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+  border-radius: 8px !important;
+  color: #555 !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  padding: 8px 12px !important;
+  cursor: pointer !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  outline: none !important;
+  transition: all 0.25s ease !important;
+  box-sizing: border-box !important;
+}
+
+.viva-url-input:hover {
+  background-color: #e5e5ea !important;
+  color: var(--viva-text) !important;
+}
+
+/* Efeito de Flash verde ao copiar */
+.viva-url-input-copied {
+  background-color: var(--viva-success) !important;
+  color: #ffffff !important;
+  border-color: var(--viva-success) !important;
+}
+
+/* Engrenagem Apple-style */
+.viva-gear-container {
+  position: relative !important;
+  z-index: 2 !important;
+}
+
+.viva-processed:has(.viva-gear-dropdown.viva-active) {
+  z-index: 50 !important;
+}
+
+.viva-gear-btn {
+  width: 34px !important;
+  height: 34px !important;
+  background-color: var(--viva-accent) !important;
+  border: none !important;
+  border-radius: 50% !important;
+  color: #ffffff !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+  box-shadow: 0 2px 6px rgba(0, 122, 255, 0.25) !important;
+  outline: none !important;
+}
+
+.viva-gear-btn:hover {
+  background-color: #0062cc !important;
+  transform: rotate(45deg) scale(1.05);
+  box-shadow: 0 4px 10px rgba(0, 122, 255, 0.35) !important;
+}
+
+.viva-gear-btn svg {
+  fill: currentColor;
+  width: 16px;
+  height: 16px;
+  transition: transform 0.25s ease;
+}
+
+/* Menu Dropdown Suspenso */
+.viva-gear-dropdown {
+  position: absolute !important;
+  top: 100% !important; /* Dropdown now opens downwards from the top right */
+  right: 0 !important;
+  margin-top: 8px !important;
+  width: 200px !important;
+  background: rgba(255, 255, 255, 0.96) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16) !important;
+  padding: 6px !important;
+  z-index: 60 !important;
+  pointer-events: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+  
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transform: translateY(-8px) scale(0.95) !important;
+  transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+}
+
+/* Mostra o dropdown apenas quando tem a classe ativa */
+.viva-gear-dropdown.viva-active {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: translateY(0) scale(1) !important;
+}
+
+/* Itens do Dropdown */
+.viva-dropdown-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 8px 12px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  color: var(--viva-text) !important;
+  background: none !important;
+  border: none !important;
+  border-radius: 6px !important;
+  width: 100% !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  box-sizing: border-box !important;
+}
+
+.viva-dropdown-item:hover {
+  background-color: var(--viva-accent) !important;
+  color: #ffffff !important;
+}
+
+.viva-dropdown-item svg {
+  stroke: currentColor;
+  fill: none;
+  width: 12px;
+  height: 12px;
+}
+
+/* ─── Floating Sidebar (Apple Control Center Style) ───────────────────────── */
+.viva-sidebar {
+  position: fixed !important;
+  top: 96px !important;
+  right: 40px !important;
+  width: 280px !important;
+  max-height: calc(100vh - 128px) !important;
+  background: var(--viva-bg) !important;
+  backdrop-filter: blur(20px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
+  border: 1px solid var(--viva-border) !important;
+  border-radius: 20px !important;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.15) !important;
+  z-index: 999999 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+}
+
+.viva-sidebar.viva-minimized .viva-sidebar-content {
+  display: none !important;
+}
+
+.viva-sidebar-minimize-btn {
+  background: none !important;
+  border: none !important;
+  color: var(--viva-text) !important;
+  cursor: pointer !important;
+  padding: 4px 8px !important;
+  border-radius: 4px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.viva-sidebar-minimize-btn:hover {
+  background: var(--viva-accent) !important;
+  color: white !important;
+}
+
+.viva-sidebar-header {
+  padding: 16px !important;
+  border-bottom: 1px solid var(--viva-border) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+
+.viva-sidebar-title {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  color: var(--viva-text) !important;
+  margin: 0 !important;
+}
+
+.viva-sidebar-content {
+  padding: 16px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 16px !important;
+  /* FIX #5: sem isso o filho flex ignora o max-height do pai e o conteúdo é cortado
+     em vez de rolar. flex:1 faz ocupar o espaço restante do header; min-height:0
+     permite que ele realmente encolha e ative o overflow-y:auto acima. */
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+}
+
+/* FIX #2: scrollbar fina estilo Apple exclusiva do painel — some com a aparência de
+   "scroll duplo" ao lado da barra de rolagem nativa da própria página da Meta. */
+.viva-sidebar-content::-webkit-scrollbar {
+  width: 5px !important;
+}
+.viva-sidebar-content::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+.viva-sidebar-content::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.18) !important;
+  border-radius: 10px !important;
+}
+.viva-sidebar-content {
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent !important;
+}
+
+/* Seções de Grupo dentro do Painel */
+.viva-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.viva-section-title {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  color: var(--viva-muted) !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.5px !important;
+  margin: 0 0 4px 0 !important;
+}
+
+/* Formulário de Registro Rápido */
+.viva-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.viva-label {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: #3a3a3c !important;
+}
+
+.viva-input, .viva-select {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+  border-radius: 8px !important;
+  color: var(--viva-text) !important;
+  font-size: 13px !important;
+  padding: 8px 12px !important;
+  outline: none !important;
+  transition: all 0.2s !important;
+}
+
+.viva-input:focus, .viva-select:focus {
+  background-color: #fff !important;
+  border-color: var(--viva-accent) !important;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15) !important;
+}
+
+/* Switches (Toggles) iOS Style */
+.viva-switch-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 4px 0 !important;
+}
+
+.viva-switch-label {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  color: var(--viva-text) !important;
+}
+
+.viva-switch {
+  position: relative !important;
+  display: inline-block !important;
+  width: 51px !important;
+  height: 31px !important;
+}
+
+.viva-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.viva-slider {
+  position: absolute !important;
+  cursor: pointer !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  background-color: rgba(120, 120, 128, 0.16) !important;
+  transition: .3s !important;
+  border-radius: 34px !important;
+}
+
+.viva-slider:before {
+  position: absolute !important;
+  content: "" !important;
+  height: 27px !important;
+  width: 27px !important;
+  left: 2px !important;
+  bottom: 2px !important;
+  background-color: white !important;
+  transition: .3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+  border-radius: 50% !important;
+  box-shadow: 0 3px 8px 0 rgba(0,0,0,0.15), 0 3px 1px 0 rgba(0,0,0,0.06) !important;
+}
+
+input:checked + .viva-slider {
+  background-color: var(--viva-success) !important;
+}
+
+input:checked + .viva-slider:before {
+  transform: translateX(20px) !important;
+}
+
+/* Segmented Control (Estilo Toggle de Abas iOS) */
+.viva-segmented-control {
+  display: flex !important;
+  background-color: rgba(120, 120, 128, 0.12) !important;
+  border-radius: 8px !important;
+  padding: 2px !important;
+  border: none !important;
+}
+
+.viva-segmented-button {
+  flex: 1 !important;
+  background: none !important;
+  border: none !important;
+  color: var(--viva-text) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 6px 2px !important;
+  cursor: pointer !important;
+  border-radius: 6px !important;
+  transition: all 0.2s !important;
+}
+
+.viva-segmented-button-active {
+  background-color: #fff !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 1px rgba(0, 0, 0, 0.06) !important;
+  color: #000 !important;
+}
+
+/* Tabela de Resultados Agregados */
+.viva-table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  font-size: 12px !important;
+}
+
+.viva-table th {
+  text-align: left !important;
+  color: var(--viva-muted) !important;
+  font-weight: 600 !important;
+  padding: 6px 8px !important;
+  border-bottom: 1px solid var(--viva-border) !important;
+  font-size: 10px !important;
+  text-transform: uppercase !important;
+}
+
+.viva-table td {
+  padding: 8px 8px !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.03) !important;
+  color: var(--viva-text) !important;
+}
+
+.viva-table tr:last-child td {
+  border-bottom: none !important;
+}
+
+.viva-scale-score {
+  font-weight: 700 !important;
+  padding: 2px 6px !important;
+  border-radius: 4px !important;
+  font-size: 11px !important;
+  display: inline-block !important;
+}
+
+.viva-score-high {
+  background-color: rgba(255, 59, 48, 0.12) !important;
+  color: #ff3b30 !important;
+}
+
+.viva-score-medium {
+  background-color: rgba(255, 149, 0, 0.12) !important;
+  color: var(--viva-warning) !important;
+}
+
+.viva-score-low {
+  background-color: rgba(142, 142, 147, 0.12) !important;
+  color: #8e8e93 !important;
+}
+
+/* ─── Apple Center Modal (Para o Funil) ─────────────────────────────────── */
+.viva-modal-overlay {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  background-color: rgba(0, 0, 0, 0.4) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  z-index: 10000000 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.viva-modal {
+  background: rgba(255, 255, 255, 0.94) !important;
+  backdrop-filter: blur(30px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(180%) !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  border-radius: 20px !important;
+  width: 420px !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.15) !important;
+  overflow: hidden !important;
+  animation: viva-modal-fade 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+@keyframes viva-modal-fade {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.viva-modal-header {
+  padding: 20px 24px 14px 24px !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05) !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.viva-modal-title {
+  font-size: 17px !important;
+  font-weight: 700 !important;
+  color: #000 !important;
+  margin: 0 !important;
+}
+
+.viva-modal-body {
+  padding: 24px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 16px !important;
+}
+
+.viva-modal-footer {
+  padding: 16px 24px 20px 24px !important;
+  display: flex !important;
+  gap: 12px !important;
+  justify-content: flex-end !important;
+}
+
+/* Botões Apple */
+.viva-btn {
+  font-family: var(--viva-font) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  padding: 10px 20px !important;
+  border-radius: 10px !important;
+  border: none !important;
+  cursor: pointer !important;
+  transition: all 0.2s !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+}
+
+.viva-btn-primary {
+  background-color: var(--viva-accent) !important;
+  color: #fff !important;
+}
+
+.viva-btn-primary:hover {
+  background-color: #0069d9 !important;
+}
+
+.viva-btn-secondary {
+  background-color: rgba(120, 120, 128, 0.16) !important;
+  color: var(--viva-text) !important;
+}
+
+.viva-btn-secondary:hover {
+  background-color: rgba(120, 120, 128, 0.24) !important;
+}
+
+.viva-btn-red-pro {
+  background: linear-gradient(135deg, #FF3B30 0%, #D70015 100%) !important;
+  color: #FFFFFF !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 12px rgba(215, 0, 21, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.25) !important;
+  font-weight: 700 !important;
+  font-size: 13.5px !important;
+  letter-spacing: -0.01em !important;
+  padding: 12px 18px !important;
+  transition: all 0.22s cubic-bezier(0.25, 1, 0.5, 1) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) !important;
+}
+
+.viva-btn-red-pro:hover {
+  background: linear-gradient(135deg, #FF453A 0%, #E60012 100%) !important;
+  box-shadow: 0 6px 16px rgba(215, 0, 21, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+  transform: translateY(-1.5px) !important;
+}
+
+.viva-btn-red-pro:active {
+  transform: translateY(0.5px) scale(0.98) !important;
+  box-shadow: 0 2px 6px rgba(215, 0, 21, 0.2) !important;
+}
+
+/* Botão Flutuante de Voltar ao Topo */
+.viva-scroll-top-btn {
+  position: fixed !important;
+  bottom: 24px !important;
+  right: 24px !important;
+  width: 44px !important;
+  height: 44px !important;
+  background-color: var(--viva-accent) !important;
+  color: white !important;
+  border-radius: 50% !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3) !important;
+  cursor: pointer !important;
+  z-index: 99999 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: all 0.2s !important;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.viva-scroll-top-btn.viva-visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.viva-scroll-top-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 122, 255, 0.4) !important;
+}
+
+/* ─── Modal Central (Ranking) ───────────────────────── */
+.viva-central-modal-overlay {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  background: rgba(0,0,0,0.5) !important;
+  z-index: 999999 !important;
+  backdrop-filter: blur(4px) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+}
+
+.viva-central-modal-overlay.viva-active {
+  opacity: 1;
+  visibility: visible;
+}
+
+.viva-central-modal {
+  width: 600px !important;
+  max-width: 90vw !important;
+  max-height: 85vh !important;
+  background: var(--viva-bg) !important;
+  backdrop-filter: blur(20px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
+  border: 1px solid var(--viva-border) !important;
+  border-radius: 20px !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  transform: scale(0.95);
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.viva-central-modal-overlay.viva-active .viva-central-modal {
+  transform: scale(1);
+}
+
+.viva-modal-header {
+  padding: 16px 24px !important;
+  border-bottom: 1px solid var(--viva-border) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+
+.viva-modal-title {
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  color: var(--viva-text) !important;
+  margin: 0 !important;
+}
+
+.viva-modal-close-btn {
+  background: none !important;
+  border: none !important;
+  color: var(--viva-text) !important;
+  cursor: pointer !important;
+  padding: 8px !important;
+  border-radius: 50% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.viva-modal-close-btn:hover {
+  background: var(--viva-accent) !important;
+  color: white !important;
+}
+
+.viva-modal-content {
+  padding: 0 !important;
+  overflow-y: auto !important;
+  flex: 1 !important;
+}
+
+/* ─── Apple Confirmation Pop-up Modal ─────────────────────────────────────── */
+.viva-confirm-overlay {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  background: rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+  z-index: 10000000 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  opacity: 0;
+  transition: opacity 0.25s ease !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif !important;
+}
+
+.viva-confirm-overlay.viva-visible {
+  opacity: 1 !important;
+}
+
+.viva-confirm-card {
+  background: var(--viva-bg, #FFFFFF) !important;
+  border-radius: 20px !important;
+  width: 400px !important;
+  max-width: 90vw !important;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28), 0 0 1px rgba(0, 0, 0, 0.15) !important;
+  overflow: hidden !important;
+  transform: scale(0.92);
+  transition: transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+  border: 1px solid var(--viva-border, rgba(0,0,0,0.08)) !important;
+  padding: 24px !important;
+  box-sizing: border-box !important;
+}
+
+.viva-confirm-overlay.viva-visible .viva-confirm-card {
+  transform: scale(1) !important;
+}
+
+.viva-confirm-header {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  margin-bottom: 16px !important;
+}
+
+.viva-confirm-icon {
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 12px !important;
+  background: linear-gradient(135deg, #007AFF, #0056D2) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: #FFFFFF !important;
+  font-size: 22px !important;
+  flex-shrink: 0 !important;
+}
+
+.viva-confirm-title {
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  color: var(--viva-text, #1C1C1E) !important;
+  margin: 0 !important;
+  line-height: 1.25 !important;
+}
+
+.viva-confirm-sub {
+  font-size: 13px !important;
+  color: var(--viva-muted, #8E8E93) !important;
+  margin: 3px 0 0 0 !important;
+}
+
+.viva-confirm-body {
+  background: rgba(142, 142, 147, 0.1) !important;
+  border-radius: 14px !important;
+  padding: 14px 16px !important;
+  margin-bottom: 20px !important;
+}
+
+.viva-confirm-row {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  padding: 6px 0 !important;
+  font-size: 13px !important;
+  border-bottom: 1px solid rgba(0,0,0,0.05) !important;
+}
+
+.viva-confirm-row:last-child {
+  border-bottom: none !important;
+}
+
+.viva-confirm-label {
+  color: var(--viva-muted, #8E8E93) !important;
+  font-weight: 500 !important;
+}
+
+.viva-confirm-value {
+  color: var(--viva-text, #1C1C1E) !important;
+  font-weight: 700 !important;
+  text-align: right !important;
+  max-width: 210px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.viva-confirm-actions {
+  display: flex !important;
+  gap: 10px !important;
+}
+
+.viva-confirm-btn {
+  flex: 1 !important;
+  padding: 12px 16px !important;
+  border-radius: 12px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  border: none !important;
+  transition: all 0.2s ease !important;
+  text-align: center !important;
+}
+
+.viva-confirm-btn-cancel {
+  background: rgba(142, 142, 147, 0.18) !important;
+  color: var(--viva-text, #1C1C1E) !important;
+}
+
+.viva-confirm-btn-cancel:hover {
+  background: rgba(142, 142, 147, 0.28) !important;
+}
+
+.viva-confirm-btn-confirm {
+  background: #007AFF !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3) !important;
+}
+
+.viva-confirm-btn-confirm:hover {
+  background: #0062CC !important;
+  box-shadow: 0 6px 16px rgba(0, 122, 255, 0.4) !important;
+}
+
+/* ─── Apple Pro N-Step Funnel Builder & Confirmation Modal ─────────────────── */
+.viva-funnel-steps-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 14px !important;
+  max-height: 52vh !important;
+  overflow-y: auto !important;
+  padding: 4px !important;
+  margin-bottom: 16px !important;
+}
+
+.viva-funnel-step-card {
+  background: rgba(142, 142, 147, 0.08) !important;
+  border: 1px solid var(--viva-border, rgba(0,0,0,0.08)) !important;
+  border-radius: 16px !important;
+  padding: 14px !important;
+  position: relative !important;
+  transition: all 0.2s ease !important;
+}
+
+.viva-funnel-step-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  margin-bottom: 10px !important;
+}
+
+.viva-funnel-step-badge {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #007AFF !important;
+  background: rgba(0, 122, 255, 0.12) !important;
+  padding: 3px 10px !important;
+  border-radius: 99px !important;
+}
+
+.viva-funnel-remove-btn {
+  background: rgba(255, 59, 48, 0.12) !important;
+  color: #FF3B30 !important;
+  border: none !important;
+  border-radius: 8px !important;
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+}
+
+.viva-funnel-remove-btn:hover {
+  background: rgba(255, 59, 48, 0.22) !important;
+}
+
+.viva-funnel-add-btn {
+  width: 100% !important;
+  padding: 12px !important;
+  border-radius: 14px !important;
+  border: 2px dashed rgba(0, 122, 255, 0.35) !important;
+  background: rgba(0, 122, 255, 0.04) !important;
+  color: #007AFF !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  transition: all 0.2s ease !important;
+}
+
+.viva-funnel-add-btn:hover {
+  background: rgba(0, 122, 255, 0.1) !important;
+  border-color: #007AFF !important;
+}
+
+.viva-funnel-summary-item {
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 8px 10px !important;
+  background: rgba(0,0,0,0.03) !important;
+  border-radius: 10px !important;
+  margin-top: 8px !important;
+}
+
+.viva-funnel-summary-step-title {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: var(--viva-text, #1C1C1E) !important;
+}
+
+.viva-funnel-summary-step-url {
+  font-size: 11px !important;
+  color: #007AFF !important;
+  word-break: break-all !important;
+  margin-top: 2px !important;
+}
+
+/* ─── Apple Segmented Control (Por Página vs Por Domínio/URL) ─────────────── */
+.viva-segmented-control {
+  display: flex !important;
+  background: rgba(142, 142, 147, 0.14) !important;
+  border-radius: 9px !important;
+  padding: 3px !important;
+  margin-bottom: 12px !important;
+}
+
+.viva-segmented-btn {
+  flex: 1 !important;
+  border: none !important;
+  background: transparent !important;
+  border-radius: 7px !important;
+  padding: 6px 4px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: var(--viva-muted, #86868b) !important;
+  cursor: pointer !important;
+  transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+}
+
+.viva-segmented-btn.active {
+  background: #ffffff !important;
+  color: var(--viva-text, #1d1d1f) !important;
+  font-weight: 700 !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* ─── Apple Success Modal / Feedback de Sucesso ──────────────────────────── */
+.viva-success-icon-wrap {
+  width: 52px !important;
+  height: 52px !important;
+  border-radius: 50% !important;
+  background: rgba(52, 199, 89, 0.15) !important;
+  color: #34C759 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 26px !important;
+  font-weight: 800 !important;
+  box-shadow: 0 4px 12px rgba(52, 199, 89, 0.2) !important;
+}
+
+/* ─── Top Anunciantes Ranking Modal Items (Hover & Clickable UX) ─────────── */
+.viva-ranking-item {
+  cursor: pointer !important;
+  transition: all 0.22s cubic-bezier(0.25, 1, 0.5, 1) !important;
+  box-sizing: border-box !important;
+}
+.viva-ranking-item:hover {
+  background: rgba(255, 255, 255, 0.95) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08) !important;
+  transform: translateY(-1.5px) !important;
+  border-color: rgba(215, 0, 21, 0.35) !important;
+}
+.viva-ranking-item:active {
+  transform: translateY(0.5px) scale(0.995) !important;
+}
