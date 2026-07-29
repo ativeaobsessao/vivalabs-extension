@@ -738,7 +738,7 @@ function processCards() {
     item.shouldShow = shouldShow;
   });
 
-  const hasActiveFilter = (minPageAds > 0 || minDupAds > 0 || hideRecent || hideNonScaled || filterOnlyRecent);
+  // (hasActiveFilter removido: o reflow agora roda sempre, ver FIX DIAGNÓSTICO 1 abaixo)
 
   // PHASE 2: GPU Sync Frame Writes via requestAnimationFrame
   isBatching = true;
@@ -761,55 +761,40 @@ function processCards() {
         if (!f.closest(".viva-processed") && !f.closest("[data-viva-id]")) f.remove();
       });
 
-      if (!hasActiveFilter) {
-        activeCardData.forEach(item => {
-          let cell = item.card;
-          let parent = cell.parentElement;
-          if (parent && parent.children.length === 1 && parent.parentElement) {
-            cell = parent;
-            parent = parent.parentElement;
-          }
-          cell.style.removeProperty("display");
-          cell.style.removeProperty("position");
-          cell.style.removeProperty("top");
-          cell.style.removeProperty("left");
-          cell.style.removeProperty("transform");
-          cell.style.removeProperty("margin");
+      // FIX DIAGNÓSTICO 1: antes, esse "modo de reflow" só era aplicado quando um filtro
+      // estava ativo (hasActiveFilter). No estado padrão (sem filtro), o código devolvia o
+      // controle total ao posicionamento absoluto (top/left/transform) calculado pela grade
+      // virtualizada da própria Meta — mas essa posição foi calculada ANTES da VIVA injetar
+      // a faixa de escala, os badges e o rodapé em cada card, que aumentam a altura real dele.
+      // Resultado: o próximo card (já fixado numa posição absoluta) invadia o espaço do
+      // anterior, quebrando a grade e arrastando a barra de Filtros/Classificar por junto.
+      // Agora o reflow roda sempre, independente de haver filtro ou não.
+      activeCardData.forEach(item => {
+        let cell = item.card;
+        let parent = cell.parentElement;
+        if (parent && parent.children.length === 1 && parent.parentElement) {
+          cell = parent;
+          parent = parent.parentElement;
+        }
+
+        if (item.shouldShow) {
+          cell.style.setProperty("display", "block", "important");
+          cell.style.setProperty("position", "relative", "important");
+          cell.style.setProperty("top", "auto", "important");
+          cell.style.setProperty("left", "auto", "important");
+          cell.style.setProperty("transform", "none", "important");
+          cell.style.setProperty("margin", "0", "important");
+
           if (parent) {
-            parent.style.removeProperty("display");
-            parent.style.removeProperty("flex-wrap");
-            parent.style.removeProperty("justify-content");
-            parent.style.removeProperty("gap");
+            parent.style.setProperty("display", "flex", "important");
+            parent.style.setProperty("flex-wrap", "wrap", "important");
+            parent.style.setProperty("justify-content", "center", "important");
+            parent.style.setProperty("gap", "16px", "important");
           }
-        });
-      } else {
-        activeCardData.forEach(item => {
-          let cell = item.card;
-          let parent = cell.parentElement;
-          if (parent && parent.children.length === 1 && parent.parentElement) {
-            cell = parent;
-            parent = parent.parentElement;
-          }
-
-          if (item.shouldShow) {
-            cell.style.setProperty("display", "block", "important");
-            cell.style.setProperty("position", "relative", "important");
-            cell.style.setProperty("top", "auto", "important");
-            cell.style.setProperty("left", "auto", "important");
-            cell.style.setProperty("transform", "none", "important");
-            cell.style.setProperty("margin", "0", "important");
-
-            if (parent) {
-              parent.style.setProperty("display", "flex", "important");
-              parent.style.setProperty("flex-wrap", "wrap", "important");
-              parent.style.setProperty("justify-content", "center", "important");
-              parent.style.setProperty("gap", "16px", "important");
-            }
-          } else {
-            cell.style.setProperty("display", "none", "important");
-          }
-        });
-      }
+        } else {
+          cell.style.setProperty("display", "none", "important");
+        }
+      });
 
       // ─── Continua com a injeção de badges nos cards visíveis ───────────────────
       activeCardData.forEach(item => {
