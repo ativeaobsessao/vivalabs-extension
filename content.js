@@ -201,20 +201,38 @@ function cleanInstagramUrl(url) {
   return url;
 }
 
-async function loadConfig() {
+// FIX 4.1 (gargalo de inicialização): esta função só lê chrome.storage.local — é 100% local,
+// sem rede, e resolve quase instantaneamente. Antes, loadConfig() também esperava
+// fetchMonitoredPages() terminar antes de devolver o controle para init(), o que travava a
+// sidebar/observer/processCards inteiros caso o backend (Render.com, plano free) estivesse
+// hibernado. Agora só carrega a URL da API salva; a chamada de rede roda separada e em paralelo.
+async function loadLocalApiUrl() {
   const data = await chrome.storage.local.get("viva_monitor_api_url");
   if (data.viva_monitor_api_url) {
     API_URL = data.viva_monitor_api_url;
   }
-  await fetchMonitoredPages();
 }
 
+// FIX 4.1: fire-and-forget, nunca bloqueia a UI. Usa AbortController porque fetch() nativo não
+// tem timeout embutido — sem isso, um backend hibernado podia travar a chamada por dezenas de
+// segundos. A extensão assume "ainda não sei se está monitorado" (monitoredPages = []) até a
+// resposta chegar (ou nunca chegar), e nunca espera por isso pra renderizar o painel.
 async function fetchMonitoredPages() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
   try {
-    const res = await fetch(`${API_URL}/api/paginas`);
+    const res = await fetch(`${API_URL}/api/paginas`, { signal: controller.signal });
     monitoredPages = await res.json();
+    // A resposta pode chegar depois do painel já estar na tela — atualiza o botão
+    // "Monitorar no VIVA Labs" / "✓ Monitorado" retroativamente, se o painel já existir.
+    if (document.getElementById("viva-sidebar")) {
+      const pageTitle = getPageNameFromHeader();
+      if (pageTitle) checkMonitoredStatus(pageTitle);
+    }
   } catch (e) {
-    console.error("[VIVA] Erro ao carregar monitorados:", e);
+    console.warn("[VIVA] Monitorados indisponíveis agora (timeout ou backend hibernado):", e.message);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -621,9 +639,29 @@ function detectWhatsApp(card, destUrl) {
   return false;
 }
 
+// FIX 4.5: identidade barata do card, usada para invalidar o cache quando a Meta recicla um
+// nó de DOM da grade virtualizada para exibir um anúncio diferente. Deliberadamente NÃO usa
+// card.textContent (forçaria recomputar toda a subárvore de texto até em cards já processados)
+// nem o cache memoizado de getCardDomElements() — se a Meta SUBSTITUIR a subárvore do card em
+// vez de só atualizar atributos in-place, o cache antigo apontaria para nós já desconectados,
+// cujo .src ainda refletiria o anúncio anterior (falso negativo). Uma query direta e restrita
+// a "video, img" (não a multi-tag pesada usada em getCardDomElements) é barata e sempre fresca.
+function getCardIdentitySignal(card) {
+  const media = card.querySelector("video, img");
+  const src = media ? (media.currentSrc || media.src || "") : "";
+  return src || `nochild:${card.children.length}`;
+}
+
 function extractCardData(card) {
-  if (cardDataMap.has(card)) return cardDataMap.get(card);
-  if (card._vivaData) {
+  const identitySignal = getCardIdentitySignal(card);
+
+  if (cardDataMap.has(card)) {
+    const cached = cardDataMap.get(card);
+    if (cached.identitySignal === identitySignal) return cached;
+    // FIX 4.5: identidade mudou — a Meta reciclou este nó de DOM para outro anúncio. Descarta
+    // o cache antigo (inclusive o DOM cache auxiliar, que também aponta pro conteúdo anterior).
+    domElementsCache.delete(card);
+  } else if (card._vivaData && card._vivaData.identitySignal === identitySignal) {
     cardDataMap.set(card, card._vivaData);
     return card._vivaData;
   }
@@ -661,7 +699,8 @@ function extractCardData(card) {
     metaAdCount,
     isWhatsApp: detectWhatsApp(card, destUrl),
     mediaSig: cleanMedia || null,
-    sig: `${cleanText}|${cleanMedia}`
+    sig: `${cleanText}|${cleanMedia}`,
+    identitySignal
   };
   cardDataMap.set(card, data);
   card._vivaData = data;
@@ -2253,13 +2292,38 @@ function debounce(func, wait) {
 
 // ─── Inicialização ──────────────────────────────────────────────────────────
 
-function teardownVivaMonitor() {
+// FIX 4.2: fullTeardown distingue os dois usos desta função:
+//   - fullTeardown=false (padrão) → "reset leve", usado na navegação SPA dentro da Ad Library
+//     (troca de URL). Só limpa DOM/cache; o MutationObserver principal, o polling de URL e o
+//     scroll handler PRECISAM continuar vivos, senão a extensão para de detectar a própria
+//     navegação seguinte e morre depois da primeira troca de página.
+//   - fullTeardown=true → desligamento real via toggle do popup. Aí sim desconecta de fato o
+//     observer, limpa o polling de URL e remove o scroll handler (ver ensureVivaBackgroundServicesRunning
+//     para a reconexão quando o toggle é ligado de novo).
+function teardownVivaMonitor(fullTeardown = false) {
   // FIX: para de vez o intervalo de polling de nome/Instagram. Antes esta função só
   // removia elementos do DOM, mas nunca parava o setInterval — por isso o toggle
   // "desligar" no popup não interrompia o processamento em segundo plano.
   if (_vivaSidebarIntervalId) {
     clearInterval(_vivaSidebarIntervalId);
     _vivaSidebarIntervalId = null;
+  }
+  if (fullTeardown) {
+    // Antes essas 3 variáveis (_vivaMainObserver, _vivaUrlIntervalId, _vivaScrollHandler) eram
+    // declaradas na seção de lifecycle mas nunca recebiam valor — o observer, o polling de URL
+    // e o listener de scroll continuavam vivos e consumindo ciclo mesmo com o toggle "desligado"
+    // no popup (o vivaMonitorMasterEnabled só fazia o callback virar no-op, sem cortar o
+    // trabalho na raiz).
+    if (_vivaMainObserver) {
+      try { _vivaMainObserver.disconnect(); } catch (e) {}
+    }
+    if (_vivaUrlIntervalId) {
+      clearInterval(_vivaUrlIntervalId);
+      _vivaUrlIntervalId = null;
+    }
+    if (_vivaScrollHandler) {
+      window.removeEventListener("scroll", _vivaScrollHandler);
+    }
   }
   const panel = document.getElementById("viva-sidebar");
   if (panel) panel.remove();
@@ -2306,8 +2370,12 @@ function injectMediaPreconnects() {
 }
 
 async function init() {
-  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v3 (2026-07-28)");
-  await loadConfig();
+  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v4 (2026-07-30)");
+  // FIX 4.1: loadLocalApiUrl() é só storage local (instantâneo). fetchMonitoredPages() é
+  // deliberadamente NÃO aguardado (fire-and-forget) — roda em paralelo com timeout próprio e
+  // nunca atrasa a sidebar, o observer ou o processamento de cards.
+  await loadLocalApiUrl();
+  fetchMonitoredPages();
 
   chrome.storage.local.get(["viva_monitor_enabled"], (res) => {
     vivaMonitorMasterEnabled = res.viva_monitor_enabled !== false;
@@ -2317,7 +2385,7 @@ async function init() {
     document.documentElement.dataset.vivaEnabled = vivaMonitorMasterEnabled ? "true" : "false";
     if (!vivaMonitorMasterEnabled) {
       console.log("[VIVA] Extensão desativada via toggle.");
-      teardownVivaMonitor();
+      teardownVivaMonitor(true);
       return;
     }
     injectMediaPreconnects();
@@ -2334,8 +2402,12 @@ async function init() {
       // FIX: mesma ponte, agora também na troca ao vivo do toggle (sem precisar recarregar a página).
       document.documentElement.dataset.vivaEnabled = vivaMonitorMasterEnabled ? "true" : "false";
       if (!vivaMonitorMasterEnabled) {
-        teardownVivaMonitor();
+        teardownVivaMonitor(true);
       } else {
+        // FIX 4.2: como o toggle "desligar" agora realmente desconecta o observer principal,
+        // limpa o polling de URL e remove o scroll handler (fullTeardown=true acima), religar
+        // precisa reconectá-los — antes isso não era necessário porque nada era desconectado.
+        ensureVivaBackgroundServicesRunning();
         injectMediaPreconnects();
         injectSidebar();
         injectScrollTopBtn();
@@ -2345,8 +2417,11 @@ async function init() {
   });
 
   // Executa processamento otimizado síncrono com base em eventos
+  // FIX: guarda o handler na variável de lifecycle já existente (_vivaScrollHandler) — antes
+  // ela era declarada mas nunca usada, então o teardown não tinha como remover este listener.
   const debouncedProcess = debounce(processCards, 300);
-  window.addEventListener("scroll", debouncedProcess);
+  _vivaScrollHandler = debouncedProcess;
+  window.addEventListener("scroll", _vivaScrollHandler);
 
   // ─── Indexação única dos containers de busca da Meta (O(1) Memory Set) ──────────────────────
   const VIVA_SEARCH_ROOTS = new WeakSet();
@@ -2437,52 +2512,117 @@ async function init() {
       debouncedProcess();
     }
   });
-  observer.observe(document.body, { childList: true, subtree: true });
+  // FIX: guarda a referência na variável de lifecycle já existente (_vivaMainObserver) — antes
+  // ela era declarada mas nunca usada, então o toggle "desligar" não conseguia de fato
+  // desconectar este observer (só devolvia no-op via vivaMonitorMasterEnabled dentro do
+  // callback, mas o observer continuava recebendo e descartando mutações à toa).
+  _vivaMainObserver = observer;
+  const initialObserverRoot = getObserverRoot();
+  _vivaMainObserver.observe(initialObserverRoot, { childList: true, subtree: true });
+
+  if (initialObserverRoot === document.body) {
+    // FIX 4.2: se div[role="main"] ainda não existia no momento do init() (carregamento muito
+    // cedo), tenta reescopar assim que ela aparecer, em vez de ficar preso observando
+    // document.body inteiro pelo resto da sessão.
+    let upgradeAttempts = 0;
+    const upgradeInterval = setInterval(() => {
+      upgradeAttempts++;
+      const realRoot = document.querySelector('div[role="main"]');
+      if (realRoot) {
+        clearInterval(upgradeInterval);
+        try { _vivaMainObserver.disconnect(); } catch (e) {}
+        _vivaMainObserver.observe(realRoot, { childList: true, subtree: true });
+        console.log("[VIVA] Observer reescopado para div[role='main'] (era document.body no boot).");
+      } else if (upgradeAttempts > 20) {
+        clearInterval(upgradeInterval);
+      }
+    }, 500);
+  }
 
   // Loop secundário de polling apenas para mudança de URL de navegação interna SPA da Meta
-  setInterval(() => {
-    if (!vivaMonitorMasterEnabled) return;
-    if (window.location.href !== lastUrl) {
-      lastUrl = window.location.href;
-      console.log("[VIVA] URL mudou, limpando cache local e reiniciando...");
-      teardownVivaMonitor();
-      cachedContingencyChecked = false;
-      cachedContingencyStatus = null;
-      
-      setTimeout(() => {
-        injectSidebar();
-        injectScrollTopBtn();
-        const pageTitle = getPageNameFromHeader();
-        const nameInput = document.getElementById("viva-side-name");
-        if (nameInput) nameInput.value = pageTitle;
-        checkMonitoredStatus(pageTitle);
-        
-        // Atualiza dinamicamente a exibição do campo do Instagram no painel lateral
-        const isPage = window.location.href.includes("view_all_page_id=");
-        const igGroup = document.getElementById("viva-group-instagram");
-        const igInput = document.getElementById("viva-side-instagram");
-        if (igGroup) {
-          if (isPage) {
-            igGroup.style.display = "flex";
-            if (igInput) {
-              const detectedIg = getInstagramUrlFromHeader();
-              igInput.value = detectedIg ? detectedIg : "Instagram não detectado";
-              if (detectedIg) {
-                igInput.style.opacity = "1";
-                igInput.style.cursor = "pointer";
-              } else {
-                igInput.style.opacity = "0.5";
-                igInput.style.cursor = "not-allowed";
-              }
+  // FIX: guarda o ID na variável de lifecycle já existente (_vivaUrlIntervalId) — antes ela
+  // era declarada mas nunca usada, então este polling nunca era interrompido pelo teardown.
+  // A lógica em si mora em checkUrlChangeTick() (função de módulo) para poder ser recriada por
+  // ensureVivaBackgroundServicesRunning() quando o toggle é religado após um fullTeardown.
+  _vivaUrlIntervalId = setInterval(checkUrlChangeTick, 2000);
+}
+
+// FIX 4.2: extraída de dentro de init() para escopo de módulo — precisa ser reutilizável tanto
+// na primeira criação do polling (init) quanto na recriação após religar o toggle
+// (ensureVivaBackgroundServicesRunning), sem duplicar a lógica em dois lugares.
+function checkUrlChangeTick() {
+  if (!vivaMonitorMasterEnabled) return;
+  if (window.location.href !== lastUrl) {
+    lastUrl = window.location.href;
+    console.log("[VIVA] URL mudou, limpando cache local e reiniciando...");
+    // FIX 4.2: reset LEVE (fullTeardown padrão false) — navegação SPA dentro da própria Ad
+    // Library não pode desconectar o observer/interval/scroll, senão a extensão para de
+    // detectar novas trocas de URL depois da primeira e "morre" pelo resto da sessão.
+    teardownVivaMonitor();
+    cachedContingencyChecked = false;
+    cachedContingencyStatus = null;
+
+    setTimeout(() => {
+      injectSidebar();
+      injectScrollTopBtn();
+      const pageTitle = getPageNameFromHeader();
+      const nameInput = document.getElementById("viva-side-name");
+      if (nameInput) nameInput.value = pageTitle;
+      checkMonitoredStatus(pageTitle);
+
+      // Atualiza dinamicamente a exibição do campo do Instagram no painel lateral
+      const isPage = window.location.href.includes("view_all_page_id=");
+      const igGroup = document.getElementById("viva-group-instagram");
+      const igInput = document.getElementById("viva-side-instagram");
+      if (igGroup) {
+        if (isPage) {
+          igGroup.style.display = "flex";
+          if (igInput) {
+            const detectedIg = getInstagramUrlFromHeader();
+            igInput.value = detectedIg ? detectedIg : "Instagram não detectado";
+            if (detectedIg) {
+              igInput.style.opacity = "1";
+              igInput.style.cursor = "pointer";
+            } else {
+              igInput.style.opacity = "0.5";
+              igInput.style.cursor = "not-allowed";
             }
-          } else {
-            igGroup.style.display = "none";
           }
+        } else {
+          igGroup.style.display = "none";
         }
-        processCards();
-      }, 1000);
-    }
-  }, 2000);
+      }
+      processCards();
+    }, 1000);
+  }
+}
+
+// FIX 4.2: container real da grade de anúncios, usado para escopar o MutationObserver principal
+// em vez de observar document.body inteiro. A Meta usa a landmark ARIA div[role="main"] de
+// forma estável na Ad Library — escopar a ela corta fora mutações de chat widgets, menus globais
+// e outras áreas fora da grade, sem depender de classes ofuscadas que mudam a cada deploy.
+function getObserverRoot() {
+  return document.querySelector('div[role="main"]') || document.body;
+}
+
+// FIX 4.2: reconecta os serviços de fundo (MutationObserver principal, polling de URL e scroll
+// handler) depois de um fullTeardown real (toggle desligado no popup). Sem isso, religar a
+// extensão deixaria badges parando de aparecer em cards novos, navegação SPA parando de ser
+// detectada, e o scroll deixando de reprocessar cards — porque agora o toggle "desligar"
+// realmente desconecta essas 3 coisas (ver teardownVivaMonitor).
+function ensureVivaBackgroundServicesRunning() {
+  if (_vivaMainObserver) {
+    try {
+      _vivaMainObserver.observe(getObserverRoot(), { childList: true, subtree: true });
+    } catch (e) {}
+  }
+  if (!_vivaUrlIntervalId) {
+    _vivaUrlIntervalId = setInterval(checkUrlChangeTick, 2000);
+  }
+  if (_vivaScrollHandler) {
+    // addEventListener com a mesma referência de função é idempotente — nunca duplica o listener.
+    window.addEventListener("scroll", _vivaScrollHandler);
+  }
 }
 
 init();
