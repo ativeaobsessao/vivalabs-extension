@@ -50,6 +50,11 @@ const VIVA_SEARCH_ROOTS = new WeakSet(); // Containers de busca e sugestões da 
 // ─── VIVA Eco-RAM Shield: Cache WeakMap & Virtualizador de Mídia ───
 const cardDataMap = new WeakMap();
 
+// FIX 4.4 (dirty-check do reflow — ver processCards): rastreia containers de grade que já
+// receberam a configuração flex-wrap nesta sessão, para nunca reescrever as mesmas propriedades
+// !important no mesmo nó repetidamente a cada ciclo.
+const _vivaConfiguredFlexParents = new WeakSet();
+
 // ─── VIVA Fast-Scroll Velocity Bypass Engine ───
 let isFastScrolling = false;
 let fastScrollTimeout = null;
@@ -145,6 +150,28 @@ const mediaPruningObserver = new IntersectionObserver((entries) => {
     }
   });
 }, { rootMargin: "400px 0px 400px 0px" });
+
+// FIX 4.3: gate de proximidade da viewport para a injeção PESADA de badges/rodapé (criação de
+// nós DOM, templates de innerHTML). O filtro show/hide (reflow) continua rodando para TODOS os
+// cards descobertos, perto ou não da tela — só a criação em si dos badges/rodapé é adiada até o
+// card estar perto o bastante pra valer a pena gastar o ciclo com ele. Em buscas com dezenas de
+// milhares de resultados, a própria Meta pré-renderiza um buffer de cards no DOM muito além do
+// que o usuário está vendo agora; sem este gate, todos eles ganhavam badges imediatamente.
+const nearViewportCards = new WeakSet();
+const viewportProximityObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    const card = entry.target;
+    if (!card.isConnected) {
+      viewportProximityObserver.unobserve(card);
+      return;
+    }
+    if (entry.isIntersecting) {
+      nearViewportCards.add(card);
+    } else {
+      nearViewportCards.delete(card);
+    }
+  });
+}, { rootMargin: "1500px 0px 1500px 0px" });
 
 // Adiciona ouvinte global para proteger vídeos onde o operador clicou no Play
 window.addEventListener("play", (e) => {
@@ -734,6 +761,7 @@ function processCards() {
   const cards = getAdCards(scanRootsForThisCycle).filter(card => {
     if (!card.isConnected) {
       mediaPruningObserver.unobserve(card);
+      viewportProximityObserver.unobserve(card);
       return false;
     }
     return true;
@@ -743,6 +771,13 @@ function processCards() {
   const domainSignatures = {};
   activeCardData = cards.map(card => {
     const data = card._vivaData || extractCardData(card);
+    // FIX 4.3: registra o card no gate de proximidade assim que descoberto, independente de já
+    // ter sido decidido se ele será exibido ou processado neste ciclo — o próprio
+    // IntersectionObserver decide de forma assíncrona e barata quando ele está perto o bastante.
+    if (!card._vivaProximityObserved) {
+      card._vivaProximityObserved = true;
+      viewportProximityObserver.observe(card);
+    }
     cardSignatures[data.sig] = (cardSignatures[data.sig] || 0) + 1;
     if (data.mediaSig && data.mediaSig.length > 3) {
       mediaSignatures[data.mediaSig] = (mediaSignatures[data.mediaSig] || 0) + 1;
@@ -808,6 +843,14 @@ function processCards() {
       // Resultado: o próximo card (já fixado numa posição absoluta) invadia o espaço do
       // anterior, quebrando a grade e arrastando a barra de Filtros/Classificar por junto.
       // Agora o reflow roda sempre, independente de haver filtro ou não.
+      // FIX 4.4 (dirty-check do reflow, ver nota de arquitetura no cabeçalho do arquivo): o
+      // resultado final é IDÊNTICO ao anterior — mesmas propriedades, mesmos valores, mesmas
+      // condições. A única mudança é que agora só escrevemos quando o estado realmente mudou
+      // desde o ciclo anterior (via cell._vivaReflowState e o WeakSet _vivaConfiguredFlexParents).
+      // Antes, os mesmos 5-9 style.setProperty(..., "important") por card rodavam TODO ciclo de
+      // processCards() (todo scroll, toda mutação) mesmo quando nada mudou — cada escrita
+      // !important força recálculo de estilo do navegador, então isso era trabalho puro
+      // perdido em buscas grandes com milhares de cards já estáveis na tela.
       activeCardData.forEach(item => {
         let cell = item.card;
         let parent = cell.parentElement;
@@ -816,22 +859,27 @@ function processCards() {
           parent = parent.parentElement;
         }
 
-        if (item.shouldShow) {
-          cell.style.setProperty("display", "block", "important");
-          cell.style.setProperty("position", "relative", "important");
-          cell.style.setProperty("top", "auto", "important");
-          cell.style.setProperty("left", "auto", "important");
-          cell.style.setProperty("transform", "none", "important");
-          cell.style.setProperty("margin", "0", "important");
-
-          if (parent) {
-            parent.style.setProperty("display", "flex", "important");
-            parent.style.setProperty("flex-wrap", "wrap", "important");
-            parent.style.setProperty("justify-content", "center", "important");
-            parent.style.setProperty("gap", "16px", "important");
+        const reflowState = item.shouldShow ? "show" : "hide";
+        if (cell._vivaReflowState !== reflowState) {
+          cell._vivaReflowState = reflowState;
+          if (item.shouldShow) {
+            cell.style.setProperty("display", "block", "important");
+            cell.style.setProperty("position", "relative", "important");
+            cell.style.setProperty("top", "auto", "important");
+            cell.style.setProperty("left", "auto", "important");
+            cell.style.setProperty("transform", "none", "important");
+            cell.style.setProperty("margin", "0", "important");
+          } else {
+            cell.style.setProperty("display", "none", "important");
           }
-        } else {
-          cell.style.setProperty("display", "none", "important");
+        }
+
+        if (item.shouldShow && parent && !_vivaConfiguredFlexParents.has(parent)) {
+          _vivaConfiguredFlexParents.add(parent);
+          parent.style.setProperty("display", "flex", "important");
+          parent.style.setProperty("flex-wrap", "wrap", "important");
+          parent.style.setProperty("justify-content", "center", "important");
+          parent.style.setProperty("gap", "16px", "important");
         }
       });
 
@@ -848,6 +896,14 @@ function processCards() {
         }
 
         if (!item.shouldShow) return; // Não injeta badges em cards ocultos para poupar RAM
+
+        // FIX 4.3: se o card ainda não está no raio de proximidade da viewport (rootMargin do
+        // viewportProximityObserver), adia a criação pesada dos badges/rodapé — economiza
+        // createElement/innerHTML em cards que a Meta já colocou no DOM (buffer de
+        // pré-renderização) mas que o usuário ainda está longe de rolar até ver. Assim que o
+        // card entrar no raio, o próximo ciclo de processCards() (disparado pelo próprio scroll)
+        // faz a criação normalmente — nenhuma mudança na aparência final, só no momento da criação.
+        if (!nearViewportCards.has(card)) return;
 
     // ─── BLINDAGEM ANTI-DUPLICIDADE PADRÃO APPLE (Idempotência DOM) ───
     // Previne que re-renderizações do React Fiber ou cartões DCO/Carrossel dupliquem widgets
