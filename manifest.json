@@ -20,12 +20,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.facebook.com/ads/library/*"],
+      "matches": ["https://*.facebook.com/ads/library/*"],
       "js": ["content.js"],
       "css": ["content.css"]
     },
     {
-      "matches": ["https://www.facebook.com/ads/library/*"],
+      "matches": ["https://*.facebook.com/ads/library/*"],
       "js": ["react_sniffer.js"],
       "world": "MAIN"
     },
@@ -39,7 +39,7 @@
         "https://*.facebook.com/*"
       ],
       "exclude_matches": [
-        "https://www.facebook.com/ads/library/*"
+        "https://*.facebook.com/ads/library/*"
       ],
       "js": ["social_helper.js"]
     }

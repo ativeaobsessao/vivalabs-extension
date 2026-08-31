@@ -56,6 +56,19 @@
     return null;
   }
 
+  // FIX PERF/ITEM 6 (2026-08): stampa um único card — usada tanto pelo evento sob demanda
+  // quanto pelo MutationObserver/safety-net abaixo. Isolada aqui para não duplicar a lógica
+  // de leitura do fiber em três lugares diferentes.
+  function stampCardIfPossible(card) {
+    if (!card || card.hasAttribute("data-viva-page-id")) return;
+    const fiber = getReactFiber(card);
+    if (!fiber) return;
+    const pageId = findPageIdInFiber(fiber);
+    if (pageId) {
+      card.setAttribute("data-viva-page-id", pageId);
+    }
+  }
+
   // 1. Escuta requisição sob demanda da extensão
   window.addEventListener("vivaGetPageId", (e) => {
     const cardId = e.detail && e.detail.cardId;
@@ -74,28 +87,57 @@
     }));
   });
 
-  // 2. Auto-stamp contínuo nos cards
-  // 2. Auto-stamp leve e otimizado nos cards não processados
-  function autoStampCards() {
-    // FIX: respeita o toggle liga/desliga da extensão. O content.js (mundo ISOLATED) escreve
-    // este atributo no <html> sempre que o estado muda — sem essa checagem, este script MAIN
-    // world rodava para sempre, mesmo com a extensão "desligada" no popup, pois scripts MAIN
-    // world não têm acesso a chrome.storage para saber o estado do toggle sozinhos.
+  // FIX PERF/ITEM 6 — CAUSA RAIZ DA LENTIDÃO REPORTADA (2026-08):
+  // A versão anterior rodava, para SEMPRE, a cada 2.5s:
+  //   document.querySelectorAll("div[class*='_9b9']:not(...), div[class*='x1y1aw1k']:not(...)")
+  // Seletores de atributo por SUBSTRING ([class*='...']) não têm nenhum atalho de indexação no
+  // motor de CSS do navegador — ele é obrigado a checar o atributo class de CADA nó do DOM,
+  // sempre, mesmo que 99% deles não sejam sequer cartões de anúncio (essas classes ofuscadas da
+  // Meta aparecem espalhadas pela página inteira, não só nos cards). Numa busca com rolagem
+  // infinita e milhares de nós acumulados no DOM, isso é uma varredura O(tamanho inteiro do DOM)
+  // rodando sem parar, na MESMA aba onde o operador está clicando em "Ver Anúncios da Página" —
+  // é essa contenção de thread principal que trava/atrasa até a abertura de uma nova aba.
+  //
+  // Correção: troca a fonte de "quais nós escanear" de classes ofuscadas e frágeis da Meta
+  // (que também podem mudar a qualquer deploy — risco documentado) para a classe própria da
+  // VIVA (.viva-processed), aplicada pelo content.js SOMENTE nos nós que ele já confirmou
+  // estruturalmente serem cards de anúncio reais (texto "Patrocinado/Sponsored" + mídia). Um
+  // seletor de classe exata é indexado nativamente pelo navegador (bucket lookup), então mesmo
+  // reconsultá-lo é barato — mas o ganho real vem de trocar POLLING por REAÇÃO: um
+  // MutationObserver com attributeFilter:['class'] só executa trabalho quando um class muda de
+  // verdade (O(mutações), não O(tamanho do DOM)), então fica ocioso entre cliques/scrolls em vez
+  // de varrer a página inteira a cada 2.5s incondicionalmente.
+  function handleClassMutations(mutations) {
     if (document.documentElement.dataset.vivaEnabled === "false") return;
-
-    const cards = document.querySelectorAll("div[class*='_9b9']:not([data-viva-page-id]), div[class*='x1y1aw1k']:not([data-viva-page-id])");
-    if (cards.length === 0) return;
-    const batch = Array.from(cards).slice(0, 15);
-    batch.forEach(card => {
-      const fiber = getReactFiber(card);
-      if (fiber) {
-        const pageId = findPageIdInFiber(fiber);
-        if (pageId) {
-          card.setAttribute("data-viva-page-id", pageId);
-        }
+    for (const m of mutations) {
+      const el = m.target;
+      if (el && el.nodeType === 1 && el.classList && el.classList.contains("viva-processed")) {
+        stampCardIfPossible(el);
       }
-    });
+    }
   }
 
-  setInterval(autoStampCards, 2500);
+  const classObserver = new MutationObserver(handleClassMutations);
+  classObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class"],
+    subtree: true
+  });
+
+  // Safety-net: cobre o caso raro de um card ganhar a classe antes deste script terminar de
+  // registrar o observer (corrida no boot), ou qualquer mutação perdida. Seletor de classe
+  // exata (.viva-processed) é barato mesmo em varredura — nada a ver em custo com o antigo
+  // seletor de substring — e o batch pequeno mantém o teto de custo previsível mesmo em telas
+  // com dezenas de milhares de cards acumulados.
+  function safetyNetScan() {
+    if (document.documentElement.dataset.vivaEnabled === "false") return;
+    const cards = document.querySelectorAll(".viva-processed:not([data-viva-page-id])");
+    if (cards.length === 0) return;
+    const batch = Array.from(cards).slice(0, 15);
+    batch.forEach(stampCardIfPossible);
+  }
+
+  // Frequência bem menor que o polling original (2.5s → 8s) porque agora é só uma rede de
+  // segurança, não o mecanismo principal — o MutationObserver acima cobre o caso comum.
+  setInterval(safetyNetScan, 8000);
 })();

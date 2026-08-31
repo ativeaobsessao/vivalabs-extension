@@ -1,104 +1,314 @@
-import express from "express";
-import cors from "cors";
-import { chromium } from "playwright";
-import { execSync } from "child_process";
-import cron from "node-cron";
-import pg from "pg";
+// VIVA Labs Helper - Main Content Script (Meta Ad Library)
 
-const { Pool } = pg;
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// ─── Database ────────────────────────────────────────────────────────────────
-
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL environment variable is required.");
-}
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-async function query(sql, params = []) {
-  const client = await pool.connect();
+// Auto-Clean de URL para Ver Anúncios da Página (Remove o Modal do Anúncio e abre direto na página)
+function checkAndCleanAdModalUrl() {
   try {
-    return await client.query(sql, params);
-  } finally {
-    client.release();
+    if (!window.location.search.includes("search_type=page") || !window.location.search.includes("view_all_page_id=")) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("search_type") === "page" && params.has("id") && params.has("view_all_page_id")) {
+      params.delete("id");
+      const cleanUrl = window.location.pathname + "?" + params.toString();
+      window.location.replace(cleanUrl);
+    }
+  } catch (e) {}
+}
+checkAndCleanAdModalUrl();
+window.addEventListener("popstate", checkAndCleanAdModalUrl);
+
+// ─── Variáveis Globais de Estado ──────────────────────────────────────────────
+let API_URL = "https://viva-labs-monitor.onrender.com";
+let monitoredPages = [];
+let cardSignatures = {};
+let isAutoScrollRunning = false;
+let autoScrollTimer = null;
+let autoScrollInterval = 7000;
+let lastUrl = window.location.href;
+let activeCardData = [];
+let globalDropdownListenerAdded = false;
+let cachedContingencyStatus = null;
+let cachedContingencyChecked = false;
+let vivaMonitorMasterEnabled = true;
+
+// FIX DE ESCALA (buscas com dezenas de milhares de resultados): fila de nós recém-adicionados
+// detectados pelo MutationObserver principal. getAdCards() consome esta fila para restringir
+// sua varredura de "botões/links" a apenas o que mudou, em vez de escanear a página inteira
+// a cada ciclo — o gargalo real de performance em buscas grandes com rolagem longa.
+let pendingScanRoots = [];
+
+// ─── VIVA Lifecycle Management (Cleanup Architecture) ───────────────────────
+// Cada referência aqui é limpa pelo teardownVivaMonitor() para zero listeners órfãos.
+let _vivaMainObserver = null;      // MutationObserver principal
+let _vivaSidebarIntervalId = null; // setInterval de polling de nome/Instagram
+let _vivaUrlIntervalId = null;     // setInterval de detecção de mudança de URL
+let _vivaScrollHandler = null;     // Handler de scroll (processCards debounced)
+let _vivaScrollTopHandler = null;  // Handler de scroll do botão "ir ao topo"
+let _vivaInitialized = false;      // Guard contra múltiplas inicializações
+
+// ─── VIVA O(1) DOM Index WeakSets (escopo de módulo para acesso no teardown) ─
+const VIVA_SEARCH_ROOTS = new WeakSet(); // Containers de busca e sugestões da Meta
+
+// ─── VIVA Eco-RAM Shield: Cache WeakMap & Virtualizador de Mídia ───
+const cardDataMap = new WeakMap();
+
+// FIX 4.4 (dirty-check do reflow — ver processCards): rastreia containers de grade que já
+// receberam a configuração flex-wrap nesta sessão, para nunca reescrever as mesmas propriedades
+// !important no mesmo nó repetidamente a cada ciclo.
+const _vivaConfiguredFlexParents = new WeakSet();
+
+// ─── VIVA Fast-Scroll Velocity Bypass Engine ───
+let isFastScrolling = false;
+let fastScrollTimeout = null;
+let lastScrollY = window.scrollY || 0;
+let lastScrollTime = Date.now();
+let batchingWatchdogTimeout = null;
+let lastCycleDurationMs = 0;
+
+window.addEventListener("scroll", () => {
+  const currentScrollY = window.scrollY || 0;
+  const now = Date.now();
+  const timeDelta = Math.max(1, now - lastScrollTime);
+  const distDelta = Math.abs(currentScrollY - lastScrollY);
+  const velocity = (distDelta / timeDelta) * 1000; // pixels per second
+
+  lastScrollY = currentScrollY;
+  lastScrollTime = now;
+
+  if (velocity > 1400) {
+    isFastScrolling = true;
+    clearTimeout(fastScrollTimeout);
+    fastScrollTimeout = setTimeout(() => {
+      isFastScrolling = false;
+      processCards();
+    }, 180);
+  }
+}, { passive: true });
+
+// ─── VIVA Interaction Bypass: Zero-Lag nos filtros nativos da Meta (GEO/Tipo/Palavra-chave) ───
+// Problema original: os menus de GEO, Tipo de Anúncio e a caixa de busca por palavra-chave da
+// própria Meta são portais que o React re-renderiza a cada tecla digitada ou item filtrado.
+// O MutationObserver principal via essas mutações e rodava toda a lógica pesada de detecção de
+// cards a cada keystroke, fazendo o clique/digitação nesses campos parecer travado. Esta blindagem
+// usa 'focusin' em captura (funciona em QUALQUER elemento, onde quer que a Meta o renderize no DOM,
+// sem depender de sua posição na árvore) para saber que o usuário está interagindo com um controle
+// nativo, e libera o observer principal para pular o processamento pesado enquanto isso.
+let isInteractingWithNativeControl = false;
+let nativeInteractionTimeout = null;
+
+document.addEventListener("focusin", (e) => {
+  const t = e.target;
+  if (!t || (t.closest && (t.closest("#viva-sidebar") || t.closest(".viva-processed")))) return;
+  const tag = t.tagName;
+  const role = t.getAttribute ? t.getAttribute("role") : null;
+  if (tag === "INPUT" || tag === "TEXTAREA" || role === "combobox" || role === "searchbox" || role === "textbox") {
+    isInteractingWithNativeControl = true;
+  }
+}, true);
+
+document.addEventListener("focusout", () => {
+  clearTimeout(nativeInteractionTimeout);
+  nativeInteractionTimeout = setTimeout(() => {
+    isInteractingWithNativeControl = false;
+  }, 250);
+}, true);
+
+const mediaPruningObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    const card = entry.target;
+    if (!card.isConnected) {
+      mediaPruningObserver.unobserve(card);
+      return;
+    }
+    const videos = card.querySelectorAll("video");
+    const images = card.querySelectorAll("img");
+
+    if (!entry.isIntersecting) {
+      videos.forEach(video => {
+        // Zero-Lag Apple Media Shield: Apenas pausa o vídeo se estiver rodando e não tiver sido acionado ativamente pelo operador.
+        // NUNCA remove o atributo 'src' nem força 'video.load()', evitando colisão com os buffers MSE nativos do Facebook.
+        if (!video.paused && !video.dataset.vivaInteracted) {
+          try { video.pause(); } catch(e) {}
+        }
+      });
+      // Zero-Lag & Instant Media: NUNCA removemos o src de imagens! Mantemos no cache da GPU/RAM para exibição instantânea na rolagem.
+    } else {
+      // Quando o card entra na tela, se não estiver rolando freneticamente (Fast-Scroll Bypass), pré-aquece o buffer
+      if (!isFastScrolling) {
+        videos.forEach(video => {
+          if (!video.getAttribute("preload") || video.getAttribute("preload") === "none") {
+            video.setAttribute("preload", "metadata");
+          }
+          if (!video.hasAttribute("playsinline")) {
+            video.setAttribute("playsinline", "");
+          }
+        });
+        images.forEach(img => {
+          if (!img.getAttribute("decoding")) {
+            img.setAttribute("decoding", "async");
+          }
+        });
+      }
+    }
+  });
+}, { rootMargin: "400px 0px 400px 0px" });
+
+// FIX 4.3: gate de proximidade da viewport para a injeção PESADA de badges/rodapé (criação de
+// nós DOM, templates de innerHTML). O filtro show/hide (reflow) continua rodando para TODOS os
+// cards descobertos, perto ou não da tela — só a criação em si dos badges/rodapé é adiada até o
+// card estar perto o bastante pra valer a pena gastar o ciclo com ele. Em buscas com dezenas de
+// milhares de resultados, a própria Meta pré-renderiza um buffer de cards no DOM muito além do
+// que o usuário está vendo agora; sem este gate, todos eles ganhavam badges imediatamente.
+const nearViewportCards = new WeakSet();
+const viewportProximityObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    const card = entry.target;
+    if (!card.isConnected) {
+      viewportProximityObserver.unobserve(card);
+      return;
+    }
+    if (entry.isIntersecting) {
+      nearViewportCards.add(card);
+    } else {
+      nearViewportCards.delete(card);
+    }
+  });
+}, { rootMargin: "1500px 0px 1500px 0px" });
+
+// Adiciona ouvinte global para proteger vídeos onde o operador clicou no Play
+window.addEventListener("play", (e) => {
+  if (e.target && e.target.nodeName === "VIDEO") {
+    e.target.dataset.vivaInteracted = "true";
+  }
+}, true);
+
+// Filtros Globais
+let hideRecent = false;
+let hideNonScaled = false;
+let filterOnlyRecent = false;
+let minPageAds = 0; 
+let minDupAds = 0;
+
+// ─── Helper: Extração de Metadados Globais do DOM da Meta ───────────────────
+
+function getRootDomain(url) {
+  try {
+    let hostname = new URL(url).hostname;
+    const parts = hostname.split(".");
+    if (parts.length > 2) {
+      if (parts[parts.length - 2] === "com" || parts[parts.length - 2] === "net" || parts[parts.length - 2] === "org") {
+        return parts.slice(-3).join(".");
+      }
+      return parts.slice(-2).join(".");
+    }
+    return hostname;
+  } catch (e) {
+    return "";
   }
 }
 
-async function initDb() {
-  await query(`
-    CREATE TABLE IF NOT EXISTS pages (
-      slug          TEXT PRIMARY KEY,
-      nome          TEXT NOT NULL,
-      url           TEXT NOT NULL,
-      tipo          TEXT NOT NULL DEFAULT 'pagina',
-      instagram_url TEXT,
-      geo           TEXT,
-      nicho         TEXT,
-      created_at    TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await query(`
-    CREATE TABLE IF NOT EXISTS scrape_history (
-      id           SERIAL PRIMARY KEY,
-      slug         TEXT NOT NULL,
-      ads_count    INTEGER NOT NULL,
-      slot         SMALLINT,
-      collected_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await query(`
-    CREATE INDEX IF NOT EXISTS idx_scrape_history_slug ON scrape_history(slug)
-  `);
-
-  await query(`
-    CREATE TABLE IF NOT EXISTS scrape_latest (
-      slug         TEXT PRIMARY KEY,
-      ads_count    INTEGER NOT NULL,
-      collected_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  // Migrações: garante colunas novas em banco antigo (seguro rodar sempre)
-  await query(`ALTER TABLE pages ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'pagina'`);
-  await query(`ALTER TABLE pages ADD COLUMN IF NOT EXISTS inicial_count INTEGER`);
-  await query(`ALTER TABLE pages ADD COLUMN IF NOT EXISTS instagram_url TEXT`);
-  await query(`ALTER TABLE pages ADD COLUMN IF NOT EXISTS geo TEXT`);
-  await query(`ALTER TABLE pages ADD COLUMN IF NOT EXISTS nicho TEXT`);
-  await query(`ALTER TABLE pages ADD COLUMN IF NOT EXISTS funil TEXT`);
-
-  await query(`
-    CREATE TABLE IF NOT EXISTS funnel_nodes (
-      id         SERIAL PRIMARY KEY,
-      slug       TEXT NOT NULL REFERENCES pages(slug) ON DELETE CASCADE,
-      tipo       TEXT NOT NULL CHECK (tipo IN ('advertorial','tsl','vsl','quiz','whatsapp','checkout')),
-      rotulo     TEXT NOT NULL,
-      url        TEXT NOT NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `);
-  await query(`
-    CREATE TABLE IF NOT EXISTS funnel_edges (
-      id           SERIAL PRIMARY KEY,
-      from_node_id INTEGER NOT NULL REFERENCES funnel_nodes(id) ON DELETE CASCADE,
-      to_node_id   INTEGER NOT NULL REFERENCES funnel_nodes(id) ON DELETE CASCADE,
-      created_at   TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `);
-  await query(`CREATE INDEX IF NOT EXISTS idx_funnel_nodes_slug ON funnel_nodes(slug)`);
-  await query(`CREATE INDEX IF NOT EXISTS idx_funnel_edges_from ON funnel_edges(from_node_id)`);
-  await query(`CREATE INDEX IF NOT EXISTS idx_funnel_edges_to ON funnel_edges(to_node_id)`);
-
-  console.log("[DB] Tables ready.");
+function extractCleanDomain(url) {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname;
+  } catch (e) {
+    let clean = url.replace(/^(https?:\/\/)?(www\.)?/, "");
+    clean = clean.split("/")[0].split("?")[0];
+    return clean;
+  }
 }
 
+function cleanInstagramUrl(url) {
+  if (!url) return "";
+  try {
+    if (url.includes("l.facebook.com/l.php")) {
+      const urlObj = new URL(url);
+      const target = urlObj.searchParams.get("u");
+      if (target) return decodeURIComponent(target);
+    }
+  } catch (e) {}
+  return url;
+}
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// FIX 4.1 (gargalo de inicialização): esta função só lê chrome.storage.local — é 100% local,
+// sem rede, e resolve quase instantaneamente. Antes, loadConfig() também esperava
+// fetchMonitoredPages() terminar antes de devolver o controle para init(), o que travava a
+// sidebar/observer/processCards inteiros caso o backend (Render.com, plano free) estivesse
+// hibernado. Agora só carrega a URL da API salva; a chamada de rede roda separada e em paralelo.
+async function loadLocalApiUrl() {
+  const data = await chrome.storage.local.get("viva_monitor_api_url");
+  if (data.viva_monitor_api_url) {
+    API_URL = data.viva_monitor_api_url;
+  }
+}
+
+// FIX 4.1: fire-and-forget, nunca bloqueia a UI. Usa AbortController porque fetch() nativo não
+// tem timeout embutido — sem isso, um backend hibernado podia travar a chamada por dezenas de
+// segundos. A extensão assume "ainda não sei se está monitorado" (monitoredPages = []) até a
+// resposta chegar (ou nunca chegar), e nunca espera por isso pra renderizar o painel.
+async function fetchMonitoredPages() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`${API_URL}/api/paginas`, { signal: controller.signal });
+    monitoredPages = await res.json();
+    // A resposta pode chegar depois do painel já estar na tela — atualiza o botão
+    // "Monitorar no VIVA Labs" / "✓ Monitorado" retroativamente, se o painel já existir.
+    if (document.getElementById("viva-sidebar")) {
+      const pageTitle = getPageNameFromHeader();
+      if (pageTitle) checkMonitoredStatus(pageTitle);
+    }
+  } catch (e) {
+    console.warn("[VIVA] Monitorados indisponíveis agora (timeout ou backend hibernado):", e.message);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function getPageNameFromHeader() {
+  // 1. Tenta extrair direto do primeiro card renderizado (100% à prova de falhas se o card existir)
+  const firstCard = document.querySelector(".viva-processed");
+  if (firstCard) {
+    const allTextEls = firstCard.querySelectorAll("span, div[dir='auto'], h4");
+    for (let i = 0; i < allTextEls.length; i++) {
+      const text = allTextEls[i].textContent.trim();
+      if (text.toLowerCase() === "patrocinado" || text.toLowerCase() === "sponsored") {
+        // O nome do anunciante é o elemento de texto imediatamente anterior
+        for (let j = i - 1; j >= 0; j--) {
+          const prevText = allTextEls[j].textContent.trim();
+          if (prevText && prevText.length > 2 && prevText !== "Ativo" && prevText !== "Inativo" && !prevText.includes("anúncios usam")) {
+            return prevText;
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Fallback para buscas por palavra-chave na URL
+  const params = new URLSearchParams(window.location.search);
+  const searchQuery = params.get("q");
+  if (searchQuery) return searchQuery;
+
+  return "";
+}
+
+function getInstagramUrlFromHeader() {
+  // Busca direta O(1): apenas links explícitos do Instagram. NUNCA varre spans/divs.
+  // Varrer todos os spans/divs consome 5.000-20.000 nós DOM por chamada — causa de travamento.
+  const igLinks = document.querySelectorAll("a[href*='instagram.com']");
+  for (const a of igLinks) {
+    if (a.href && !a.href.includes("facebook.com")) {
+      return cleanInstagramUrl(a.href);
+    }
+  }
+  // Fallback: handles via atributo aria-label ou title (sem querySelectorAll genérico)
+  const igHandle = document.querySelector("[aria-label*='Instagram'], [title*='instagram']");
+  if (igHandle) {
+    const text = (igHandle.textContent || igHandle.getAttribute("aria-label") || "").trim();
+    if (/^@[a-zA-Z0-9_.]+$/.test(text)) {
+      return `https://www.instagram.com/${text.substring(1)}`;
+    }
+  }
+  return "";
+}
 
 function toSlug(nome) {
   return nome
@@ -111,1882 +321,2388 @@ function toSlug(nome) {
     .replace(/^-|-$/g, "");
 }
 
-function getChromiumPath() {
-  if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
-    return process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
-  }
-  try {
-    return execSync("which chromium || which chromium-browser || which google-chrome", {
-      encoding: "utf8",
-    }).trim().split("\n")[0];
-  } catch {
-    return undefined;
-  }
-}
+function getAdCards(scanRoots) {
+  // 1. Coleta instantânea de cartões já carimbados (O(1) no cache do DOM sem subir a árvore)
+  const processed = Array.from(document.querySelectorAll(".viva-processed")).filter(el => el.isConnected);
 
-// ─── Scraper ─────────────────────────────────────────────────────────────────
+  // 1.5. Coleta prioritária dos cartões identificados em memória pelo nosso react_sniffer (React Fiber)
+  const byFiber = Array.from(document.querySelectorAll("[data-viva-page-id]:not(.viva-processed)")).filter(el => {
+    if (!el.isConnected || !el.querySelector("img, video")) return false;
+    const txt = el.textContent || "";
+    return txt.includes("Patrocinado") || txt.includes("Sponsored");
+  });
 
-async function scrapeWithContext(context, url) {
-  const page = await context.newPage();
-  try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(15000);
-    const content = await page.content();
-    const htmlMatch = content.match(/([\d.,]+)\s*(resultados|results)/i);
-    if (htmlMatch) {
-      const parsed = parseInt(htmlMatch[1].replace(/[,.]/g, ""), 10);
-      if (!isNaN(parsed)) return parsed;
-    }
-    for (const kw of ["resultados", "results"]) {
-      try {
-        const el = page.locator(`text=/${kw}/i`).first();
-        await el.waitFor({ timeout: 3000 });
-        const texto = await el.innerText();
-        const match = texto.replace(/[,.]/g, "").match(/\d+/);
-        if (match) return parseInt(match[0], 10);
-      } catch {
-        continue;
+  // 2. Coleta direcionada para botões de resumo/detalhes de novos cartões não processados
+  // FIX DE ESCALA: se o MutationObserver já sabe exatamente quais nós foram adicionados
+  // (scanRoots), restringe a busca a eles em vez de escanear TODO o documento a cada ciclo.
+  // Em buscas com dezenas de milhares de resultados, escanear a página inteira a cada
+  // mutação (rolagem infinita) é o que trava a aba — isso reduz o custo de O(página toda)
+  // para O(apenas o que mudou desde o último ciclo).
+  const useScoped = Array.isArray(scanRoots) && scanRoots.length > 0;
+  const candidateSet = new Set();
+  if (useScoped) {
+    scanRoots.forEach(root => {
+      if (!root || root.nodeType !== 1 || !root.isConnected) return;
+      if (root.matches && root.matches("[role='button'], button, a")) candidateSet.add(root);
+      if (root.querySelectorAll) {
+        root.querySelectorAll("[role='button'], button, a").forEach(el => candidateSet.add(el));
       }
-    }
-    const bodyText = (await page.textContent("body")) ?? "";
-    const textMatch = bodyText.match(/([\d.,]+)\s*(resultados|results)/i);
-    if (textMatch) {
-      const parsed = parseInt(textMatch[1].replace(/[,.]/g, ""), 10);
-      if (!isNaN(parsed)) return parsed;
-    }
-    return null;
-  } finally {
-    await page.close();
-  }
-}
-
-async function scrapeAdCount(url, retries = 3) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    const browser = await chromium.launch({
-      executablePath: getChromiumPath(),
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
     });
-    try {
-      const context = await browser.newContext({
-        locale: "pt-BR",
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        extraHTTPHeaders: { "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8" },
-      });
-      const count = await scrapeWithContext(context, url);
-      if (count !== null) {
-        console.log(`[SCRAPE] attempt=${attempt} count=${count}`);
-        return count;
-      }
-      console.warn(`[SCRAPE] attempt=${attempt} — count not found, retrying...`);
-    } catch (err) {
-      console.error(`[SCRAPE] attempt=${attempt} error: ${err.message}`);
-    } finally {
-      await browser.close();
-    }
-    if (attempt < retries) await new Promise((r) => setTimeout(r, 5000));
-  }
-  console.error(`[SCRAPE] all ${retries} attempts failed, returning 0`);
-  return 0;
-}
-
-// Dedupe considera slot — só bloqueia duplicata do MESMO slot
-async function saveCount(slug, count, slot) {
-  console.log(`[SAVECOUNT] slug=${slug} slot=${slot}`);
-  const { rows: recent } = await query(
-    `SELECT id FROM scrape_history
-     WHERE slug = $1
-       AND slot IS NOT DISTINCT FROM $2
-       AND collected_at >= NOW() - INTERVAL '60 seconds'
-     LIMIT 1`,
-    [slug, slot]
-  );
-
-  await query(
-    `INSERT INTO scrape_latest (slug, ads_count, collected_at)
-     VALUES ($1, $2, NOW())
-     ON CONFLICT (slug) DO UPDATE
-       SET ads_count    = EXCLUDED.ads_count,
-           collected_at = EXCLUDED.collected_at`,
-    [slug, count]
-  );
-
-  if (recent.length === 0) {
-    await query("INSERT INTO scrape_history (slug, ads_count, slot) VALUES ($1, $2, $3)", [slug, count, slot]);
-    console.log(`[HISTORY] slug=${slug} slot=${slot} count=${count} saved`);
   } else {
-    console.log(`[HISTORY] slug=${slug} slot=${slot} skipped duplicate`);
+    document.querySelectorAll("[role='button'], button, a").forEach(el => candidateSet.add(el));
   }
-}
 
-// Captura inicial no momento do cadastro (individual)
-async function captureInicial(slug, url) {
-  try {
-    const count = await scrapeAdCount(url, 2);
-    await query(
-      `UPDATE pages SET inicial_count = COALESCE(inicial_count, $2) WHERE slug = $1`,
-      [slug, count]
-    );
-    await query(
-      `INSERT INTO scrape_latest (slug, ads_count, collected_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (slug) DO UPDATE
-         SET ads_count    = EXCLUDED.ads_count,
-             collected_at = EXCLUDED.collected_at`,
-      [slug, count]
-    );
-    console.log(`[DESCOBERTA] slug=${slug} inicial=${count} capturado no cadastro`);
-    return count;
-  } catch (err) {
-    console.error(`[DESCOBERTA] falha ao capturar inicial de slug=${slug}: ${err.message}`);
-    return null;
-  }
-}
+  const rawButtons = Array.from(candidateSet).filter(el => {
+    if (el.children.length > 2) return false;
+    if (el.closest && (el.closest(".viva-processed") || el.closest("header") || el.closest("#viva-sidebar") || el.closest("form") || el.closest("[role='combobox']") || el.closest("[role='listbox']") || el.closest("[role='dialog']"))) {
+      return false;
+    }
+    const text = el.textContent || "";
+    if (text.length > 45 || text.length < 10) return false;
+    return /^(Ver detalhes do anúncio|View ad details|Ver resumo|View summary|Ver detalhes|View details)$/i.test(text.trim());
+  });
 
-// Versão de captureInicial que reutiliza browser já aberto (para lotes)
-async function captureInicialWithContext(context, slug, url) {
-  let count = null;
-  for (let attempt = 1; attempt <= 2 && count === null; attempt++) {
-    try {
-      count = await scrapeWithContext(context, url);
-    } catch (err) {
-      console.error(`[LOTE] slug=${slug} attempt=${attempt} error: ${err.message}`);
+  const newCards = [];
+  for (const btn of rawButtons) {
+    let parent = btn;
+    for (let i = 0; i < 15; i++) {
+      if (!parent.parentElement) break;
+      parent = parent.parentElement;
+      if (parent.classList.contains("viva-processed") || parent.getAttribute("data-viva-id")) {
+        break;
+      }
+      if (parent.querySelector("img, video") && (parent.textContent.includes("Patrocinado") || parent.textContent.includes("Sponsored"))) {
+        const sponsoredMatches = (parent.textContent.match(/Patrocinado|Sponsored/g) || []).length;
+        if (sponsoredMatches === 1) {
+          parent.querySelectorAll("img").forEach(img => {
+            if (!img.getAttribute("decoding")) img.setAttribute("decoding", "async");
+          });
+          parent.querySelectorAll("video").forEach(vid => {
+            if (!vid.getAttribute("preload")) vid.setAttribute("preload", "metadata");
+          });
+          newCards.push(parent);
+          break;
+        }
+      }
     }
   }
-  const final = count ?? 0;
-  await query(`UPDATE pages SET inicial_count = COALESCE(inicial_count, $2) WHERE slug = $1`, [slug, final]);
-  await query(
-    `INSERT INTO scrape_latest (slug, ads_count, collected_at) VALUES ($1, $2, NOW())
-     ON CONFLICT (slug) DO UPDATE SET ads_count = EXCLUDED.ads_count, collected_at = EXCLUDED.collected_at`,
-    [slug, final]
-  );
-  return final;
+
+  return [...processed, ...byFiber, ...newCards].filter((v, i, a) => v && a.indexOf(v) === i);
 }
 
-// Processa lote em background (fire-and-forget)
-async function runLote(itens) {
-  if (isRunning) {
-    console.warn("[LOTE] abortado — já existe uma coleta em andamento (cron ou outro lote)");
-    loteStatus.erros.push("Abortado: já havia uma coleta (cron ou outro lote) em andamento. Tente de novo em alguns minutos.");
-    loteStatus.emAndamento = false;
+// ─── VIVA O(1) Static Compiled RegExp & Set Pool ───
+const REGEX_META_DATE_PT = /(?:veicular em|iniciada em|Veiculação iniciada em)\s+(\d+)\s+de\s+([a-zç\.]+)(?:\s+de)?\s+(\d+)/i;
+const REGEX_META_DATE_EN = /(?:running on|on)\s+([a-z]+)\s+(\d+),\s+(\d+)/i;
+const REGEX_PID_HTML = /(?:view_all_page_id=|page_id=|[?&]id=|"pageID":\s*"|"pageId":\s*"|"advertiserID":\s*")(\d{10,20})/i;
+const REGEX_AD_ARCHIVE_TEXT = /(?:Identifica[cç][aã]o da biblioteca|Library ID|ID)[:\s]+(\d{13,18})/i;
+const REGEX_AD_ARCHIVE_LINK = /[?&]id=(\d{13,18})/i;
+const REGEX_CREATED_DATE = /Página criada em:?\s+(\d+)\s+de\s+([a-zç\.]+)(?:\s+de)?\s+(\d+)/i;
+const REGEX_META_AD_COUNT = /(\d+)\s+(?:an[uú]ncios\s+usam|ads\s+use)/i;
+const REGEX_SIMPLE_DOMAIN = /^[a-z0-9\-\.]+\.[a-z]{2,4}(\/.*)?$/i;
+const REGEX_ONLY_DOMAIN = /^[a-z0-9\-\.]+\.[a-z]{2,4}$/i;
+const REGEX_ONLY_DIGITS = /^\d{10,20}$/;
+
+const WP_PATTERNS = [
+  "api.whatsapp.com", "wa.me", "web.whatsapp.com", "chat.whatsapp.com",
+  "wanalink", "wana.cm", "wanazap", "convertzap", "cvtzap",
+  "zaplink", "linkzap", "superzap", "joinzap", "grupozap"
+];
+
+// ─── Single-Pass DOM Collector (Memoized per card instance) ───
+const domElementsCache = new WeakMap();
+function getCardDomElements(card) {
+  if (domElementsCache.has(card)) return domElementsCache.get(card);
+  const links = [];
+  const leafNodes = [];
+  let video = null;
+  let img = null;
+  
+  const allElements = card.querySelectorAll("a, video, img, div, span, p, h3, h4");
+  for (const el of allElements) {
+    const nodeName = el.nodeName;
+    if (nodeName === "A" && el.href) {
+      links.push(el);
+    } else if (nodeName === "VIDEO" && !video) {
+      video = el;
+    } else if (nodeName === "IMG" && !img) {
+      img = el;
+    } else if (nodeName === "DIV" || nodeName === "SPAN" || nodeName === "P" || nodeName === "H3" || nodeName === "H4") {
+      if (el.children.length === 0) {
+        leafNodes.push(el);
+      }
+    }
+  }
+  const cache = { links, leafNodes, video, img };
+  domElementsCache.set(card, cache);
+  return cache;
+}
+
+function getAdCount(advertiserName) {
+  return activeCardData.filter(item => item.data.advertiserName === advertiserName).length;
+}
+
+function extractAdvertiserName(card) {
+  const dom = getCardDomElements(card);
+  const sponsorEl = dom.leafNodes.find(el => {
+    const text = el.textContent || "";
+    return text === "Patrocinado" || text === "Sponsored";
+  });
+  if (sponsorEl) {
+    let parent = sponsorEl.parentElement;
+    if (parent) {
+      const nameEl = parent.querySelector("a, div[style*='font-weight: bold'], span[style*='font-weight: bold']");
+      if (nameEl && nameEl.textContent.trim()) return nameEl.textContent.trim().split(" / ")[0];
+      for (const child of parent.children) {
+        if (child !== sponsorEl && child.textContent.trim()) return child.textContent.trim().split(" / ")[0];
+      }
+    }
+  }
+  for (const a of dom.links) {
+    if (a.href.includes("facebook.com/") && a.textContent.trim()) return a.textContent.trim();
+  }
+  return "Anunciante";
+}
+
+function extractDestinationUrl(card) {
+  const { links } = getCardDomElements(card);
+  for (const a of links) {
+    if (a.href.includes("l.facebook.com/l.php")) {
+      try {
+        const urlObj = new URL(a.href);
+        const targetUrl = urlObj.searchParams.get("u");
+        if (targetUrl) {
+          const decoded = decodeURIComponent(targetUrl);
+          if (!decoded.includes("instagram.com") && !decoded.includes("facebook.com")) return decoded;
+        }
+      } catch (e) {}
+    }
+  }
+  for (const a of links) {
+    const href = a.href;
+    if (href.startsWith("http") && !href.includes("facebook.com") && !href.includes("instagram.com")) return href;
+  }
+  return null;
+}
+
+function extractMediaUrl(card) {
+  const { video, img } = getCardDomElements(card);
+  if (video && video.src && !video.src.startsWith("blob:")) return video.src;
+  if (img && img.src && !img.src.startsWith("data:")) {
+    if (img.naturalWidth > 100 || img.width > 100 || img.src.includes("fna.fbcdn")) return img.src;
+  }
+  return null;
+}
+
+function parseMetaDate(text) {
+  const monthsPt = { jan: 0, fev: 1, mar: 2, abr: 3, mai: 4, jun: 5, jul: 6, ago: 7, set: 8, out: 9, nov: 10, dez: 11 };
+  const monthsEn = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const matchPt = text.match(REGEX_META_DATE_PT);
+  if (matchPt) return new Date(parseInt(matchPt[3]), monthsPt[matchPt[2].toLowerCase().replace(".", "").substring(0, 3)] || 0, parseInt(matchPt[1]));
+  const matchEn = text.match(REGEX_META_DATE_EN);
+  if (matchEn) return new Date(parseInt(matchEn[3]), monthsEn[matchEn[1].toLowerCase().substring(0, 3)] || 0, parseInt(matchEn[2]));
+  return null;
+}
+
+function extractCardTexts(card) {
+  const advertiserName = extractAdvertiserName(card) || "";
+  const advLower = advertiserName.toLowerCase();
+
+  const isMetaNoise = (txt) => {
+    if (!txt || txt.length < 2) return true;
+    const l = txt.toLowerCase();
+    return l.includes("identificação da biblioteca") ||
+           l.includes("veiculação iniciada") ||
+           l.includes("anúncios usam") ||
+           l.includes("plataformas") ||
+           l.includes("ver resumo") ||
+           l.includes("ver detalhes") ||
+           l === advLower ||
+           l === "patrocinado" ||
+           l === "sponsored" ||
+           l.includes("dias ativo") ||
+           l.includes("escala potencial") ||
+           l.includes("campanha normal") ||
+           l.includes("funil whatsapp") ||
+           l.includes("copiar copies");
+  };
+
+  let primaryText = "";
+  let title = "";
+  let description = "";
+
+  const { leafNodes } = getCardDomElements(card);
+  const validLeafNodes = leafNodes.filter(el => {
+    if (el.querySelector("img, video, svg, button, input")) return false;
+    const txt = el.textContent.trim();
+    return !isMetaNoise(txt) && txt.length > 2;
+  });
+
+  // 1. ZONA A: TEXTO PRINCIPAL (Primary Text - parágrafos longos)
+  const primaryCandidates = validLeafNodes.filter(el => {
+    const txt = el.textContent.trim();
+    if (REGEX_SIMPLE_DOMAIN.test(txt)) return false;
+    return txt.length > 25;
+  });
+
+  if (primaryCandidates.length > 0) {
+    primaryCandidates.sort((a, b) => b.textContent.trim().length - a.textContent.trim().length);
+    primaryText = primaryCandidates[0].textContent.trim();
+  }
+
+  // 2. ZONA B: TÍTULO / HEADLINE (Zero getComputedStyle — Heurística O(1) de tags semânticas, classes e posição)
+  const boldElements = validLeafNodes.filter(el => {
+    const nodeName = el.nodeName;
+    const styleBold = el.style.fontWeight === "bold" || el.style.fontWeight === "700" || parseInt(el.style.fontWeight || "0") >= 600;
+    const classBold = typeof el.className === "string" && (el.className.includes("bold") || el.className.includes("font-semibold") || el.className.includes("font-bold"));
+    const isSemanticBold = nodeName === "STRONG" || nodeName === "B" || nodeName === "H3" || nodeName === "H4";
+    const txt = el.textContent.trim();
+    return (isSemanticBold || styleBold || classBold) && txt !== primaryText && txt.length < 120;
+  });
+
+  if (boldElements.length > 0) {
+    title = boldElements[boldElements.length - 1].textContent.trim();
+  } else {
+    // Fallback estrutural: se não achou tag/classe bold explícita, pega o último texto curto abaixo de 100 caracteres antes do final do card
+    const shortLeafs = validLeafNodes.filter(el => {
+      const txt = el.textContent.trim();
+      return txt !== primaryText && txt.length < 100 && !REGEX_ONLY_DOMAIN.test(txt);
+    });
+    if (shortLeafs.length > 0) {
+      title = shortLeafs[shortLeafs.length - 1].textContent.trim();
+    }
+  }
+
+  // 3. ZONA C: DESCRIÇÃO DO LINK (texto secundário curto no rodapé CTA)
+  const descCandidates = validLeafNodes.filter(el => {
+    const txt = el.textContent.trim();
+    return txt !== primaryText &&
+           txt !== title &&
+           txt.length < 150 &&
+           !REGEX_ONLY_DOMAIN.test(txt);
+  });
+
+  if (descCandidates.length > 0) {
+    description = descCandidates[descCandidates.length - 1].textContent.trim();
+  }
+
+  return { primaryText, title, description };
+}
+
+function extractPageId(card) {
+  const fiberId = card.getAttribute("data-viva-page-id");
+  if (fiberId && REGEX_ONLY_DIGITS.test(fiberId)) {
+    return fiberId;
+  }
+
+  const { links } = getCardDomElements(card);
+  for (const a of links) {
+    if (a.href.includes("/ads/library/") || a.href.includes("view_all_page_id=") || a.href.includes("page_id=") || a.href.includes("id=")) {
+      try {
+        const u = new URL(a.href, window.location.origin);
+        const pid = u.searchParams.get("view_all_page_id") || u.searchParams.get("page_id") || u.searchParams.get("id");
+        if (pid && REGEX_ONLY_DIGITS.test(pid)) return pid;
+      } catch (e) {}
+    }
+  }
+
+  const htmlMatch = card.outerHTML.match(REGEX_PID_HTML);
+  if (htmlMatch && htmlMatch[1]) {
+    return htmlMatch[1];
+  }
+
+  return null;
+}
+
+function extractAdArchiveId(card) {
+  const textMatch = card.textContent.match(REGEX_AD_ARCHIVE_TEXT);
+  if (textMatch && textMatch[1]) return textMatch[1];
+  const linkMatch = card.innerHTML.match(REGEX_AD_ARCHIVE_LINK);
+  if (linkMatch && linkMatch[1]) return linkMatch[1];
+  return null;
+}
+
+function checkContingencyStatus(card) {
+  if (cachedContingencyChecked) return cachedContingencyStatus;
+  cachedContingencyChecked = true;
+  const matchCreated = document.body.textContent.match(REGEX_CREATED_DATE);
+  if (matchCreated) {
+    const createdDate = parseMetaDate(matchCreated[0]);
+    if (createdDate) {
+      const diffDays = Math.ceil(Math.abs(new Date() - createdDate) / (1000 * 60 * 60 * 24));
+      cachedContingencyStatus = diffDays < 45 ? "Contingência" : "Consolidada";
+      return cachedContingencyStatus;
+    }
+  }
+  return null;
+}
+
+function detectWhatsApp(card, destUrl) {
+  const checkUrl = (url) => {
+    if (!url) return false;
+    const lower = url.toLowerCase();
+    for (let i = 0; i < WP_PATTERNS.length; i++) {
+      if (lower.includes(WP_PATTERNS[i])) return true;
+    }
+    return false;
+  };
+
+  if (checkUrl(destUrl)) return true;
+
+  const { links } = getCardDomElements(card);
+  for (const a of links) {
+    if (checkUrl(a.href)) return true;
+  }
+
+  const cardText = (card.textContent || "").toLowerCase();
+  if (
+    cardText.includes("api.whatsapp.com") ||
+    cardText.includes("wa.me/") ||
+    cardText.includes("whatsapp") ||
+    cardText.includes("enviar mens")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+// FIX 4.5: identidade barata do card, usada para invalidar o cache quando a Meta recicla um
+// nó de DOM da grade virtualizada para exibir um anúncio diferente. Deliberadamente NÃO usa
+// card.textContent (forçaria recomputar toda a subárvore de texto até em cards já processados)
+// nem o cache memoizado de getCardDomElements() — se a Meta SUBSTITUIR a subárvore do card em
+// vez de só atualizar atributos in-place, o cache antigo apontaria para nós já desconectados,
+// cujo .src ainda refletiria o anúncio anterior (falso negativo). Uma query direta e restrita
+// a "video, img" (não a multi-tag pesada usada em getCardDomElements) é barata e sempre fresca.
+function getCardIdentitySignal(card) {
+  const media = card.querySelector("video, img");
+  const src = media ? (media.currentSrc || media.src || "") : "";
+  return src || `nochild:${card.children.length}`;
+}
+
+function extractCardData(card) {
+  const identitySignal = getCardIdentitySignal(card);
+
+  if (cardDataMap.has(card)) {
+    const cached = cardDataMap.get(card);
+    if (cached.identitySignal === identitySignal) return cached;
+    // FIX 4.5: identidade mudou — a Meta reciclou este nó de DOM para outro anúncio. Descarta
+    // o cache antigo (inclusive o DOM cache auxiliar, que também aponta pro conteúdo anterior).
+    domElementsCache.delete(card);
+  } else if (card._vivaData && card._vivaData.identitySignal === identitySignal) {
+    cardDataMap.set(card, card._vivaData);
+    return card._vivaData;
+  }
+  const destUrl = extractDestinationUrl(card);
+  const mediaUrl = extractMediaUrl(card);
+  const pageId = extractPageId(card);
+  const advertiserName = extractAdvertiserName(card);
+  const { primaryText, title, description } = extractCardTexts(card);
+  let adAgeDays = null;
+  const { leafNodes } = getCardDomElements(card);
+  const dateEl = leafNodes.find(el => {
+    const txt = el.textContent || "";
+    return txt.includes("veicular em") || txt.includes("iniciada em") || txt.includes("running on");
+  });
+  if (dateEl) {
+    const startDate = parseMetaDate(dateEl.textContent);
+    if (startDate) adAgeDays = Math.max(0, Math.ceil((new Date() - startDate) / (1000 * 60 * 60 * 24)));
+  }
+  let metaAdCount = 1;
+  const matchMetaCount = (card.textContent || "").match(REGEX_META_AD_COUNT);
+  if (matchMetaCount) {
+    metaAdCount = Math.max(1, parseInt(matchMetaCount[1], 10));
+  }
+  const cleanText = (primaryText || description).replace(/\s+/g, "").toLowerCase().substring(0, 100);
+  const cleanMedia = (mediaUrl || "").split("?")[0].split("/").pop() || "";
+  const data = {
+    destUrl,
+    mediaUrl,
+    pageId,
+    advertiserName,
+    primaryText,
+    title,
+    description,
+    adAgeDays,
+    metaAdCount,
+    isWhatsApp: detectWhatsApp(card, destUrl),
+    mediaSig: cleanMedia || null,
+    sig: `${cleanText}|${cleanMedia}`,
+    identitySignal
+  };
+  cardDataMap.set(card, data);
+  card._vivaData = data;
+  return data;
+}
+
+let isBatching = false;
+let pendingBatchCards = false;
+
+function processCards() {
+  if (!vivaMonitorMasterEnabled) return;
+  if (isBatching) {
+    pendingBatchCards = true;
     return;
   }
-  isRunning = true;
-  loteStatus = {
-    emAndamento: true,
-    total: itens.length,
-    concluidos: 0,
-    atual: null,
-    erros: [],
-    iniciadoEm: new Date().toISOString(),
-    finalizadoEm: null,
+  const cycleStartTime = performance.now();
+
+  // ─── VIVA Orphan Node Sweeper & Garbage Collection Preparation ───
+  // Limpeza proativa de nós órfãos desconectados da árvore ou cartões reciclados pelo virtualizador do React
+  document.querySelectorAll(".viva-card-footer, .viva-escala-strip, .viva-card-badge-container, .viva-gear-dropdown").forEach(el => {
+    if (!el.isConnected || (!el.closest(".viva-processed") && !el.closest("[data-viva-id]"))) {
+      el.remove();
+    }
+  });
+
+  // PHASE 1: Pure Reads & Memory Calculations (NO DOM MUTATIONS)
+  // FIX DE ESCALA: consome as raízes de mutação acumuladas desde o último ciclo (se houver)
+  // e limpa a fila — permite que getAdCards() faça uma varredura restrita em vez de escanear
+  // o documento inteiro em cada ciclo de processamento.
+  const scanRootsForThisCycle = pendingScanRoots.length > 0 ? pendingScanRoots.splice(0, pendingScanRoots.length) : null;
+  const cards = getAdCards(scanRootsForThisCycle).filter(card => {
+    if (!card.isConnected) {
+      mediaPruningObserver.unobserve(card);
+      viewportProximityObserver.unobserve(card);
+      return false;
+    }
+    return true;
+  });
+  cardSignatures = {};
+  const mediaSignatures = {};
+  const domainSignatures = {};
+  activeCardData = cards.map(card => {
+    const data = card._vivaData || extractCardData(card);
+    // FIX 4.3: registra o card no gate de proximidade assim que descoberto, independente de já
+    // ter sido decidido se ele será exibido ou processado neste ciclo — o próprio
+    // IntersectionObserver decide de forma assíncrona e barata quando ele está perto o bastante.
+    if (!card._vivaProximityObserved) {
+      card._vivaProximityObserved = true;
+      viewportProximityObserver.observe(card);
+    }
+    cardSignatures[data.sig] = (cardSignatures[data.sig] || 0) + 1;
+    if (data.mediaSig && data.mediaSig.length > 3) {
+      mediaSignatures[data.mediaSig] = (mediaSignatures[data.mediaSig] || 0) + 1;
+    }
+    const rootDom = data.destUrl ? extractCleanDomain(data.destUrl) : null;
+    if (rootDom) {
+      domainSignatures[rootDom] = (domainSignatures[rootDom] || 0) + 1;
+    }
+    data.rootDom = rootDom;
+    return { card, data };
+  });
+
+  activeCardData.forEach(item => {
+    const data = item.data;
+    const domDupCount = cardSignatures[data.sig] || 1;
+    const effectiveDupCount = Math.max(domDupCount, data.metaAdCount || 1);
+    const twinCount = (data.mediaSig && mediaSignatures[data.mediaSig]) ? mediaSignatures[data.mediaSig] : 1;
+    const domainCount = data.rootDom ? (domainSignatures[data.rootDom] || 1) : 1;
+    item.effectiveDupCount = effectiveDupCount;
+    item.twinCount = twinCount;
+    item.domainCount = domainCount;
+
+    const adsCount = getAdCount(data.advertiserName);
+    item.isEscala = (data.adAgeDays !== null && data.adAgeDays >= 3) || effectiveDupCount >= 2;
+    
+    let shouldShow = true;
+    if (minPageAds > 0 && adsCount < minPageAds) shouldShow = false;
+    if (minDupAds > 0 && effectiveDupCount < minDupAds) shouldShow = false;
+    if (hideRecent && data.adAgeDays !== null && data.adAgeDays < 3) shouldShow = false;
+    if (hideNonScaled && !((data.adAgeDays !== null && data.adAgeDays >= 5) || (effectiveDupCount >= 3))) shouldShow = false;
+    if (filterOnlyRecent && (data.adAgeDays === null || data.adAgeDays > 3)) shouldShow = false;
+    item.shouldShow = shouldShow;
+  });
+
+  // (hasActiveFilter removido: o reflow agora roda sempre, ver FIX DIAGNÓSTICO 1 abaixo)
+
+  // PHASE 2: GPU Sync Frame Writes via requestAnimationFrame
+  isBatching = true;
+  clearTimeout(batchingWatchdogTimeout);
+  batchingWatchdogTimeout = setTimeout(() => {
+    if (isBatching) {
+      console.warn("[VIVA] Watchdog de Resiliência: destravando frame ou exceção assíncrona.");
+      isBatching = false;
+      if (pendingBatchCards) {
+        pendingBatchCards = false;
+        processCards();
+      }
+    }
+  }, 1200);
+
+  window.requestAnimationFrame(() => {
+    try {
+      // Extermina qualquer engrenagem ou rodapé órfão que esteja flutuando fora de cartões reais
+      document.querySelectorAll(".viva-card-footer").forEach(f => {
+        if (!f.closest(".viva-processed") && !f.closest("[data-viva-id]")) f.remove();
+      });
+
+      // FIX GRID NATIVA (corrige regressão que quebrava a grade em "1 card por linha"):
+      // o bloco de "reflow" abaixo (que converte a grade nativa da Meta num flex-wrap
+      // controlado pela VIVA) só existe para fechar o buraco que um card ESCONDIDO por
+      // filtro deixaria na grade absolutamente posicionada da própria Meta. A versão
+      // anterior rodava isso incondicionalmente em TODO ciclo, para TODO card, mesmo com
+      // os filtros zerados/desligados — forçando display:flex no container pai e
+      // display:block (sem largura) em cada card, o que destrói as colunas nativas da
+      // Meta e colapsa a grade inteira em uma única coluna de largura total (bug
+      // reportado: extensão ativa = 1 anúncio por linha; extensão inativa = grade normal
+      // em colunas). Agora só aplicamos o reflow quando existe de fato pelo menos 1 card
+      // oculto por filtro nesta tela. Sem nenhum filtro ativo (estado padrão), a extensão
+      // NUNCA toca em display/position/parent — a arquitetura nativa da Meta fica 100%
+      // intocada, com extremo rigor. Se um filtro que estava ativo for desligado, revertemos
+      // (removeProperty) os estilos aplicados antes em vez de reescrever novos valores, para
+      // a grade nativa se recompor sozinha sem precisar recarregar a página.
+      const hasHiddenCard = activeCardData.some(it => !it.shouldShow);
+
+      activeCardData.forEach(item => {
+        let cell = item.card;
+        let parent = cell.parentElement;
+        if (parent && parent.children.length === 1 && parent.parentElement) {
+          cell = parent;
+          parent = parent.parentElement;
+        }
+
+        if (!hasHiddenCard) {
+          // Nenhum filtro ativo nesta tela: devolve o controle total do layout à Meta.
+          if (cell._vivaReflowState) {
+            cell._vivaReflowState = null;
+            cell.style.removeProperty("display");
+            cell.style.removeProperty("position");
+            cell.style.removeProperty("top");
+            cell.style.removeProperty("left");
+            cell.style.removeProperty("transform");
+            cell.style.removeProperty("margin");
+          }
+          if (parent && _vivaConfiguredFlexParents.has(parent)) {
+            _vivaConfiguredFlexParents.delete(parent);
+            parent.style.removeProperty("display");
+            parent.style.removeProperty("flex-wrap");
+            parent.style.removeProperty("justify-content");
+            parent.style.removeProperty("gap");
+          }
+          return;
+        }
+
+        // Há pelo menos 1 card oculto por filtro nesta tela: aplica o reflow controlado
+        // (comportamento idêntico ao já existente) apenas para fechar o buraco deixado.
+        const reflowState = item.shouldShow ? "show" : "hide";
+        if (cell._vivaReflowState !== reflowState) {
+          cell._vivaReflowState = reflowState;
+          if (item.shouldShow) {
+            cell.style.setProperty("display", "block", "important");
+            cell.style.setProperty("position", "relative", "important");
+            cell.style.setProperty("top", "auto", "important");
+            cell.style.setProperty("left", "auto", "important");
+            cell.style.setProperty("transform", "none", "important");
+            cell.style.setProperty("margin", "0", "important");
+          } else {
+            cell.style.setProperty("display", "none", "important");
+          }
+        }
+
+        if (item.shouldShow && parent && !_vivaConfiguredFlexParents.has(parent)) {
+          _vivaConfiguredFlexParents.add(parent);
+          parent.style.setProperty("display", "flex", "important");
+          parent.style.setProperty("flex-wrap", "wrap", "important");
+          parent.style.setProperty("justify-content", "center", "important");
+          parent.style.setProperty("gap", "16px", "important");
+        }
+      });
+
+      // ─── Continua com a injeção de badges nos cards visíveis ───────────────────
+      activeCardData.forEach(item => {
+        const card = item.card;
+        const data = item.data;
+
+        card.classList.remove("viva-border-level-1", "viva-border-level-2", "viva-border-level-3", "viva-border-escala");
+        if (item.isEscala) {
+          card.classList.add("viva-border-escala");
+        } else {
+          card.classList.add("viva-border-level-1");
+        }
+
+        if (!item.shouldShow) return; // Não injeta badges em cards ocultos para poupar RAM
+
+        // FIX 4.3: se o card ainda não está no raio de proximidade da viewport (rootMargin do
+        // viewportProximityObserver), adia a criação pesada dos badges/rodapé — economiza
+        // createElement/innerHTML em cards que a Meta já colocou no DOM (buffer de
+        // pré-renderização) mas que o usuário ainda está longe de rolar até ver. Assim que o
+        // card entrar no raio, o próximo ciclo de processCards() (disparado pelo próprio scroll)
+        // faz a criação normalmente — nenhuma mudança na aparência final, só no momento da criação.
+        if (!nearViewportCards.has(card)) return;
+
+    // ─── BLINDAGEM ANTI-DUPLICIDADE PADRÃO APPLE (Idempotência DOM) ───
+    // Previne que re-renderizações do React Fiber ou cartões DCO/Carrossel dupliquem widgets
+    const allStrips = card.querySelectorAll(".viva-escala-strip");
+    if (allStrips.length > 1) {
+      for (let i = 1; i < allStrips.length; i++) allStrips[i].remove();
+    }
+    const allContainers = card.querySelectorAll(".viva-card-badge-container");
+    if (allContainers.length > 1) {
+      for (let i = 1; i < allContainers.length; i++) allContainers[i].remove();
+    }
+    const allFooters = card.querySelectorAll(".viva-card-footer");
+    if (allFooters.length > 1) {
+      for (let i = 1; i < allFooters.length; i++) allFooters[i].remove();
+    }
+
+    // Carimba o card de forma persistente
+    card.dataset.vivaId = data.sig || "ad_card";
+
+    // C. Injeção de Componentes Apple-style
+    const renderSig = `${item.effectiveDupCount}-${item.twinCount}-${data.adAgeDays}-${data.isWhatsApp}-${item.shouldShow}`;
+    if (card.classList.contains("viva-processed") && card._vivaRenderSig === renderSig && card.querySelector(".viva-card-badge-container") && card.querySelector(".viva-card-footer")) {
+      return; // Apple Dirty-Checking: 0.00ms DOM touch em cartões já processados e sem alteração de estado
+    }
+    card._vivaRenderSig = renderSig;
+
+    let badgeContainer = card.querySelector(".viva-card-badge-container");
+    let cardFooter = card.querySelector(".viva-card-footer");
+
+    // 1. Atualização/Injeção dos Badges
+    if (badgeContainer) {
+      let escalaStrip = card.querySelector(".viva-escala-strip");
+      if (escalaStrip) {
+        const isEscala = (data.adAgeDays !== null && data.adAgeDays >= 3) || item.effectiveDupCount >= 2;
+        const daysText = data.adAgeDays !== null ? `${data.adAgeDays} DIAS ATIVO` : "ATIVO RECENTE";
+        const dupText = `${item.effectiveDupCount}x ANÚNCIOS`;
+        escalaStrip.innerHTML = `
+          ${data.isWhatsApp ? `
+            <span class="viva-escala-chip viva-escala-chip-whatsapp" title="Anúncio direcionado para Funil de WhatsApp">
+              🟢 FUNIL WHATSAPP
+            </span>
+          ` : ''}
+          <span class="viva-escala-chip ${isEscala ? 'viva-escala-chip-hot' : 'viva-escala-chip-normal'}">
+            ${isEscala ? '🔥 ESCALA POTENCIAL' : '⏳ CAMPANHA NORMAL'}
+          </span>
+          <span class="viva-escala-chip viva-escala-chip-sub">⚡ ${dupText}</span>
+          <span class="viva-escala-chip viva-escala-chip-sub">⏳ ${daysText}</span>
+        `;
+      }
+
+      let twinBadge = badgeContainer.querySelector(".viva-twin-badge");
+      if (item.twinCount >= 2) {
+        if (!twinBadge) {
+          twinBadge = document.createElement("span");
+          twinBadge.className = "viva-badge viva-twin-badge";
+          twinBadge.title = "Passe o mouse para acender todos os cards gêmeos na tela";
+          twinBadge.addEventListener("mouseenter", () => {
+            document.querySelectorAll(".viva-processed").forEach(c => {
+              if (c._vivaData && c._vivaData.mediaSig && c._vivaData.mediaSig === data.mediaSig) {
+                c.classList.add("viva-twin-highlighted");
+              }
+            });
+          });
+          twinBadge.addEventListener("mouseleave", () => {
+            document.querySelectorAll(".viva-twin-highlighted").forEach(c => c.classList.remove("viva-twin-highlighted"));
+          });
+          badgeContainer.appendChild(twinBadge);
+        }
+        twinBadge.innerHTML = `🎬 Mesmo Criativo em ${item.twinCount}x Cards`;
+      } else if (twinBadge) {
+        twinBadge.remove();
+      }
+
+      // Extermina qualquer selo legado do WhatsApp na linha 2 caso exista no DOM
+      const legacyWaBadge = badgeContainer.querySelector(".viva-badge-whatsapp");
+      if (legacyWaBadge) legacyWaBadge.remove();
+    } else {
+      card.classList.add("viva-processed");
+      card.classList.add("viva-el");
+      mediaPruningObserver.observe(card);
+
+      // 1. Escala Potencial Modular Apple Banner (32px / 13px Bold)
+      const isEscala = (data.adAgeDays !== null && data.adAgeDays >= 3) || item.effectiveDupCount >= 2;
+      const daysText = data.adAgeDays !== null ? `${data.adAgeDays} DIAS ATIVO` : "ATIVO RECENTE";
+      const dupText = `${item.effectiveDupCount}x ANÚNCIOS`;
+      const escalaStrip = document.createElement("div");
+      escalaStrip.className = "viva-escala-strip viva-el";
+      escalaStrip.innerHTML = `
+        ${data.isWhatsApp ? `
+          <span class="viva-escala-chip viva-escala-chip-whatsapp" title="Anúncio direcionado para Funil de WhatsApp">
+            🟢 FUNIL WHATSAPP
+          </span>
+        ` : ''}
+        <span class="viva-escala-chip ${isEscala ? 'viva-escala-chip-hot' : 'viva-escala-chip-normal'}">
+          ${isEscala ? '🔥 ESCALA POTENCIAL' : '⏳ CAMPANHA NORMAL'}
+        </span>
+        <span class="viva-escala-chip viva-escala-chip-sub">⚡ ${dupText}</span>
+        <span class="viva-escala-chip viva-escala-chip-sub">⏳ ${daysText}</span>
+      `;
+      if (card.children.length > 1) {
+        card.insertBefore(escalaStrip, card.children[1]);
+      } else {
+        card.appendChild(escalaStrip);
+      }
+
+      // 2. Linha 2 do Painel Modular In-Flow (Domínio & Gêmeos) - ZERO flutuante no topo
+      badgeContainer = document.createElement("div");
+      badgeContainer.className = "viva-card-badge-container viva-el";
+
+      if (data.destUrl) {
+        const rootDom = extractCleanDomain(data.destUrl);
+        if (rootDom) {
+          const domBadge = document.createElement("span");
+          domBadge.className = "viva-badge viva-badge-gray viva-domain-badge";
+          domBadge.title = "Clique para acender/apagar todos os cards com este domínio na tela";
+          domBadge.innerHTML = `
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+            ${rootDom} (${item.domainCount}x)
+          `;
+          domBadge.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const isLocked = domBadge.classList.toggle("viva-badge-active-blue");
+            document.querySelectorAll(".viva-processed").forEach(c => {
+              if (c._vivaData && c._vivaData.rootDom && c._vivaData.rootDom === rootDom) {
+                if (isLocked) c.classList.add("viva-domain-locked");
+                else c.classList.remove("viva-domain-locked");
+              }
+            });
+          });
+          badgeContainer.appendChild(domBadge);
+        }
+      }
+
+      if (item.twinCount >= 2) {
+        const twinBadge = document.createElement("span");
+        twinBadge.className = "viva-badge viva-twin-badge";
+        twinBadge.title = "Clique para acender/apagar todos os cards gêmeos de criativo na tela";
+        twinBadge.innerHTML = `🎬 Mesmo Criativo (${item.twinCount}x)`;
+        twinBadge.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const isLocked = twinBadge.classList.toggle("viva-badge-active-indigo");
+          document.querySelectorAll(".viva-processed").forEach(c => {
+            if (c._vivaData && c._vivaData.mediaSig && c._vivaData.mediaSig === data.mediaSig) {
+              if (isLocked) c.classList.add("viva-twin-locked");
+              else c.classList.remove("viva-twin-locked");
+            }
+          });
+        });
+        badgeContainer.appendChild(twinBadge);
+      }
+
+      if (escalaStrip.nextSibling) {
+        card.insertBefore(badgeContainer, escalaStrip.nextSibling);
+      } else {
+        card.appendChild(badgeContainer);
+      }
+    }
+
+    // 2. Injeção do novo rodapé (URL Input + Engrenagem de Ações)
+    if (!cardFooter) {
+      cardFooter = document.createElement("div");
+      cardFooter.className = "viva-card-footer viva-el";
+
+      const inputContainer = document.createElement("div");
+      inputContainer.className = "viva-url-input-container";
+
+      const urlInput = document.createElement("input");
+      urlInput.type = "text";
+      urlInput.className = "viva-url-input viva-el";
+      urlInput.readOnly = true;
+      urlInput.value = data.destUrl ? data.destUrl : "URL não detectada";
+      urlInput.title = data.destUrl ? "Clique para copiar e abrir link no seu IP" : "Nenhum link detectado neste anúncio";
+
+      if (data.destUrl) {
+        urlInput.addEventListener("click", (e) => {
+          e.stopPropagation();
+          navigator.clipboard.writeText(data.destUrl).then(() => {
+            urlInput.classList.add("viva-url-input-copied");
+            const originalVal = urlInput.value;
+            urlInput.value = "Copiado e abrindo! ✓";
+            
+            setTimeout(() => {
+              urlInput.classList.remove("viva-url-input-copied");
+              urlInput.value = originalVal;
+            }, 1200);
+          });
+          window.open(data.destUrl, "_blank");
+        });
+      } else {
+        urlInput.disabled = true;
+        urlInput.style.opacity = "0.5";
+        urlInput.style.cursor = "not-allowed";
+      }
+
+      inputContainer.appendChild(urlInput);
+      cardFooter.appendChild(inputContainer);
+
+      const gearContainer = document.createElement("div");
+      gearContainer.className = "viva-gear-container";
+
+      const gearBtn = document.createElement("button");
+      gearBtn.className = "viva-actions-btn";
+      gearBtn.type = "button";
+      gearBtn.title = "Ações e Ferramentas do Anúncio";
+      gearBtn.innerHTML = `
+        <span>Ações</span>
+        <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" width="15" height="15">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06-.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      `;
+
+      gearBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Fecha todos os outros dropdowns abertos globalmente
+        document.querySelectorAll(".viva-gear-dropdown").forEach(d => d.remove());
+
+        // Se já existia neste botão, apenas fechou e liberou a RAM
+        if (gearContainer.querySelector(".viva-gear-dropdown")) return;
+
+        // Constrói o menu sob demanda na memória RAM (Lazy Rendering - 0ms overhead)
+        const dropdown = document.createElement("div");
+        dropdown.className = "viva-gear-dropdown viva-el viva-active";
+        dropdown.addEventListener("click", (evt) => evt.stopPropagation());
+
+        // 1. Ver Anúncios da Página
+        const itemVerAds = document.createElement("button");
+        itemVerAds.className = "viva-dropdown-item";
+        itemVerAds.innerHTML = `👁️ Ver Anúncios da Página`;
+        itemVerAds.addEventListener("click", (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          dropdown.remove();
+          let resolvedPageId = card.getAttribute("data-viva-page-id") || data.pageId || extractPageId(card);
+          let adArchiveId = extractAdArchiveId(card);
+          let targetUrl;
+
+          if (resolvedPageId) {
+            targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=${encodeURIComponent(resolvedPageId)}`;
+          } else if (adArchiveId) {
+            targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&id=${encodeURIComponent(adArchiveId)}&is_targeted_country=false&media_type=all&search_type=page`;
+          } else if (data.advertiserName) {
+            targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&q=${encodeURIComponent('"' + data.advertiserName + '"')}&search_type=keyword_exact_phrase`;
+          } else {
+            targetUrl = window.location.href;
+          }
+          window.open(targetUrl, "_blank");
+        });
+        dropdown.appendChild(itemVerAds);
+
+        // 2. Salvar no Funil
+        const itemFunnel = document.createElement("button");
+        itemFunnel.className = "viva-dropdown-item";
+        itemFunnel.innerHTML = `🔀 Salvar no Funil`;
+        itemFunnel.addEventListener("click", (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          dropdown.remove();
+          openFunnelModal(data.destUrl || "", data.advertiserName);
+        });
+        dropdown.appendChild(itemFunnel);
+
+        if (data.destUrl) {
+          const itemMobile = document.createElement("button");
+          itemMobile.className = "viva-dropdown-item";
+          itemMobile.innerHTML = `📱 Visualizar Mobile`;
+          itemMobile.addEventListener("click", (evt) => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            dropdown.remove();
+            chrome.runtime.sendMessage({ action: "open_mobile_tab", url: data.destUrl });
+          });
+          dropdown.appendChild(itemMobile);
+
+          const itemProxy = document.createElement("button");
+          itemProxy.className = "viva-dropdown-item";
+          itemProxy.innerHTML = `🇺🇸 Abrir Proxy EUA`;
+          itemProxy.addEventListener("click", (evt) => {
+            evt.stopPropagation();
+            dropdown.remove();
+            window.open(`https://www.proxysite.com/?viva_url=${encodeURIComponent(data.destUrl)}`, "_blank");
+          });
+          dropdown.appendChild(itemProxy);
+        }
+
+        const itemCopy = document.createElement("button");
+        itemCopy.className = "viva-dropdown-item";
+        itemCopy.innerHTML = `📋 Copiar Copies`;
+        itemCopy.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          dropdown.remove();
+          let blocks = [];
+          if (data.primaryText) blocks.push(`TEXTO PRINCIPAL\n${data.primaryText}`);
+          if (data.title) blocks.push(`TÍTULO/HEADLINE\n${data.title}`);
+          if (data.description) blocks.push(`DESCRIÇÃO\n${data.description}`);
+          const copyText = blocks.length > 0 ? blocks.join("\n\n") : "Nenhum texto detectado neste anúncio";
+          navigator.clipboard.writeText(copyText).then(() => alert("Copies copiadas com sucesso!"));
+        });
+        dropdown.appendChild(itemCopy);
+
+        if (data.mediaUrl) {
+          const itemDL = document.createElement("button");
+          itemDL.className = "viva-dropdown-item";
+          itemDL.innerHTML = `📥 Baixar Mídia`;
+          itemDL.addEventListener("click", (evt) => {
+            evt.stopPropagation();
+            dropdown.remove();
+            const isVideo = data.mediaUrl.includes(".mp4") || card.querySelector("video");
+            const ext = isVideo ? "mp4" : "jpg";
+            const filename = `viva_${data.advertiserName.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}.${ext}`;
+            chrome.runtime.sendMessage({ action: "download", url: data.mediaUrl, filename: filename });
+          });
+          dropdown.appendChild(itemDL);
+        }
+
+        gearContainer.appendChild(dropdown);
+      });
+
+      if (!globalDropdownListenerAdded) {
+        globalDropdownListenerAdded = true;
+        document.addEventListener("click", () => {
+          document.querySelectorAll(".viva-gear-dropdown").forEach(d => d.remove());
+        });
+      }
+
+      gearContainer.appendChild(gearBtn);
+      cardFooter.appendChild(gearContainer);
+
+      card.appendChild(cardFooter);
+    }
+  });
+
+    } catch (err) {
+      console.error("[VIVA] Erro no GPU Sync Batch:", err);
+    } finally {
+      isBatching = false;
+      clearTimeout(batchingWatchdogTimeout);
+      lastCycleDurationMs = Math.round((performance.now() - cycleStartTime) * 100) / 100;
+      const healthEl = document.getElementById("viva-engine-health");
+      if (healthEl) {
+        healthEl.innerHTML = `⚡ O(1) · ${lastCycleDurationMs}ms (${activeCardData.length} ads)`;
+      }
+      if (pendingBatchCards) {
+        pendingBatchCards = false;
+        processCards();
+      }
+    }
+  });
+}
+
+function getOfficialMetaTotalResults() {
+  // Soma todas as duplicações nativas da Meta reportadas nos cards processados na tela
+  let totalAdsSum = 0;
+  activeCardData.forEach(item => {
+    totalAdsSum += (item.data.metaAdCount || 1);
+  });
+  return totalAdsSum || activeCardData.length || 1;
+}
+
+function openFunnelModal(landingUrl, advertiserContext) {
+  const existing = document.getElementById("viva-funnel-modal-container");
+  if (existing) existing.remove();
+
+  const activeName = advertiserContext || getPageNameFromHeader() || extractCleanDomain(landingUrl) || "Anunciante";
+  const slug = toSlug(activeName);
+
+  // Lista dinâmica de N etapas do funil (inicia com rótulo vazio)
+  let steps = [
+    { id: 1, tipo: "vsl", rotulo: "", url: landingUrl }
+  ];
+
+  const overlay = document.createElement("div");
+  overlay.id = "viva-funnel-modal-container";
+  overlay.className = "viva-modal-overlay viva-el";
+
+  overlay.innerHTML = `
+    <div class="viva-modal" style="width:520px; max-width:94vw;">
+      <div class="viva-modal-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <h2 class="viva-modal-title" style="margin:0;">Salvar Funil Operacional (Multi-Etapas)</h2>
+          <div style="font-size:12px; color:var(--viva-muted); margin-top:3px;">Anunciante: <strong style="color:var(--viva-text)">${activeName}</strong></div>
+        </div>
+        <span class="viva-funnel-step-badge">${getOfficialMetaTotalResults()} criativos ativos</span>
+      </div>
+      
+      <div class="viva-modal-body" style="padding:16px;">
+        <div id="viva-funnel-steps-container" class="viva-funnel-steps-list"></div>
+        <button type="button" class="viva-funnel-add-btn" id="viva-funnel-add-step">
+          + Adicionar Etapa ao Funil
+        </button>
+      </div>
+
+      <div class="viva-modal-footer">
+        <button class="viva-btn viva-btn-secondary" id="viva-funnel-cancel">Cancelar</button>
+        <button class="viva-btn viva-btn-primary" id="viva-funnel-review">Revisar & Salvar Funil</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const container = overlay.querySelector("#viva-funnel-steps-container");
+
+  function renderSteps() {
+    container.innerHTML = "";
+    steps.forEach((step, index) => {
+      const card = document.createElement("div");
+      card.className = "viva-funnel-step-card";
+      card.innerHTML = `
+        <div class="viva-funnel-step-header">
+          <span class="viva-funnel-step-badge">Etapa #${index + 1}</span>
+          ${steps.length > 1 ? `<button type="button" class="viva-funnel-remove-btn" data-index="${index}">Remover ×</button>` : ''}
+        </div>
+        <div style="display:flex; gap:8px; margin-bottom:10px;">
+          <div style="flex:1;">
+            <label class="viva-label" style="font-size:11px;">Tipo</label>
+            <select class="viva-input step-tipo" style="padding:6px 10px;">
+              <option value="quiz" ${step.tipo === "quiz" ? "selected" : ""}>QUIZ</option>
+              <option value="adv" ${step.tipo === "adv" ? "selected" : ""}>ADV (Advertorial)</option>
+              <option value="vsl" ${step.tipo === "vsl" ? "selected" : ""}>VSL</option>
+              <option value="tsl" ${step.tipo === "tsl" ? "selected" : ""}>TSL</option>
+              <option value="checkout" ${step.tipo === "checkout" ? "selected" : ""}>CHECKOUT</option>
+              <option value="upsell" ${step.tipo === "upsell" ? "selected" : ""}>UPSELL</option>
+              <option value="whatsapp" ${step.tipo === "whatsapp" ? "selected" : ""}>X1 (WhatsApp)</option>
+            </select>
+          </div>
+          <div style="flex:2;">
+            <label class="viva-label" style="font-size:11px;">Rótulo da Etapa</label>
+            <input type="text" class="viva-input step-rotulo" value="${step.rotulo}" placeholder="${step.tipo.toUpperCase()}">
+          </div>
+        </div>
+        <div>
+          <label class="viva-label" style="font-size:11px;">URL da Etapa</label>
+          <input type="text" class="viva-input step-url" value="${step.url}" placeholder="https://...">
+        </div>
+      `;
+
+      card.querySelector(".step-tipo").addEventListener("change", (e) => {
+        step.tipo = e.target.value;
+        const rotuloInput = card.querySelector(".step-rotulo");
+        rotuloInput.placeholder = step.tipo.toUpperCase();
+      });
+      card.querySelector(".step-rotulo").addEventListener("input", (e) => { step.rotulo = e.target.value.trim(); });
+      card.querySelector(".step-url").addEventListener("input", (e) => { step.url = e.target.value.trim(); });
+
+      const rmBtn = card.querySelector(".viva-funnel-remove-btn");
+      if (rmBtn) {
+        rmBtn.addEventListener("click", () => {
+          steps.splice(index, 1);
+          renderSteps();
+        });
+      }
+
+      container.appendChild(card);
+    });
+  }
+
+  renderSteps();
+
+  overlay.querySelector("#viva-funnel-add-step").addEventListener("click", () => {
+    steps.push({
+      id: Date.now(),
+      tipo: "checkout",
+      rotulo: "",
+      url: ""
+    });
+    renderSteps();
+    container.scrollTop = container.scrollHeight;
+  });
+
+  overlay.querySelector("#viva-funnel-cancel").addEventListener("click", () => overlay.remove());
+
+  overlay.querySelector("#viva-funnel-review").addEventListener("click", () => {
+    const validSteps = steps.filter(s => s.url && s.url.length > 5);
+    if (validSteps.length === 0) {
+      alert("Por favor, preencha a URL de pelo menos uma etapa do funil.");
+      return;
+    }
+
+    showFunnelConfirmAppleModal({
+      nome: activeName,
+      slug: slug,
+      totalMetaAds: getOfficialMetaTotalResults(),
+      steps: validSteps
+    }, async (confirmBtn) => {
+      confirmBtn.textContent = "Salvando Anunciante & Funil...";
+      confirmBtn.disabled = true;
+
+      try {
+        // 1º Passo: Auto-Cadastro / Sincronização do Anunciante no /admin
+        const geoInput = document.getElementById("viva-side-geo");
+        const nichoInput = document.getElementById("viva-side-nicho");
+        const saveRes = await fetch(`${API_URL}/api/salvar`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            nome: activeName,
+            url: window.location.href,
+            tipo: window.location.href.includes("view_all_page_id=") ? "pagina" : "dominio",
+            geo: geoInput ? geoInput.value.trim() : "BR",
+            nicho: nichoInput ? nichoInput.value.trim() : "Geral",
+            instagram_url: getInstagramUrlFromHeader() || null,
+            ads_count_inicial: getOfficialMetaTotalResults()
+          })
+        });
+
+        let authoritativeSlug = slug;
+        let authoritativeId = null;
+
+        try {
+          const saveData = await saveRes.json();
+          if (saveData) {
+            if (saveData.slug) authoritativeSlug = saveData.slug;
+            else if (saveData.player && saveData.player.slug) authoritativeSlug = saveData.player.slug;
+            if (saveData.id || saveData._id) authoritativeId = saveData.id || saveData._id;
+            else if (saveData.player && (saveData.player.id || saveData.player._id)) authoritativeId = saveData.player.id || saveData.player._id;
+          }
+        } catch (e) {}
+
+        // Busca no cache atualizado do servidor (GET /api/paginas) para garantir autoridade 100% (seja já monitorado ou recém monitorado)
+        if (typeof fetchMonitoredPages === 'function') {
+          await fetchMonitoredPages();
+        }
+        if (Array.isArray(monitoredPages)) {
+          const matchedPlayer = monitoredPages.find(p => {
+            if (!p) return false;
+            const pNome = (p.nome || "").toLowerCase().trim();
+            const aNome = (activeName || "").toLowerCase().trim();
+            if (pNome && pNome === aNome) return true;
+            if (p.slug && (p.slug === authoritativeSlug || p.slug === slug)) return true;
+            const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
+            if (pageId && p.url && p.url.includes(pageId)) return true;
+            return false;
+          });
+          if (matchedPlayer) {
+            if (matchedPlayer.slug) authoritativeSlug = matchedPlayer.slug;
+            if (matchedPlayer.id || matchedPlayer._id) authoritativeId = matchedPlayer.id || matchedPlayer._id;
+          }
+        }
+
+        // 2º Passo: Salva todas as N etapas do funil vinculadas ao slug/ID autoritativo do servidor
+        let successCount = 0;
+        let lastErrorMsg = "";
+
+        for (let i = 0; i < validSteps.length; i++) {
+          const s = validSteps[i];
+          const nextStep = validSteps[i + 1];
+          const etapaPayload = {
+            slug: authoritativeSlug,
+            tipo: s.tipo,
+            rotulo: (s.rotulo && s.rotulo.trim() !== "") ? s.rotulo.trim() : s.tipo.toUpperCase(),
+            url: s.url,
+            checkout_url: nextStep ? nextStep.url : null
+          };
+          try {
+            const resEtapa = await fetch(`${API_URL}/api/funis/salvar-node`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(etapaPayload)
+            });
+            if (resEtapa.ok) {
+              successCount++;
+            } else {
+              lastErrorMsg = `HTTP ${resEtapa.status}: ${await resEtapa.text()}`;
+              console.error("[VIVA LABS] Erro API ao salvar etapa:", lastErrorMsg);
+            }
+          } catch (netErr) {
+            lastErrorMsg = netErr.message;
+            console.error("[VIVA LABS] Erro de rede na etapa:", netErr);
+          }
+        }
+
+        if (successCount === 0) {
+          alert(`Atenção: Não foi possível salvar as etapas no servidor (/api/funis/salvar-node).\nMotivo: ${lastErrorMsg || "Erro desconhecido na API"}`);
+          confirmBtn.textContent = "Confirmar & Salvar Tudo";
+          confirmBtn.disabled = false;
+          return;
+        }
+
+        confirmBtn.textContent = `✓ ${successCount} Etapa(s) Salvas com Sucesso!`;
+        confirmBtn.style.background = "#34C759";
+
+        setTimeout(() => {
+          const confirmModal = document.getElementById("viva-funnel-confirm-overlay");
+          if (confirmModal) confirmModal.remove();
+          if (overlay) overlay.remove();
+          if (typeof fetchMonitoredPages === 'function') fetchMonitoredPages();
+        }, 1200);
+
+      } catch (err) {
+        alert("Erro na comunicação com a API ao salvar o funil.");
+        confirmBtn.textContent = "Confirmar & Salvar Tudo";
+        confirmBtn.disabled = false;
+      }
+    });
+  });
+}
+
+function showFunnelConfirmAppleModal(info, onConfirm) {
+  let overlay = document.getElementById("viva-funnel-confirm-overlay");
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement("div");
+  overlay.id = "viva-funnel-confirm-overlay";
+  overlay.className = "viva-confirm-overlay viva-el";
+
+  const stepsHtml = info.steps.map((s, idx) => `
+    <div class="viva-funnel-summary-item">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span class="viva-funnel-summary-step-title">#${idx + 1} • [${s.tipo.toUpperCase()}] ${s.rotulo ? s.rotulo : ''}</span>
+      </div>
+      <span class="viva-funnel-summary-step-url">${s.url}</span>
+    </div>
+  `).join("");
+
+  overlay.innerHTML = `
+    <div class="viva-confirm-card" style="width:440px;" onclick="event.stopPropagation()">
+      <div class="viva-confirm-header">
+        <div class="viva-confirm-icon">🔀</div>
+        <div>
+          <div class="viva-confirm-title">Confirmar Funil & Anunciante</div>
+          <div class="viva-confirm-sub">Auto-cadastro da página e injeção de ${info.steps.length} etapa(s)</div>
+        </div>
+      </div>
+      
+      <div class="viva-confirm-body">
+        <div class="viva-confirm-row">
+          <span class="viva-confirm-label">Anunciante Alvo:</span>
+          <span class="viva-confirm-value" title="${info.nome}">${info.nome}</span>
+        </div>
+        <div class="viva-confirm-row">
+          <span class="viva-confirm-label">Criativos Ativos (Meta):</span>
+          <span class="viva-confirm-value" style="color:#007AFF;">${info.totalMetaAds} anúncios ativos</span>
+        </div>
+        <div style="margin-top:10px; font-size:11px; color:var(--viva-muted);">
+          ✓ O anunciante será auto-cadastrado no servidor caso ainda não exista.
+        </div>
+      </div>
+
+      <div style="margin-bottom:18px; max-height:200px; overflow-y:auto;">
+        <div style="font-size:12px; font-weight:700; color:var(--viva-text); margin-bottom:6px;">
+          Resumo do Funil (${info.steps.length} Etapa${info.steps.length > 1 ? 's' : ''}):
+        </div>
+        ${stepsHtml}
+      </div>
+
+      <div class="viva-confirm-actions">
+        <button class="viva-confirm-btn viva-confirm-btn-cancel" id="viva-fmodal-cancel">Voltar</button>
+        <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-fmodal-confirm">Confirmar & Salvar Tudo</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("viva-visible"));
+
+  overlay.querySelector("#viva-fmodal-cancel").addEventListener("click", () => {
+    overlay.classList.remove("viva-visible");
+    setTimeout(() => overlay.remove(), 250);
+  });
+
+  const confirmBtn = overlay.querySelector("#viva-fmodal-confirm");
+  confirmBtn.addEventListener("click", () => {
+    onConfirm(confirmBtn);
+  });
+}
+
+
+function injectSidebar() {
+  if (document.getElementById("viva-sidebar")) return;
+
+  const sidebar = document.createElement("div");
+  sidebar.id = "viva-sidebar";
+  sidebar.className = "viva-sidebar viva-el";
+
+  sidebar.innerHTML = `
+    <div class="viva-sidebar-header">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v3-fix</span></h3>
+        <span class="viva-scale-score viva-score-low" id="viva-sidebar-status">✓ Conectado</span>
+      </div>
+      <button class="viva-sidebar-minimize-btn" id="viva-btn-minimize" title="Minimizar">_</button>
+    </div>
+    <div class="viva-sidebar-content">
+      
+      <!-- Seção 1: Controle & Filtros (Topo) -->
+      <div class="viva-panel-section" style="box-sizing: border-box;">
+        <h4 class="viva-section-title">Controle & Filtros</h4>
+        
+        <div class="viva-form-group" style="margin-bottom:8px">
+          <label class="viva-label" title="Quantidade total de anúncios que o anunciante está rodando (indica volume).">Mínimo de Ads Ativos na Página</label>
+          <input type="number" id="viva-filter-min-page" class="viva-input" value="0" min="0" placeholder="Ex: 50" style="width:100%; box-sizing: border-box;">
+        </div>
+        
+        <div class="viva-form-group" style="margin-bottom:12px">
+          <label class="viva-label" title="Quantidade de vezes que o MESMO criativo se repete (indica agressividade na escala).">Mínimo de Ads Duplicados</label>
+          <input type="number" id="viva-filter-min-dup" class="viva-input" value="0" min="0" placeholder="Ex: 3" style="width:100%; box-sizing: border-box;">
+        </div>
+
+        <button class="viva-btn viva-btn-primary" id="viva-btn-apply-filter" style="width:100%; margin-bottom:12px; font-weight: bold; box-sizing: border-box;">Aplicar Filtros</button>
+
+        <div class="viva-switch-row" style="margin-bottom: 10px;">
+          <span title="Mostra somente anúncios recentes com até 3 dias de veiculação">Anúncios Recentes (≤ 3 dias)</span>
+          <label class="viva-switch">
+            <input type="checkbox" id="viva-toggle-recentes">
+            <span class="viva-slider"></span>
+          </label>
+        </div>
+
+        <div class="viva-switch-row">
+          <span title="Rola a página sozinho até o fim da biblioteca para carregar tudo">Auto-Scroll</span>
+          <label class="viva-switch">
+            <input type="checkbox" id="viva-toggle-scroll">
+            <span class="viva-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="viva-divider"></div>
+
+      <!-- Seção 2: Rastreador (Acordeon) -->
+      <div class="viva-panel-section" style="box-sizing: border-box;">
+        <h4 class="viva-section-title" id="viva-tracker-accordion-btn" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+          Rastrear Competidor
+          <span id="viva-tracker-icon" style="font-size: 10px;">▼</span>
+        </h4>
+        
+        <div id="viva-tracker-content" style="display: none; margin-top: 10px;">
+          <!-- Apple Segmented Control -->
+          <div class="viva-segmented-control">
+            <button id="viva-tab-page" class="viva-segmented-btn active">🏢 Por Página</button>
+            <button id="viva-tab-domain" class="viva-segmented-btn">🌐 Por Domínio/URL</button>
+          </div>
+
+          <!-- Aba 1: Por Página -->
+          <div id="viva-tracker-page-view">
+            <div class="viva-form-group">
+              <label class="viva-label">Página Anunciante</label>
+              <input type="text" id="viva-side-name" class="viva-input" placeholder="Ex: Alevia" style="width:100%; box-sizing: border-box;">
+            </div>
+
+            <div class="viva-form-group" style="margin-bottom:8px">
+              <label class="viva-label">GEO <span style="font-weight:400; color:#86868b">(opcional)</span></label>
+              <input type="text" id="viva-side-geo" class="viva-input" placeholder="Ex: BR, ALL" style="width:100%; box-sizing: border-box;">
+            </div>
+
+            <div class="viva-form-group">
+              <label class="viva-label">Nicho <span style="font-weight:400; color:#86868b">(opcional)</span></label>
+              <input type="text" id="viva-side-nicho" class="viva-input" placeholder="Ex: Encapsulados" style="width:100%; box-sizing: border-box;">
+            </div>
+
+            <div class="viva-form-group" id="viva-group-instagram" style="display:flex; flex-direction:column; margin-bottom: 4px;">
+              <label class="viva-label">Instagram Link <span style="font-weight:400; color:#86868b">(opcional)</span></label>
+              <input type="text" id="viva-side-instagram" class="viva-input" placeholder="Aguardando aba 'Sobre' ou cole link..." style="width:100%; box-sizing: border-box;">
+              <span id="viva-ig-helper" style="display:none; color: #25D366; font-size: 10px; font-weight: bold; margin-top: 4px; padding-left: 2px;"></span>
+            </div>
+
+            <button class="viva-btn viva-btn-primary" id="viva-side-save" style="margin-top:4px; width:100%; box-sizing: border-box;">+ Monitorar Página</button>
+          </div>
+
+          <!-- Aba 2: Por Domínio / URL -->
+          <div id="viva-tracker-domain-view" style="display: none;">
+            <div class="viva-form-group">
+              <label class="viva-label">Domínio / URL do Funil</label>
+              <input type="text" id="viva-side-domain" class="viva-input" placeholder="Ex: alevia.com" style="width:100%; box-sizing: border-box;">
+            </div>
+
+            <div class="viva-form-group" style="margin-bottom:8px">
+              <label class="viva-label">GEO <span style="font-weight:400; color:#86868b">(opcional)</span></label>
+              <input type="text" id="viva-side-domain-geo" class="viva-input" placeholder="Ex: BR, ALL" style="width:100%; box-sizing: border-box;">
+            </div>
+
+            <div class="viva-form-group">
+              <label class="viva-label">Nicho <span style="font-weight:400; color:#86868b">(opcional)</span></label>
+              <input type="text" id="viva-side-domain-nicho" class="viva-input" placeholder="Ex: Encapsulados" style="width:100%; box-sizing: border-box;">
+            </div>
+
+            <div class="viva-form-group" style="display:flex; flex-direction:column; margin-bottom: 4px;">
+              <label class="viva-label">Instagram Link <span style="font-weight:400; color:#86868b">(opcional)</span></label>
+              <input type="text" id="viva-side-domain-instagram" class="viva-input" placeholder="Opcional: @ ou link..." style="width:100%; box-sizing: border-box;">
+            </div>
+
+            <button class="viva-btn viva-btn-primary" id="viva-side-save-domain" style="margin-top:4px; width:100%; box-sizing: border-box;">+ Monitorar Domínio (URL)</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="viva-divider"></div>
+
+      <!-- Seção 3: Ranking e Inteligência de Escala -->
+      <div class="viva-panel-section">
+        <button class="viva-btn viva-btn-red-pro" id="viva-btn-show-ranking" title="Exibe o ranking em tempo real dos maiores anunciantes na tela">
+          🏆 Ver Top Anunciantes
+        </button>
+        <div style="margin-top: 12px; display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--viva-muted); padding-top: 8px; border-top: 1px dashed var(--viva-border);">
+          <span>Motor VIVA:</span>
+          <span id="viva-engine-health" style="font-weight: 600; color: #34C759;" title="Tempo real do último ciclo do processador O(1) e contagem de anúncios no cache">⚡ O(1) · 0.0ms</span>
+        </div>
+      </div>
+
+    </div>
+  `;
+
+  document.body.appendChild(sidebar);
+  setupSidebarInteractions();
+}
+function setupSidebarInteractions() {
+  // 1. Minimize Button
+  const minimizeBtn = document.getElementById("viva-btn-minimize");
+  if (minimizeBtn) {
+    minimizeBtn.addEventListener("click", () => {
+      const sidebar = document.getElementById("viva-sidebar");
+      if (sidebar) sidebar.classList.toggle("viva-minimized");
+    });
+  }
+
+  // Accordion Logic
+  const accBtn = document.getElementById("viva-tracker-accordion-btn");
+  const accContent = document.getElementById("viva-tracker-content");
+  const accIcon = document.getElementById("viva-tracker-icon");
+  if (accBtn && accContent) {
+    accBtn.addEventListener("click", () => {
+      if (accContent.style.display === "none") {
+        accContent.style.display = "block";
+        accIcon.textContent = "▲";
+      } else {
+        accContent.style.display = "none";
+        accIcon.textContent = "▼";
+      }
+    });
+  }
+
+  // Segmented Control Tabs (Por Página vs Por Domínio/URL)
+  const tabPage = document.getElementById("viva-tab-page");
+  const tabDomain = document.getElementById("viva-tab-domain");
+  const pageView = document.getElementById("viva-tracker-page-view");
+  const domainView = document.getElementById("viva-tracker-domain-view");
+
+  if (tabPage && tabDomain && pageView && domainView) {
+    tabPage.addEventListener("click", () => {
+      tabPage.classList.add("active");
+      tabDomain.classList.remove("active");
+      pageView.style.display = "block";
+      domainView.style.display = "none";
+    });
+    tabDomain.addEventListener("click", () => {
+      tabDomain.classList.add("active");
+      tabPage.classList.remove("active");
+      pageView.style.display = "none";
+      domainView.style.display = "block";
+
+      const domainInput = document.getElementById("viva-side-domain");
+      if (domainInput && !domainInput.value) {
+        const detected = detectActiveDomainOrUrl();
+        if (detected) domainInput.value = detected;
+      }
+    });
+  }
+
+  // 2. Initial Data & Dynamic Polling
+  const nameInput = document.getElementById("viva-side-name");
+  const igInput = document.getElementById("viva-side-instagram");
+  const igHelper = document.getElementById("viva-ig-helper");
+  let hasFoundIg = false;
+  let cachedIgUrl = null;
+
+  // Set GEO once
+  const geoInput = document.getElementById("viva-side-geo");
+  if (geoInput) {
+    const params = new URLSearchParams(window.location.search);
+    const countryParam = params.get("country");
+    geoInput.value = countryParam ? countryParam.toUpperCase() : "US";
+  }
+
+  // Dynamic Polling for Page Name and Instagram
+  // FIX: limpa qualquer intervalo órfão de uma injeção anterior do sidebar antes de criar um novo.
+  // Sem isso, cada navegação SPA dentro da Meta Ad Library (troca de GEO/Tipo/palavra-chave)
+  // empilhava um novo setInterval permanente, causando travamento progressivo da página.
+  if (_vivaSidebarIntervalId) clearInterval(_vivaSidebarIntervalId);
+  _vivaSidebarIntervalId = setInterval(() => {
+    if (!vivaMonitorMasterEnabled) return;
+    // Poll Page Name
+    if (nameInput && (!nameInput.value || nameInput.value === "Competidor Meta")) {
+      const pageTitle = getPageNameFromHeader();
+      if (pageTitle && pageTitle.trim() && pageTitle !== "Carregando...") {
+        nameInput.value = pageTitle;
+        checkMonitoredStatus(pageTitle);
+      }
+    }
+
+    // Poll Instagram (Agnóstico, não depende mais de view_all_page_id)
+    if (igInput && !hasFoundIg) {
+      const igUrl = getInstagramUrlFromHeader();
+      if (igUrl && igUrl !== cachedIgUrl) {
+        cachedIgUrl = igUrl;
+        hasFoundIg = true;
+        igInput.value = igUrl;
+        igInput.title = igUrl;
+        igInput.style.cursor = "pointer";
+        igInput.style.opacity = "1";
+        
+        if (igHelper) {
+          igHelper.textContent = "✓ Detectado (clique para copiar e abrir)";
+          igHelper.style.display = "block";
+        }
+        
+        // Remove old listeners to prevent duplicates
+        const newIgInput = igInput.cloneNode(true);
+        igInput.parentNode.replaceChild(newIgInput, igInput);
+        
+        newIgInput.addEventListener("click", (e) => {
+          e.stopPropagation();
+          navigator.clipboard.writeText(igUrl).then(() => {
+            newIgInput.classList.add("viva-url-input-copied");
+            if (igHelper) igHelper.textContent = "✓ Copiado!";
+            setTimeout(() => {
+              newIgInput.classList.remove("viva-url-input-copied");
+              if (igHelper) igHelper.textContent = "✓ Detectado (clique para copiar e abrir)";
+            }, 1200);
+          });
+          window.open(igUrl, "_blank");
+        });
+      }
+    }
+  }, 2000);
+
+  // 4. Dual Filters & Auto-Scroll
+  const minPageInput = document.getElementById("viva-filter-min-page");
+  const minDupInput = document.getElementById("viva-filter-min-dup");
+  const applyBtn = document.getElementById("viva-btn-apply-filter");
+  const scrollToggle = document.getElementById("viva-toggle-scroll");
+
+  if (applyBtn) {
+    applyBtn.addEventListener("click", () => {
+      minPageAds = parseInt(minPageInput.value, 10) || 0;
+      minDupAds = parseInt(minDupInput.value, 10) || 0;
+      
+      // Stop auto-scroll when applying filters
+      isAutoScrollRunning = false; 
+      if (scrollToggle) scrollToggle.checked = false;
+      stopAutoScroll();
+      
+      processCards();
+      
+      applyBtn.textContent = "Aplicado ✓";
+      applyBtn.style.backgroundColor = "var(--viva-success)";
+      setTimeout(() => {
+        applyBtn.textContent = "Aplicar";
+        applyBtn.style.backgroundColor = "var(--viva-accent)";
+      }, 1500);
+    });
+  }
+
+  const recentesToggle = document.getElementById("viva-toggle-recentes");
+  if (recentesToggle) {
+    recentesToggle.addEventListener("change", (e) => {
+      filterOnlyRecent = e.target.checked;
+      processCards();
+    });
+  }
+
+  if (scrollToggle) {
+    scrollToggle.addEventListener("change", (e) => {
+      isAutoScrollRunning = e.target.checked;
+      if (isAutoScrollRunning) {
+        document.querySelectorAll('.viva-flex-override').forEach(el => el.classList.remove('viva-flex-override'));
+        startAutoScroll();
+      } else {
+        stopAutoScroll();
+        processCards(); 
+      }
+    });
+  }
+
+  // 5. Save/Monitor Competitor Page (Apple Pro Confirmation + Success Flow)
+  const saveBtn = document.getElementById("viva-side-save");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", () => {
+      const nome = document.getElementById("viva-side-name") ? document.getElementById("viva-side-name").value.trim() : "";
+      const geo = document.getElementById("viva-side-geo") ? document.getElementById("viva-side-geo").value.trim() : "BR";
+      const nicho = document.getElementById("viva-side-nicho") ? document.getElementById("viva-side-nicho").value.trim() : "Geral";
+      const url = window.location.href;
+      const igInput = document.getElementById("viva-side-instagram");
+      const igUrlToSend = (igInput && igInput.value && !igInput.value.includes("não detectado")) ? igInput.value.trim() : getInstagramUrlFromHeader();
+
+      if (!nome) {
+        alert("Por favor, preencha o campo Nome do Anunciante.");
+        return;
+      }
+
+      const totalMetaAds = getOfficialMetaTotalResults();
+      const cardsRendered = activeCardData.length || 0;
+
+      showAppleConfirmModal({
+        nome,
+        tipo: "Página de Anunciante",
+        geo: geo || "BR",
+        nicho: nicho || "Geral",
+        instagram: igUrlToSend || "Não vinculado",
+        totalMetaAds: totalMetaAds,
+        cardsRendered: cardsRendered
+      }, async () => {
+        saveBtn.textContent = "Salvando...";
+        saveBtn.disabled = true;
+
+        try {
+          const res = await fetch(`${API_URL}/api/salvar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              nome: nome,
+              url: url,
+              tipo: "pagina",
+              geo: geo,
+              nicho: nicho,
+              instagram_url: igUrlToSend || null,
+              ads_count_inicial: totalMetaAds
+            })
+          });
+
+          saveBtn.textContent = "✓ Página Monitorada";
+          saveBtn.style.backgroundColor = "rgba(52, 199, 89, 0.18)";
+          saveBtn.style.color = "#248A3D";
+          saveBtn.disabled = true;
+          showAppleSuccessModal({ nome: nome, tipo: "A Página" });
+          if (typeof fetchMonitoredPages === 'function') await fetchMonitoredPages();
+        } catch (err) {
+          saveBtn.textContent = "✓ Página Monitorada";
+          saveBtn.style.backgroundColor = "rgba(52, 199, 89, 0.18)";
+          saveBtn.style.color = "#248A3D";
+          saveBtn.disabled = true;
+          showAppleSuccessModal({ nome: nome, tipo: "A Página" });
+        }
+      });
+    });
+  }
+
+  // 5.B. Save/Monitor Domain or URL (Apple Pro Confirmation + Success Flow)
+  const saveDomainBtn = document.getElementById("viva-side-save-domain");
+  if (saveDomainBtn) {
+    saveDomainBtn.addEventListener("click", () => {
+      const dominio = document.getElementById("viva-side-domain") ? document.getElementById("viva-side-domain").value.trim() : "";
+      const geo = document.getElementById("viva-side-domain-geo") ? document.getElementById("viva-side-domain-geo").value.trim() : "ALL";
+      const nicho = document.getElementById("viva-side-domain-nicho") ? document.getElementById("viva-side-domain-nicho").value.trim() : "Funil Web";
+      const ig = document.getElementById("viva-side-domain-instagram") ? document.getElementById("viva-side-domain-instagram").value.trim() : "Não vinculado";
+
+      if (!dominio) {
+        alert("Por favor, preencha o campo Domínio / URL do Funil.");
+        return;
+      }
+
+      const totalMetaAds = getOfficialMetaTotalResults();
+      const cardsRendered = activeCardData.length || 0;
+
+      showAppleConfirmModal({
+        nome: dominio,
+        tipo: "Domínio / Funil URL",
+        geo: geo || "ALL",
+        nicho: nicho || "Funil Web",
+        instagram: ig || "Não vinculado",
+        totalMetaAds: totalMetaAds,
+        cardsRendered: cardsRendered
+      }, async () => {
+        saveDomainBtn.textContent = "Salvando...";
+        saveDomainBtn.disabled = true;
+
+        try {
+          await fetch(`${API_URL}/api/salvar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              nome: dominio,
+              url: dominio,
+              tipo: "dominio",
+              geo: geo,
+              nicho: nicho,
+              instagram_url: ig || null,
+              ads_count_inicial: totalMetaAds
+            })
+          });
+        } catch (e) {}
+
+        saveDomainBtn.textContent = "✓ Domínio Monitorado";
+        saveDomainBtn.style.backgroundColor = "rgba(52, 199, 89, 0.18)";
+        saveDomainBtn.style.color = "#248A3D";
+        saveDomainBtn.disabled = true;
+        showAppleSuccessModal({ nome: dominio, tipo: "O Domínio / URL" });
+      });
+    });
+  }
+
+  function showAppleConfirmModal(info, onConfirm) {
+    let overlay = document.getElementById("viva-confirm-overlay");
+    if (overlay) overlay.remove();
+
+    overlay = document.createElement("div");
+    overlay.id = "viva-confirm-overlay";
+    overlay.className = "viva-confirm-overlay viva-el";
+
+    overlay.innerHTML = `
+      <div class="viva-confirm-card" onclick="event.stopPropagation()">
+        <div class="viva-confirm-header">
+          <div class="viva-confirm-icon">📡</div>
+          <div>
+            <div class="viva-confirm-title">Confirmar Monitoramento</div>
+            <div class="viva-confirm-sub">Verifique os dados operacionais identificados</div>
+          </div>
+        </div>
+        <div class="viva-confirm-body">
+          <div class="viva-confirm-row">
+            <span class="viva-confirm-label">Alvo Operacional:</span>
+            <span class="viva-confirm-value" title="${info.nome}">${info.nome}</span>
+          </div>
+          <div class="viva-confirm-row">
+            <span class="viva-confirm-label">Tipo do Cadastro:</span>
+            <span class="viva-confirm-value">${info.tipo}</span>
+          </div>
+          <div class="viva-confirm-row">
+            <span class="viva-confirm-label">GEO • Nicho:</span>
+            <span class="viva-confirm-value">${info.geo} • ${info.nicho}</span>
+          </div>
+          <div class="viva-confirm-row">
+            <span class="viva-confirm-label">Instagram:</span>
+            <span class="viva-confirm-value" title="${info.instagram}">${info.instagram.replace("https://www.", "").replace("https://", "")}</span>
+          </div>
+          <div class="viva-confirm-row">
+            <span class="viva-confirm-label">Total Oficial (Meta):</span>
+            <span class="viva-confirm-value" style="color:#007AFF;">${info.totalMetaAds} anúncios ativos</span>
+          </div>
+          <div class="viva-confirm-row">
+            <span class="viva-confirm-label">Cards Carregados:</span>
+            <span class="viva-confirm-value" style="font-weight:500; color:var(--viva-muted);">${info.cardsRendered} cards na tela</span>
+          </div>
+        </div>
+        <div class="viva-confirm-actions">
+          <button class="viva-confirm-btn viva-confirm-btn-cancel" id="viva-modal-cancel">Cancelar</button>
+          <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-modal-confirm">Confirmar & Salvar</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+    requestAnimationFrame(() => overlay.classList.add("viva-visible"));
+
+    const closeOverlay = () => {
+      overlay.classList.remove("viva-visible");
+      setTimeout(() => overlay.remove(), 250);
+    };
+
+    overlay.addEventListener("click", closeOverlay);
+    overlay.querySelector("#viva-modal-cancel").addEventListener("click", closeOverlay);
+    overlay.querySelector("#viva-modal-confirm").addEventListener("click", () => {
+      closeOverlay();
+      onConfirm();
+    });
+  }
+
+  function showAppleSuccessModal(info) {
+    let overlay = document.getElementById("viva-confirm-overlay");
+    if (overlay) overlay.remove();
+
+    overlay = document.createElement("div");
+    overlay.id = "viva-confirm-overlay";
+    overlay.className = "viva-confirm-overlay viva-el";
+
+    overlay.innerHTML = `
+      <div class="viva-confirm-card" onclick="event.stopPropagation()">
+        <div class="viva-confirm-header" style="justify-content: center; text-align: center; flex-direction: column; gap: 6px;">
+          <div class="viva-success-icon-wrap">✓</div>
+          <div>
+            <div class="viva-confirm-title" style="font-size: 17px; color: #1D1D1F;">Monitoramento Ativado!</div>
+            <div class="viva-confirm-sub">${info.tipo} "<strong>${info.nome}</strong>" foi salvo com sucesso no ecossistema VIVA.</div>
+          </div>
+        </div>
+        <div class="viva-confirm-actions" style="margin-top: 14px;">
+          <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-modal-success-btn" style="width: 100%;">Continuar</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+    requestAnimationFrame(() => overlay.classList.add("viva-visible"));
+
+    const closeOverlay = () => {
+      overlay.classList.remove("viva-visible");
+      setTimeout(() => overlay.remove(), 250);
+    };
+
+    overlay.addEventListener("click", closeOverlay);
+    const btn = overlay.querySelector("#viva-modal-success-btn");
+    if (btn) btn.addEventListener("click", closeOverlay);
+    setTimeout(() => {
+      if (document.getElementById("viva-confirm-overlay")) closeOverlay();
+    }, 3500);
+  }
+
+  function detectActiveDomainOrUrl() {
+    const searchInput = document.querySelector('input[placeholder*="Pesquisar"], input[type="search"]');
+    if (searchInput && searchInput.value && searchInput.value.includes(".")) {
+      return searchInput.value.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+    }
+    if (activeCardData && activeCardData.length > 0) {
+      for (const card of activeCardData) {
+        if (card.destUrl && card.destUrl !== "URL não detectada") {
+          try {
+            const u = new URL(card.destUrl.startsWith("http") ? card.destUrl : "https://" + card.destUrl);
+            return u.hostname.replace(/^www\./i, "");
+          } catch (e) {
+            return card.destUrl;
+          }
+        }
+      }
+    }
+    return "";
+  }
+
+  // 6. Top Anunciantes Ranking Modal (Apple Red Pro Trigger)
+  const rankingBtn = document.getElementById("viva-btn-show-ranking");
+  if (rankingBtn) {
+    rankingBtn.addEventListener("click", () => {
+      showTopAdvertisersModal();
+    });
+  }
+}
+
+function showTopAdvertisersModal() {
+  const existing = document.getElementById("viva-ranking-overlay");
+  if (existing) existing.remove();
+
+  const advMap = {};
+  activeCardData.forEach(item => {
+    const name = item.data.advertiserName || "Desconhecido";
+    if (!advMap[name]) {
+      advMap[name] = {
+        name: name,
+        count: 0,
+        maxDup: item.effectiveDupCount || 1,
+        maxAge: item.data.adAgeDays || 0,
+        hasEscala: false,
+        pageId: item.card.getAttribute("data-viva-page-id") || item.data.pageId || extractPageId(item.card) || null,
+        adArchiveId: extractAdArchiveId(item.card) || null
+      };
+    } else {
+      if (!advMap[name].pageId) {
+        advMap[name].pageId = item.card.getAttribute("data-viva-page-id") || item.data.pageId || extractPageId(item.card) || null;
+      }
+      if (!advMap[name].adArchiveId) {
+        advMap[name].adArchiveId = extractAdArchiveId(item.card) || null;
+      }
+    }
+    advMap[name].count += 1;
+    if (item.effectiveDupCount > advMap[name].maxDup) advMap[name].maxDup = item.effectiveDupCount;
+    if (item.data.adAgeDays > advMap[name].maxAge) advMap[name].maxAge = item.data.adAgeDays;
+    if ((item.data.adAgeDays !== null && item.data.adAgeDays >= 3) || item.effectiveDupCount >= 2) {
+      advMap[name].hasEscala = true;
+    }
+  });
+
+  const advList = Object.values(advMap).sort((a, b) => (b.count * b.maxDup) - (a.count * a.maxDup));
+
+  const overlay = document.createElement("div");
+  overlay.id = "viva-ranking-overlay";
+  overlay.className = "viva-confirm-overlay viva-el";
+
+  let listHtml = "";
+  if (advList.length === 0) {
+    listHtml = `<div style="text-align: center; padding: 24px; color: var(--viva-muted); font-size: 13px;">Nenhum anunciante detectado na tela ainda. Role a página para carregar anúncios.</div>`;
+  } else {
+    advList.slice(0, 15).forEach((adv, index) => {
+      let targetUrl;
+      if (adv.pageId) {
+        targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=${encodeURIComponent(adv.pageId)}`;
+      } else if (adv.adArchiveId) {
+        targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&id=${encodeURIComponent(adv.adArchiveId)}&is_targeted_country=false&media_type=all&search_type=page`;
+      } else {
+        targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&q=${encodeURIComponent('"' + adv.name + '"')}&search_type=keyword_exact_phrase`;
+      }
+
+      const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `#${index + 1}`;
+      const badgeClass = adv.hasEscala ? "viva-escala-chip-hot" : "viva-escala-chip-normal";
+      const badgeText = adv.hasEscala ? "🔥 EM ESCALA" : "⏳ NORMAL";
+      listHtml += `
+        <div class="viva-ranking-item" title="Clique para abrir a Biblioteca deste anunciante em nova aba" onclick="window.open('${targetUrl.replace(/'/g, "\\'")}', '_blank');" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--viva-border); border-radius: 10px; margin-bottom: 6px; background: rgba(255,255,255,0.6); transition: all 0.2s;">
+          <div style="display: flex; align-items: center; gap: 12px; max-width: 65%;">
+            <span style="font-size: 16px; font-weight: 700; width: 28px; text-align: center; color: var(--viva-text);">${medal}</span>
+            <div style="display: flex; flex-direction: column; overflow: hidden;">
+              <span style="font-weight: 600; font-size: 13.5px; color: var(--viva-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 5px;">
+                ${adv.name} <span style="font-size: 11px; color: var(--viva-accent); font-weight: 700;">↗</span>
+              </span>
+              <span style="font-size: 11px; color: var(--viva-muted);">Ativo no DOM: ${adv.count} cards • Pico de Variações: ${adv.maxDup}x</span>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="viva-escala-chip ${badgeClass}" style="font-size: 10px; padding: 3px 8px;">${badgeText}</span>
+          </div>
+        </div>
+      `;
+    });
+  }
+
+  overlay.innerHTML = `
+    <div class="viva-confirm-card" style="width: 520px; max-height: 82vh; display: flex; flex-direction: column; padding: 24px;" onclick="event.stopPropagation()">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid var(--viva-border); padding-bottom: 14px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 22px;">🏆</span>
+          <div>
+            <div class="viva-confirm-title" style="font-size: 18px; margin: 0;">Top Anunciantes na Tela</div>
+            <div class="viva-confirm-sub" style="font-size: 12px; margin: 2px 0 0 0;">Ranking em tempo real baseado no volume de escala e variações ativas.</div>
+          </div>
+        </div>
+        <button id="viva-ranking-close" style="background: none; border: none; font-size: 20px; cursor: pointer; color: var(--viva-muted); padding: 4px;">✕</button>
+      </div>
+      <div style="overflow-y: auto; flex: 1; padding-right: 4px; max-height: 52vh;">
+        ${listHtml}
+      </div>
+      <div style="margin-top: 18px; pt-3; border-top: 1px solid var(--viva-border); display: flex; justify-content: flex-end;">
+        <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-ranking-btn-ok" style="width: 100%; background: linear-gradient(135deg, #FF3B30 0%, #D70015 100%); border: none; box-shadow: 0 4px 12px rgba(215, 0, 21, 0.28);">Fechar Ranking</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("viva-visible"));
+
+  const closeOverlay = () => {
+    overlay.classList.remove("viva-visible");
+    setTimeout(() => overlay.remove(), 250);
   };
-  console.log(`[LOTE] ===== iniciado — ${itens.length} itens =====`);
 
-  let browser;
-  try {
-    browser = await chromium.launch({
-      executablePath: getChromiumPath(),
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
-    });
-    const context = await browser.newContext({
-      locale: "pt-BR",
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      extraHTTPHeaders: { "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8" },
-    });
+  overlay.addEventListener("click", closeOverlay);
+  const closeBtn = overlay.querySelector("#viva-ranking-close");
+  const okBtn = overlay.querySelector("#viva-ranking-btn-ok");
+  if (closeBtn) closeBtn.addEventListener("click", closeOverlay);
+  if (okBtn) okBtn.addEventListener("click", closeOverlay);
+}
 
-    for (const item of itens) {
-      loteStatus.atual = item.nome;
-      const slug = toSlug(item.nome);
-      if (!slug) {
-        loteStatus.erros.push(`"${item.nome}" — nome inválido, ignorado`);
-        loteStatus.concluidos++;
+function startAutoScroll() {
+  if (autoScrollTimer) clearInterval(autoScrollTimer);
+  console.log("[VIVA] Auto-scroll iniciado.");
+  
+  autoScrollTimer = setInterval(() => {
+    if (!isAutoScrollRunning) return;
+    const loadMoreBtns = Array.from(document.querySelectorAll("div[role='button']")).filter(b => b.textContent.includes("Carregar") || b.textContent.includes("Ver mais") || b.textContent.includes("Load more"));
+    if (loadMoreBtns.length > 0) loadMoreBtns[0].click();
+    window.scrollBy({ top: 1500, behavior: "smooth" });
+  }, 4000);
+}
+
+function stopAutoScroll() {
+  if (autoScrollTimer) {
+    clearInterval(autoScrollTimer);
+    autoScrollTimer = null;
+  }
+  isAutoScrollRunning = false;
+  console.log("[VIVA] Auto-scroll pausado.");
+}
+// Checa em tempo real se o player ou domínio da aba já está cadastrado
+function checkMonitoredStatus(pageName) {
+  const saveBtn = document.getElementById("viva-side-save");
+  if (!saveBtn || !pageName || pageName === "Carregando...") return;
+
+  const currentUrl = window.location.href;
+  const isDomain = !currentUrl.includes("view_all_page_id=");
+  
+  let isMonitored = false;
+  if (isDomain) {
+    const rootDom = getRootDomain(currentUrl);
+    if (rootDom) {
+      isMonitored = monitoredPages.some(p => p.tipo === "dominio" && p.url.toLowerCase().includes(rootDom.toLowerCase()));
+    }
+  } else {
+    const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
+    if (pageId) {
+      isMonitored = monitoredPages.some(p => p.url.includes(pageId));
+    }
+  }
+
+  if (isMonitored) {
+    saveBtn.textContent = "✓ Monitorado";
+    saveBtn.style.backgroundColor = "rgba(142, 142, 147, 0.16)";
+    saveBtn.style.color = "var(--viva-text)";
+    saveBtn.disabled = true;
+  } else {
+    saveBtn.textContent = "Monitorar no VIVA Labs";
+    saveBtn.style.backgroundColor = "var(--viva-accent)";
+    saveBtn.style.color = "#fff";
+    saveBtn.disabled = false;
+  }
+}
+
+
+
+function injectScrollTopBtn() {
+  if (document.getElementById("viva-scroll-btn")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "viva-scroll-btn";
+  btn.className = "viva-scroll-top-btn viva-el";
+  btn.innerHTML = `
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+      <polyline points="18 15 12 9 6 15"></polyline>
+    </svg>
+  `;
+
+  btn.addEventListener("click", () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+
+  document.body.appendChild(btn);
+
+  // FIX: registra o listener de scroll UMA ÚNICA VEZ (guardado em variável de módulo).
+  // Antes, cada re-injeção do botão (a cada navegação SPA na Meta) adicionava um novo
+  // listener anônimo que nunca era removido, acumulando handlers de scroll para sempre.
+  if (!_vivaScrollTopHandler) {
+    _vivaScrollTopHandler = () => {
+      const currentBtn = document.getElementById("viva-scroll-btn");
+      if (!currentBtn) return;
+      if (window.scrollY > 400) {
+        currentBtn.classList.add("viva-visible");
+      } else {
+        currentBtn.classList.remove("viva-visible");
+      }
+    };
+    window.addEventListener("scroll", _vivaScrollTopHandler, { passive: true });
+  }
+}
+
+// Helper: Debounce para evitar sobrecarga de funções de renderização síncronas
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+}
+
+// ─── Inicialização ──────────────────────────────────────────────────────────
+
+// FIX 4.2: fullTeardown distingue os dois usos desta função:
+//   - fullTeardown=false (padrão) → "reset leve", usado na navegação SPA dentro da Ad Library
+//     (troca de URL). Só limpa DOM/cache; o MutationObserver principal, o polling de URL e o
+//     scroll handler PRECISAM continuar vivos, senão a extensão para de detectar a própria
+//     navegação seguinte e morre depois da primeira troca de página.
+//   - fullTeardown=true → desligamento real via toggle do popup. Aí sim desconecta de fato o
+//     observer, limpa o polling de URL e remove o scroll handler (ver ensureVivaBackgroundServicesRunning
+//     para a reconexão quando o toggle é ligado de novo).
+function teardownVivaMonitor(fullTeardown = false) {
+  // FIX: para de vez o intervalo de polling de nome/Instagram. Antes esta função só
+  // removia elementos do DOM, mas nunca parava o setInterval — por isso o toggle
+  // "desligar" no popup não interrompia o processamento em segundo plano.
+  if (_vivaSidebarIntervalId) {
+    clearInterval(_vivaSidebarIntervalId);
+    _vivaSidebarIntervalId = null;
+  }
+  if (fullTeardown) {
+    // Antes essas 3 variáveis (_vivaMainObserver, _vivaUrlIntervalId, _vivaScrollHandler) eram
+    // declaradas na seção de lifecycle mas nunca recebiam valor — o observer, o polling de URL
+    // e o listener de scroll continuavam vivos e consumindo ciclo mesmo com o toggle "desligado"
+    // no popup (o vivaMonitorMasterEnabled só fazia o callback virar no-op, sem cortar o
+    // trabalho na raiz).
+    if (_vivaMainObserver) {
+      try { _vivaMainObserver.disconnect(); } catch (e) {}
+    }
+    if (_vivaUrlIntervalId) {
+      clearInterval(_vivaUrlIntervalId);
+      _vivaUrlIntervalId = null;
+    }
+    if (_vivaScrollHandler) {
+      window.removeEventListener("scroll", _vivaScrollHandler);
+    }
+  }
+  const panel = document.getElementById("viva-sidebar");
+  if (panel) panel.remove();
+  const modal = document.getElementById("viva-funnel-modal-overlay");
+  if (modal) modal.remove();
+  const confirmModal = document.getElementById("viva-funnel-confirm-overlay");
+  if (confirmModal) confirmModal.remove();
+  const topBtn = document.getElementById("viva-scroll-btn");
+  if (topBtn) topBtn.remove();
+
+  // Remove injected footers, strips, dropdowns and badges from all cards
+  document.querySelectorAll(".viva-card-footer, .viva-scale-badge, .viva-el, .viva-escala-strip, .viva-card-badge-container, .viva-gear-dropdown").forEach(el => el.remove());
+  document.querySelectorAll("[data-viva-processed], [data-viva-id], .viva-processed").forEach(el => {
+    el.removeAttribute("data-viva-processed");
+    el.removeAttribute("data-viva-id");
+    try { mediaPruningObserver.unobserve(el); } catch(e) {}
+    el.classList.remove("viva-processed", "viva-border-level-1", "viva-border-level-2", "viva-border-level-3", "viva-border-escala");
+  });
+  activeCardData = [];
+  cardSignatures = {};
+}
+
+function injectMediaPreconnects() {
+  const cdns = [
+    "https://scontent.fcnf.fbcdn.net",
+    "https://video.fcnf.fbcdn.net",
+    "https://connect.facebook.net"
+  ];
+  cdns.forEach(domain => {
+    if (!document.head.querySelector(`link[href="${domain}"]`)) {
+      const link = document.createElement("link");
+      link.rel = "preconnect";
+      link.href = domain;
+      link.crossOrigin = "anonymous";
+      document.head.appendChild(link);
+    }
+  });
+  if (!document.head.querySelector(`link[rel="dns-prefetch"][href="//fbcdn.net"]`)) {
+    const dns = document.createElement("link");
+    dns.rel = "dns-prefetch";
+    dns.href = "//fbcdn.net";
+    document.head.appendChild(dns);
+  }
+}
+
+async function init() {
+  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v4 (2026-07-30)");
+  // FIX 4.1: loadLocalApiUrl() é só storage local (instantâneo). fetchMonitoredPages() é
+  // deliberadamente NÃO aguardado (fire-and-forget) — roda em paralelo com timeout próprio e
+  // nunca atrasa a sidebar, o observer ou o processamento de cards.
+  await loadLocalApiUrl();
+  fetchMonitoredPages();
+
+  chrome.storage.local.get(["viva_monitor_enabled"], (res) => {
+    vivaMonitorMasterEnabled = res.viva_monitor_enabled !== false;
+    // FIX: propaga o estado do toggle para o mundo MAIN via atributo no <html>.
+    // react_sniffer.js roda isolado no mundo MAIN e não tem acesso a chrome.storage —
+    // sem essa ponte, ele nunca soube que existe um "desligar" e rodava para sempre.
+    document.documentElement.dataset.vivaEnabled = vivaMonitorMasterEnabled ? "true" : "false";
+    if (!vivaMonitorMasterEnabled) {
+      console.log("[VIVA] Extensão desativada via toggle.");
+      teardownVivaMonitor(true);
+      return;
+    }
+    injectMediaPreconnects();
+    setTimeout(() => {
+      injectSidebar();
+      injectScrollTopBtn();
+      processCards();
+    }, 1500);
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.viva_monitor_enabled !== undefined) {
+      vivaMonitorMasterEnabled = changes.viva_monitor_enabled.newValue !== false;
+      // FIX: mesma ponte, agora também na troca ao vivo do toggle (sem precisar recarregar a página).
+      document.documentElement.dataset.vivaEnabled = vivaMonitorMasterEnabled ? "true" : "false";
+      if (!vivaMonitorMasterEnabled) {
+        teardownVivaMonitor(true);
+      } else {
+        // FIX 4.2: como o toggle "desligar" agora realmente desconecta o observer principal,
+        // limpa o polling de URL e remove o scroll handler (fullTeardown=true acima), religar
+        // precisa reconectá-los — antes isso não era necessário porque nada era desconectado.
+        ensureVivaBackgroundServicesRunning();
+        injectMediaPreconnects();
+        injectSidebar();
+        injectScrollTopBtn();
+        processCards();
+      }
+    }
+  });
+
+  // Executa processamento otimizado síncrono com base em eventos
+  // FIX: guarda o handler na variável de lifecycle já existente (_vivaScrollHandler) — antes
+  // ela era declarada mas nunca usada, então o teardown não tinha como remover este listener.
+  const debouncedProcess = debounce(processCards, 300);
+  _vivaScrollHandler = debouncedProcess;
+  window.addEventListener("scroll", _vivaScrollHandler);
+
+  // ─── Indexação única dos containers de busca da Meta (O(1) Memory Set) ──────────────────────
+  const VIVA_SEARCH_ROOTS = new WeakSet();
+
+  function indexSearchContainers() {
+    const searchSelectors = [
+      "input[type='text']",
+      "input[type='search']",
+      "[role='combobox']",
+      "[role='listbox']",
+      "header",
+      "#viva-sidebar"
+    ];
+    document.querySelectorAll(searchSelectors.join(",")).forEach(el => {
+      let node = el;
+      for (let i = 0; i < 8 && node; i++) {
+        VIVA_SEARCH_ROOTS.add(node);
+        node = node.parentElement;
+      }
+    });
+  }
+  indexSearchContainers();
+
+  const headerEl = document.querySelector("header");
+  if (headerEl) {
+    new MutationObserver(() => indexSearchContainers()).observe(headerEl, { childList: true, subtree: false });
+  }
+
+  // Observa novos elementos adicionados no DOM para processamento imediato (sem intervalo de pooling desnecessário)
+  // Observa novos elementos no DOM ignorando completamente players de vídeo, controles, tooltips e modais em O(1)
+  const observer = new MutationObserver((mutations) => {
+    if (!vivaMonitorMasterEnabled) return;
+    // FIX #1: enquanto o usuário digita/interage com GEO, Tipo de Anúncio ou a busca por
+    // palavra-chave da própria Meta, pula todo o processamento pesado desta leva de mutações.
+    if (isInteractingWithNativeControl) return;
+    let hasNewCard = false;
+    for (const mutation of mutations) {
+      const t = mutation.target;
+      if (!t) continue;
+
+      // Verificação O(1) in-memory de WeakSet — sem traversal de árvore C++ em cada keypress!
+      if (
+        t.nodeName === "INPUT" ||
+        t.nodeName === "FORM" ||
+        t.nodeName === "VIDEO" ||
+        VIVA_SEARCH_ROOTS.has(t)
+      ) continue;
+
+      // ─── Zero-Lag Apple Shield: Ignora em 0.00ms qualquer mutação dentro de cartões já processados ───
+      if (t.closest && (t.closest(".viva-processed") || t.closest("[data-viva-id]"))) {
         continue;
       }
-      try {
-        await query(
-          `INSERT INTO pages (slug, nome, url, tipo, instagram_url)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (slug) DO UPDATE SET nome=$2, url=$3, tipo=$4,
-             instagram_url = COALESCE(EXCLUDED.instagram_url, pages.instagram_url)`,
-          [slug, item.nome, item.url, item.tipo, item.instagram_url || null]
-        );
-        await captureInicialWithContext(context, slug, item.url);
-        console.log(`[LOTE] slug=${slug} cadastrado e capturado (${loteStatus.concluidos + 1}/${itens.length})`);
-      } catch (err) {
-        console.error(`[LOTE] erro no item slug=${slug}: ${err.message}`);
-        loteStatus.erros.push(`"${item.nome}" — erro: ${err.message}`);
+
+      if (typeof t.className === "string" && (t.className.includes("video") || t.className.includes("search"))) {
+        continue;
       }
-      loteStatus.concluidos++;
+
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType === 1) {
+          if (VIVA_SEARCH_ROOTS.has(node) || (node.closest && (node.closest("header") || node.closest("form") || node.closest("[role='combobox']") || node.closest("[role='listbox']") || node.closest("[role='dialog']") || node.closest("#viva-sidebar") || node.closest(".viva-processed") || node.closest("[data-viva-id]")))) {
+            continue;
+          }
+
+          // Zero-Lag & Instant Media: Aplica decoding="async" na GPU instantaneamente
+          if (node.nodeName === "IMG" && !node.getAttribute("decoding")) {
+            node.setAttribute("decoding", "async");
+          } else if (node.querySelectorAll) {
+            node.querySelectorAll("img").forEach(img => {
+              if (!img.getAttribute("decoding")) img.setAttribute("decoding", "async");
+            });
+          }
+
+          if (node.nodeName === "DIV" || node.nodeName === "SECTION") {
+            const txt = node.textContent || "";
+            if (txt.includes("Patrocinado") || txt.includes("Sponsored") || /^(Ver detalhes do anúncio|View ad details|Ver resumo|View summary|Ver detalhes|View details)$/i.test(txt.trim()) || node.querySelector("img, video")) {
+              if (node.querySelector("button, a, [role='button']")) {
+                hasNewCard = true;
+                pendingScanRoots.push(node);
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (hasNewCard) break;
     }
-  } catch (err) {
-    console.error(`[LOTE] erro fatal: ${err.message}`);
-    loteStatus.erros.push(`Erro fatal: ${err.message}`);
-  } finally {
-    if (browser) await browser.close();
-    isRunning = false;
-    loteStatus.emAndamento = false;
-    loteStatus.atual = null;
-    loteStatus.finalizadoEm = new Date().toISOString();
-    console.log(`[LOTE] ===== finalizado — ${loteStatus.concluidos}/${loteStatus.total} processados, ${loteStatus.erros.length} erros =====`);
+    if (hasNewCard) {
+      debouncedProcess();
+    }
+  });
+  // FIX: guarda a referência na variável de lifecycle já existente (_vivaMainObserver) — antes
+  // ela era declarada mas nunca usada, então o toggle "desligar" não conseguia de fato
+  // desconectar este observer (só devolvia no-op via vivaMonitorMasterEnabled dentro do
+  // callback, mas o observer continuava recebendo e descartando mutações à toa).
+  _vivaMainObserver = observer;
+  const initialObserverRoot = getObserverRoot();
+  _vivaMainObserver.observe(initialObserverRoot, { childList: true, subtree: true });
+
+  if (initialObserverRoot === document.body) {
+    // FIX 4.2: se div[role="main"] ainda não existia no momento do init() (carregamento muito
+    // cedo), tenta reescopar assim que ela aparecer, em vez de ficar preso observando
+    // document.body inteiro pelo resto da sessão.
+    let upgradeAttempts = 0;
+    const upgradeInterval = setInterval(() => {
+      upgradeAttempts++;
+      const realRoot = document.querySelector('div[role="main"]');
+      if (realRoot) {
+        clearInterval(upgradeInterval);
+        try { _vivaMainObserver.disconnect(); } catch (e) {}
+        _vivaMainObserver.observe(realRoot, { childList: true, subtree: true });
+        console.log("[VIVA] Observer reescopado para div[role='main'] (era document.body no boot).");
+      } else if (upgradeAttempts > 20) {
+        clearInterval(upgradeInterval);
+      }
+    }, 500);
   }
+
+  // Loop secundário de polling apenas para mudança de URL de navegação interna SPA da Meta
+  // FIX: guarda o ID na variável de lifecycle já existente (_vivaUrlIntervalId) — antes ela
+  // era declarada mas nunca usada, então este polling nunca era interrompido pelo teardown.
+  // A lógica em si mora em checkUrlChangeTick() (função de módulo) para poder ser recriada por
+  // ensureVivaBackgroundServicesRunning() quando o toggle é religado após um fullTeardown.
+  _vivaUrlIntervalId = setInterval(checkUrlChangeTick, 2000);
 }
 
-function resolveSlot(trigger) {
-  switch (trigger) {
-    case "cron-03h": return 3;
-    case "cron-12h": return 12;
-    case "cron-22h": return 22;
-    default: return null;
-  }
-}
+// FIX 4.2: extraída de dentro de init() para escopo de módulo — precisa ser reutilizável tanto
+// na primeira criação do polling (init) quanto na recriação após religar o toggle
+// (ensureVivaBackgroundServicesRunning), sem duplicar a lógica em dois lugares.
+function checkUrlChangeTick() {
+  if (!vivaMonitorMasterEnabled) return;
+  if (window.location.href !== lastUrl) {
+    lastUrl = window.location.href;
+    console.log("[VIVA] URL mudou, limpando cache local e reiniciando...");
+    // FIX 4.2: reset LEVE (fullTeardown padrão false) — navegação SPA dentro da própria Ad
+    // Library não pode desconectar o observer/interval/scroll, senão a extensão para de
+    // detectar novas trocas de URL depois da primeira e "morre" pelo resto da sessão.
+    teardownVivaMonitor();
+    cachedContingencyChecked = false;
+    cachedContingencyStatus = null;
 
-async function mirrorToSheet(rows) {
-  const url = process.env.SHEET_WEBHOOK_URL;
-  if (!url) return;
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ collected_at: new Date().toISOString(), rows }),
-    });
-    console.log("[SHEET] mirrored to backup webhook");
-  } catch (err) {
-    console.error(`[SHEET] mirror failed: ${err.message}`);
-  }
-}
+    setTimeout(() => {
+      injectSidebar();
+      injectScrollTopBtn();
+      const pageTitle = getPageNameFromHeader();
+      const nameInput = document.getElementById("viva-side-name");
+      if (nameInput) nameInput.value = pageTitle;
+      checkMonitoredStatus(pageTitle);
 
-let isRunning = false;
-
-let loteStatus = {
-  emAndamento: false,
-  total: 0,
-  concluidos: 0,
-  atual: null,
-  erros: [],
-  iniciadoEm: null,
-  finalizadoEm: null,
-};
-
-// Parser de lote — aceita 3 formatos:
-//   Nome | URL
-//   tipo | Nome | URL
-//   Nome | URL | https://instagram.com/...   (Instagram no final — opcional)
-//   tipo | Nome | URL | https://instagram.com/...
-function parseLoteInput(texto) {
-  const linhas = texto.split("\n").map((l) => l.trim()).filter(Boolean);
-  const itens = [];
-  for (const linha of linhas) {
-    const partes = linha.split("|").map((s) => s.trim()).filter(Boolean);
-    let nome, url, tipoForcado = null, instagram_url = null;
-
-    if (partes.length >= 2) {
-      const possivelTipo = partes[0].toLowerCase();
-      if (possivelTipo === "dominio" || possivelTipo === "pagina") {
-        // tipo | Nome | URL [| Instagram]
-        tipoForcado = possivelTipo;
-        nome = partes[1];
-        // Verifica se o último campo é uma URL do Instagram
-        const ultimo = partes[partes.length - 1];
-        if (partes.length >= 4 && (ultimo.includes("instagram.com") || ultimo.startsWith("https://www.instagram"))) {
-          instagram_url = ultimo;
-          url = partes.slice(2, partes.length - 1).join("|");
+      // Atualiza dinamicamente a exibição do campo do Instagram no painel lateral
+      const isPage = window.location.href.includes("view_all_page_id=");
+      const igGroup = document.getElementById("viva-group-instagram");
+      const igInput = document.getElementById("viva-side-instagram");
+      if (igGroup) {
+        if (isPage) {
+          igGroup.style.display = "flex";
+          if (igInput) {
+            const detectedIg = getInstagramUrlFromHeader();
+            igInput.value = detectedIg ? detectedIg : "Instagram não detectado";
+            if (detectedIg) {
+              igInput.style.opacity = "1";
+              igInput.style.cursor = "pointer";
+            } else {
+              igInput.style.opacity = "0.5";
+              igInput.style.cursor = "not-allowed";
+            }
+          }
         } else {
-          url = partes.slice(2).join("|");
-        }
-      } else {
-        // Nome | URL [| Instagram]
-        nome = partes[0];
-        const ultimo = partes[partes.length - 1];
-        if (partes.length >= 3 && (ultimo.includes("instagram.com") || ultimo.startsWith("https://www.instagram"))) {
-          instagram_url = ultimo;
-          url = partes.slice(1, partes.length - 1).join("|");
-        } else {
-          url = partes.slice(1).join("|");
+          igGroup.style.display = "none";
         }
       }
-    } else {
-      continue; // linha sem "|" ou vazia — ignora
-    }
-
-    if (!nome || !url) continue;
-    const tipo = tipoForcado || (url.includes("view_all_page_id=") ? "pagina" : "dominio");
-    itens.push({ nome, url, tipo, instagram_url });
-  }
-  return itens;
-}
-
-async function runAllScrapes(trigger = "cron") {
-  if (isRunning) {
-    console.warn(`[RUN] skipped (${trigger}) — already running`);
-    return { skipped: true };
-  }
-  isRunning = true;
-  const startedAt = new Date();
-  console.log(`[RUN] ===== started (${trigger}) at ${startedAt.toISOString()} =====`);
-
-  const { rows: pages } = await query("SELECT slug, nome, url FROM pages");
-  if (!pages.length) {
-    console.log("[RUN] no pages registered");
-    isRunning = false;
-    return { pages: 0 };
-  }
-
-  let browser;
-  const results = [];
-  try {
-    browser = await chromium.launch({
-      executablePath: getChromiumPath(),
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
-    });
-    const context = await browser.newContext({
-      locale: "pt-BR",
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      extraHTTPHeaders: { "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8" },
-    });
-    for (const p of pages) {
-      let count = null;
-      for (let attempt = 1; attempt <= 2 && count === null; attempt++) {
-        try {
-          count = await scrapeWithContext(context, p.url);
-        } catch (err) {
-          console.error(`[RUN] slug=${p.slug} attempt=${attempt} error: ${err.message}`);
-        }
-      }
-      const final = count ?? 0;
-
-      if (trigger.startsWith("cron")) {
-        const slot = resolveSlot(trigger);
-        await saveCount(p.slug, final, slot);
-      } else {
-        await query(
-          `INSERT INTO scrape_latest (slug, ads_count, collected_at)
-           VALUES ($1, $2, NOW())
-           ON CONFLICT (slug) DO UPDATE
-             SET ads_count    = EXCLUDED.ads_count,
-                 collected_at = EXCLUDED.collected_at`,
-          [p.slug, final]
-        );
-        console.log(`[LATEST] slug=${p.slug} count=${final} (manual — histórico preservado)`);
-      }
-
-      results.push({ slug: p.slug, nome: p.nome, count: final });
-    }
-  } catch (err) {
-    console.error(`[RUN] fatal error: ${err.message}`);
-  } finally {
-    if (browser) await browser.close();
-    isRunning = false;
-  }
-
-  await mirrorToSheet(results);
-  const secs = Math.round((Date.now() - startedAt.getTime()) / 1000);
-  console.log(`[RUN] ===== finished (${trigger}) — ${results.length} pages in ${secs}s =====`);
-  return { pages: results.length, durationSec: secs, results };
-}
-
-// ─── Routes ──────────────────────────────────────────────────────────────────
-
-app.get("/api/healthz", (_req, res) => res.json({ status: "ok", ts: new Date().toISOString() }));
-
-app.post("/api/salvar", async (req, res) => {
-  const { nome, url, tipo, instagram_url, geo, nicho, funil, ads_count_inicial } = req.body;
-  if (!nome || !url) return res.status(400).json({ error: "Fields 'nome' and 'url' are required." });
-  const slug = toSlug(nome);
-  if (!slug) return res.status(400).json({ error: "Could not generate a valid slug." });
-  const tipoFinal = tipo === "dominio" ? "dominio" : "pagina";
-  await query(
-    `INSERT INTO pages (slug, nome, url, tipo, instagram_url, geo, nicho, funil)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (slug) DO UPDATE
-       SET nome=$2, url=$3, tipo=$4,
-           instagram_url=COALESCE(EXCLUDED.instagram_url, pages.instagram_url),
-           geo=COALESCE(EXCLUDED.geo, pages.geo),
-           nicho=COALESCE(EXCLUDED.nicho, pages.nicho),
-           funil=COALESCE(EXCLUDED.funil, pages.funil)`,
-    [slug, nome, url, tipoFinal, instagram_url || null, geo || null, nicho || null, funil || null]
-  );
-  console.log(`[SALVAR] registered slug=${slug} tipo=${tipoFinal}`);
-
-  let inicial = ads_count_inicial;
-  if (inicial !== undefined && inicial !== null) {
-    const countNum = parseInt(inicial, 10) || 0;
-    await query(
-      `UPDATE pages SET inicial_count = COALESCE(inicial_count, $2) WHERE slug = $1`,
-      [slug, countNum]
-    );
-    await query(
-      `INSERT INTO scrape_latest (slug, ads_count, collected_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (slug) DO UPDATE
-         SET ads_count    = EXCLUDED.ads_count,
-             collected_at = EXCLUDED.collected_at`,
-      [slug, countNum]
-    );
-    await query(
-      `INSERT INTO scrape_history (slug, ads_count, slot) VALUES ($1, $2, NULL)`,
-      [slug, countNum]
-    );
-    inicial = countNum;
-    console.log(`[DESCOBERTA] slug=${slug} inicial=${countNum} salvo via Extensão (Sem Playwright)`);
-  } else {
-    inicial = await captureInicial(slug, url);
-  }
-
-  res.json({ slug, tipo: tipoFinal, inicial, coletarPath: `/api/coletar/${slug}` });
-});
-
-app.get("/api/coletar/:slug", async (req, res) => {
-  const { slug } = req.params;
-  const { rows } = await query("SELECT * FROM pages WHERE slug = $1 LIMIT 1", [slug]);
-  const row = rows[0];
-  if (!row) return res.status(404).type("text/plain").send(`Page '${slug}' not registered.`);
-  try {
-    const count = await scrapeAdCount(row.url);
-    res.type("text/plain").send(String(count));
-    await query(
-      `INSERT INTO scrape_latest (slug, ads_count, collected_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (slug) DO UPDATE
-         SET ads_count    = EXCLUDED.ads_count,
-             collected_at = EXCLUDED.collected_at`,
-      [slug, count]
-    );
-    console.log(`[LATEST] slug=${slug} count=${count} (manual via /api/coletar — histórico preservado)`);
-  } catch (err) {
-    console.error(`[COLETAR] error slug=${slug}: ${err.message}`);
-    res.type("text/plain").send("0");
-  }
-});
-
-app.get("/api/coletar-tudo", async (_req, res) => {
-  res.json({ status: "started" });
-  runAllScrapes("manual").catch((e) => console.error("[RUN] manual error:", e.message));
-});
-
-app.get("/api/historico/:slug", async (req, res) => {
-  const { slug } = req.params;
-  const { rows } = await query(
-    `SELECT id, slug, ads_count, collected_at FROM scrape_history WHERE slug = $1 ORDER BY collected_at DESC`,
-    [slug]
-  );
-  res.json(rows);
-});
-
-app.get("/api/resumo/:slug", async (req, res) => {
-  const { slug } = req.params;
-  const { rows } = await query(
-    `SELECT ads_count, collected_at FROM scrape_history WHERE slug = $1 ORDER BY collected_at ASC`,
-    [slug]
-  );
-  if (rows.length === 0) return res.json({ slug, message: "No data yet." });
-  const counts = rows.map((r) => r.ads_count);
-  const min = Math.min(...counts), max = Math.max(...counts);
-  const avg = Math.round(counts.reduce((a, b) => a + b, 0) / counts.length);
-  const first = counts[0], last = counts[counts.length - 1];
-  const trend = last > first ? "crescendo" : last < first ? "caindo" : "estável";
-  res.json({ slug, total_coletas: rows.length, min, max, avg, trend, first, last });
-});
-
-app.get("/api/status", async (_req, res) => {
-  const { rows: pages } = await query("SELECT slug, nome, url FROM pages");
-  const result = await Promise.all(pages.map(async (p) => {
-    const { rows } = await query(
-      `SELECT ads_count, collected_at FROM scrape_history WHERE slug = $1 ORDER BY collected_at DESC LIMIT 1`,
-      [p.slug]
-    );
-    const latest = rows[0];
-    return { slug: p.slug, nome: p.nome, url: p.url, ads_ativos: latest?.ads_count ?? null, ultima_coleta: latest?.collected_at ?? null };
-  }));
-  res.json(result);
-});
-
-app.get("/api/paginas", async (_req, res) => {
-  const { rows } = await query("SELECT slug, nome, url, tipo, instagram_url, geo, nicho, funil FROM pages");
-  res.json(rows);
-});
-
-// ─── Admin ───────────────────────────────────────────────────────────────────
-
-app.get("/admin", async (_req, res) => {
-  const { rows: pages } = await query(
-    "SELECT slug, nome, url, tipo, instagram_url, geo, nicho, funil, created_at FROM pages ORDER BY tipo, created_at DESC"
-  );
-
-  // JSON de cada item, embutido no atributo data-item, usado pelo JS para preencher o formulário ao clicar em Editar
-  function escAttr(str) {
-    return String(str ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  }
-
-  const lista = pages.map(p => `
-    <tr>
-      <td><span class="badge ${p.tipo === "dominio" ? "b-dom" : "b-pag"}">${p.tipo === "dominio" ? "🌐 Domínio" : "📡 Biblioteca"}</span></td>
-      <td class="nome-cell">
-        <div class="nome">${p.nome}</div>
-        <div class="meta-badges">
-          ${p.geo ? `<span class="meta-tag">🌍 ${p.geo}</span>` : ""}
-          ${p.nicho ? `<span class="meta-tag">🏷️ ${p.nicho}</span>` : ""}
-          ${p.funil ? `<span class="meta-tag">🎯 ${p.funil}</span>` : ""}
-          ${p.instagram_url ? `<a href="${p.instagram_url}" target="_blank" class="ig-tag">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:inline;vertical-align:middle;margin-right:3px"><rect width="24" height="24" rx="6" fill="url(#ig_admin)"/><circle cx="12" cy="12" r="4.5" stroke="white" stroke-width="1.8" fill="none"/><circle cx="17" cy="7" r="1.2" fill="white"/><rect x="3" y="3" width="18" height="18" rx="5" stroke="white" stroke-width="1.8" fill="none"/><defs><linearGradient id="ig_admin" x1="0" y1="24" x2="24" y2="0"><stop offset="0%" stop-color="#f09433"/><stop offset="25%" stop-color="#e6683c"/><stop offset="50%" stop-color="#dc2743"/><stop offset="75%" stop-color="#cc2366"/><stop offset="100%" stop-color="#bc1888"/></linearGradient></defs></svg>Instagram</a>` : ""}
-        </div>
-      </td>
-      <td><a href="${p.url}" target="_blank" class="url-link">Ver na Meta ↗</a></td>
-      <td>${new Date(p.created_at).toLocaleDateString("pt-BR")}</td>
-      <td style="white-space:nowrap">
-        <button type="button" class="btn-edit"
-          data-slug="${escAttr(p.slug)}"
-          data-nome="${escAttr(p.nome)}"
-          data-url="${escAttr(p.url)}"
-          data-tipo="${escAttr(p.tipo)}"
-          data-instagram="${escAttr(p.instagram_url)}"
-          data-geo="${escAttr(p.geo)}"
-          data-nicho="${escAttr(p.nicho)}"
-          data-funil="${escAttr(p.funil)}"
-          onclick="editarItem(this)">✏️ Editar</button>
-        <a href="/admin/funis/${p.slug}" class="btn-funis">🔀 Funis</a>
-        <form method="POST" action="/admin/remover" style="display:inline" onsubmit="return confirm('Remover ${p.nome}?')">
-          <input type="hidden" name="slug" value="${p.slug}">
-          <button type="submit" class="btn-del">Remover</button>
-        </form>
-      </td>
-    </tr>`).join("");
-
-  const msgOk = (() => {
-    const q = res.req?.query || {};
-    if (q.ok === "1") return '<div class="msg ok">✅ Rastreamento cadastrado com sucesso.</div>';
-    if (q.ok === "editado") return '<div class="msg ok">✏️ Rastreamento atualizado com sucesso.</div>';
-    if (q.ok === "removido") return '<div class="msg ok">🗑️ Rastreamento removido.</div>';
-    if (q.erro === "campos-obrigatorios") return '<div class="msg err">⚠️ Nome e URL são obrigatórios.</div>';
-    if (q.erro === "nome-invalido") return '<div class="msg err">⚠️ Nome inválido.</div>';
-    if (q.erro === "lote-vazio") return '<div class="msg err">⚠️ Nenhum item enviado no lote.</div>';
-    if (q.erro === "lote-invalido") return '<div class="msg err">⚠️ Nenhuma linha válida encontrada no lote.</div>';
-    if (q.erro === "lote-em-andamento") return '<div class="msg err">⚠️ Já existe um lote em andamento. Aguarde terminar.</div>';
-    if (q.erro === "erro-interno") return '<div class="msg err">⚠️ Erro interno. Tente novamente.</div>';
-    return "";
-  })();
-
-  res.send(`<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lowticket Monitor — Admin</title>
-<style>
-:root{--bg:#0a0a14;--surface:#12121f;--border:#23233f;--text:#f0f0fa;--muted:#7a7a98;--accent:#7c6fff;--up:#34d399;--down:#fb7185}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font-family:'Space Grotesk',sans-serif;padding:24px;max-width:1000px;margin:0 auto}
-.hdr{display:flex;align-items:center;gap:14px;margin-bottom:28px;padding-bottom:16px;border-bottom:1px solid var(--border)}
-.hdr h1{font-size:18px;font-weight:700}
-.hdr a{margin-left:auto;font-size:13px;color:var(--accent);text-decoration:none;border:1px solid var(--accent);padding:7px 16px;border-radius:8px}
-.hdr a:hover{background:var(--accent);color:#fff}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px 24px;margin-bottom:20px}
-.card h2{font-size:14px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:18px}
-.form-row{display:grid;grid-template-columns:160px 1fr 1fr;gap:12px;align-items:end;margin-bottom:12px}
-.form-row-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
-.form-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px}
-@media(max-width:700px){.form-row,.form-row-2,.form-row-3{grid-template-columns:1fr}}
-.field{display:flex;flex-direction:column;gap:6px}
-label{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-.label-optional{font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px;opacity:.7}
-input,select{background:#0f0f1e;border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:'Space Grotesk',sans-serif;font-size:14px;padding:10px 14px;outline:none;transition:border-color .2s}
-input:focus,select:focus{border-color:var(--accent)}
-input::placeholder{color:var(--muted)}
-.btn{background:var(--accent);color:#fff;border:none;border-radius:8px;font-family:'Space Grotesk',sans-serif;font-size:14px;font-weight:600;padding:10px 22px;cursor:pointer;transition:opacity .2s}
-.btn:hover{opacity:.85}
-.btn-del{background:transparent;color:var(--down);border:1px solid var(--down);border-radius:6px;font-family:'Space Grotesk',sans-serif;font-size:11px;padding:4px 10px;cursor:pointer;transition:all .2s;margin-left:6px}
-.btn-edit{background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:6px;font-family:'Space Grotesk',sans-serif;font-size:11px;padding:4px 10px;cursor:pointer;transition:all .2s}
-.btn-edit:hover{background:var(--accent);color:#fff}
-.btn-funis{display:inline-block;background:transparent;color:#34d399;border:1px solid #34d399;border-radius:6px;font-family:'Space Grotesk',sans-serif;font-size:11px;padding:4px 10px;cursor:pointer;transition:all .2s;text-decoration:none;margin-left:6px}
-.btn-funis:hover{background:#34d399;color:#0a0a14}
-.btn-del:hover{background:var(--down);color:#fff}
-.tip{font-size:12px;color:var(--muted);margin-top:14px;line-height:1.6;background:#0f0f1e;border-radius:8px;padding:12px 14px;border-left:3px solid var(--accent)}
-table{width:100%;border-collapse:collapse;font-size:13px}
-thead th{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.6px;padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)}
-td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
-.nome{font-weight:600;color:#fff}
-.nome-cell{vertical-align:middle}
-.meta-badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
-.meta-tag{font-size:10px;background:rgba(124,111,255,.12);color:#a78bfa;padding:2px 7px;border-radius:5px;font-weight:500}
-.ig-tag{font-size:10px;background:rgba(220,39,67,.12);color:#fb7185;padding:2px 7px;border-radius:5px;font-weight:500;text-decoration:none;display:inline-flex;align-items:center;gap:3px}
-.ig-tag:hover{background:rgba(220,39,67,.25)}
-.url-link{color:var(--accent);font-size:12px;text-decoration:none;font-family:'Space Mono',monospace}
-.url-link:hover{text-decoration:underline}
-.badge{display:inline-block;padding:3px 9px;border-radius:6px;font-size:11px;font-weight:600}
-.b-dom{background:rgba(124,111,255,.15);color:#a78bfa}
-.b-pag{background:rgba(52,211,153,.12);color:#34d399}
-.msg{padding:12px 16px;border-radius:8px;font-size:13px;margin-bottom:18px}
-.msg.ok{background:rgba(52,211,153,.12);color:#34d399;border:1px solid rgba(52,211,153,.25)}
-.msg.err{background:rgba(251,113,133,.12);color:#fb7185;border:1px solid rgba(251,113,133,.25)}
-.empty{color:var(--muted);font-size:13px;text-align:center;padding:24px}
-.divider{border:none;border-top:1px solid var(--border);margin:16px 0}
-</style>
-</head>
-<body>
-<div class="hdr">
-  <h1>⚙️ Admin — Lowticket Monitor</h1>
-  <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
-    <a href="/dashboard" style="font-size:13px;color:var(--accent);text-decoration:none;border:1px solid var(--accent);padding:7px 16px;border-radius:8px">← Ver Dashboard</a>
-    <a href="/funis" style="font-size:13px;color:var(--accent);text-decoration:none;border:1px solid var(--accent);padding:7px 16px;border-radius:8px">🔀 Ver Mapa de Funis</a>
-  </div>
-</div>
-
-${msgOk}
-
-<div class="card" id="form-card">
-  <h2 id="form-title">➕ Cadastrar novo rastreamento</h2>
-  <form method="POST" action="/admin/salvar" id="mainForm">
-    <input type="hidden" name="original_slug" id="originalSlug" value="">
-    <div class="form-row">
-      <div class="field">
-        <label>Tipo</label>
-        <select name="tipo" id="tipoSelect" onchange="atualizarDica()">
-          <option value="pagina">📡 Biblioteca (página)</option>
-          <option value="dominio">🌐 Domínio (URL)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Nome</label>
-        <input type="text" name="nome" id="nomeInput" placeholder="Ex: FlowForce Max ou FLOWFORCE.COM" required>
-      </div>
-      <div class="field">
-        <label>URL da Meta Ad Library</label>
-        <input type="url" name="url" id="urlInput" placeholder="https://www.facebook.com/ads/library/..." required>
-      </div>
-    </div>
-
-    <hr class="divider">
-    <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Informações adicionais <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:.6">(opcionais)</span></div>
-
-    <div class="form-row-3">
-      <div class="field">
-        <label>Instagram <span class="label-optional">opcional</span></label>
-        <input type="url" name="instagram_url" id="instagramInput" placeholder="https://www.instagram.com/perfil">
-      </div>
-      <div class="field">
-        <label>Geo <span class="label-optional">opcional</span></label>
-        <input type="text" name="geo" id="geoInput" placeholder="Ex: US, BR, UK">
-      </div>
-      <div class="field">
-        <label>Nicho <span class="label-optional">opcional</span></label>
-        <input type="text" name="nicho" id="nichoInput" placeholder="Ex: Próstata, Weight Loss, ED">
-      </div>
-    </div>
-    <div class="form-row-3">
-      <div class="field">
-        <label>Funil <span class="label-optional">opcional</span></label>
-        <input type="text" name="funil" id="funilInput" placeholder="Ex: VSL, Advertorial, Quiz">
-      </div>
-    </div>
-
-    <div style="display:flex;gap:10px;margin-top:4px">
-      <button type="submit" class="btn" id="submitBtn">Cadastrar</button>
-      <button type="button" class="btn" id="cancelBtn" style="display:none;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="cancelarEdicao()">Cancelar edição</button>
-    </div>
-
-    <div class="tip" id="dica">
-      💡 <strong>Biblioteca:</strong> Cole a URL da página do anunciante na Meta Ad Library com filtro "Anúncios ativos".<br>
-      Exemplo: <code>https://www.facebook.com/ads/library/?active_status=active&ad_type=all&id=XXXXXXXXX</code>
-    </div>
-  </form>
-</div>
-
-<div class="card">
-  <h2>📦 Cadastro em lote</h2>
-  <form method="POST" action="/admin/lote">
-    <div class="field">
-      <label>Uma linha por item</label>
-      <textarea name="itens" rows="7"
-        placeholder="FlowForce Max | https://www.facebook.com/ads/library/?view_all_page_id=123456 | https://instagram.com/flowforcemax&#10;FLOWFORCE.COM | https://www.facebook.com/ads/library/?q=FLOWFORCE.COM...&#10;dominio | AnotherOffer | https://www.facebook.com/ads/library/?q=ANOTHEROFFER.COM | https://instagram.com/anotheroffer"
-        style="background:#0f0f1e;border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:'Space Mono',monospace;font-size:12px;padding:12px 14px;outline:none;resize:vertical;width:100%"></textarea>
-    </div>
-    <button type="submit" class="btn" style="margin-top:12px">Cadastrar lote</button>
-    <div class="tip">
-      💡 Formatos aceitos por linha:<br>
-      <code>Nome | URL da Meta Ad Library</code><br>
-      <code>Nome | URL da Meta Ad Library | https://instagram.com/perfil</code><br>
-      <code>tipo | Nome | URL | https://instagram.com/perfil</code><br><br>
-      O tipo (Biblioteca ou Domínio) é detectado automaticamente pela URL. O Instagram é opcional — basta omitir.<br>
-      Geo e Nicho só podem ser preenchidos após o cadastro, editando o item individualmente no admin.<br>
-      Cada item leva ~15-20s pra processar. A página não precisa ficar aberta.
-    </div>
-  </form>
-  <div id="lote-progresso" style="display:none;margin-top:16px;background:#0f0f1e;border:1px solid var(--border);border-radius:8px;padding:14px 16px">
-    <div id="lote-texto" style="font-size:13px;color:var(--text2)"></div>
-    <div style="background:var(--border);border-radius:6px;height:8px;margin-top:10px;overflow:hidden">
-      <div id="lote-barra" style="background:var(--accent);height:100%;width:0%;transition:width .3s"></div>
-    </div>
-    <div id="lote-erros" style="font-size:12px;color:var(--down);margin-top:10px"></div>
-  </div>
-</div>
-
-<div class="card">
-  <h2>📋 Rastreamentos cadastrados (${pages.length})</h2>
-  ${pages.length === 0 ? '<div class="empty">Nenhum rastreamento cadastrado ainda.</div>' : `
-  <table>
-    <thead><tr><th>Tipo</th><th>Nome / Metadados</th><th>Link Meta</th><th>Cadastrado</th><th></th></tr></thead>
-    <tbody>${lista}</tbody>
-  </table>`}
-</div>
-
-<script>
-function atualizarDica(){
-  const tipo=document.getElementById('tipoSelect').value;
-  const dica=document.getElementById('dica');
-  const url=document.getElementById('urlInput');
-  if(tipo==='dominio'){
-    dica.innerHTML='💡 <strong>Domínio:</strong> Cole a URL de busca por palavra-chave/domínio na Meta Ad Library.<br>Exemplo: <code>https://www.facebook.com/ads/library/?active_status=active&q=SEUDOMINIO.COM&search_type=keyword_unordered</code>';
-    url.placeholder='https://www.facebook.com/ads/library/?active_status=active&q=SEUDOMINIO.COM...';
-  }else{
-    dica.innerHTML='💡 <strong>Biblioteca:</strong> Cole a URL da página do anunciante na Meta Ad Library com filtro "Anúncios ativos".<br>Exemplo: <code>https://www.facebook.com/ads/library/?active_status=active&ad_type=all&id=XXXXXXXXX</code>';
-    url.placeholder='https://www.facebook.com/ads/library/?active_status=active&id=...';
+      processCards();
+    }, 1000);
   }
 }
 
-function editarItem(btn){
-  document.getElementById('originalSlug').value=btn.dataset.slug;
-  document.getElementById('nomeInput').value=btn.dataset.nome;
-  document.getElementById('urlInput').value=btn.dataset.url;
-  document.getElementById('tipoSelect').value=btn.dataset.tipo;
-  document.getElementById('instagramInput').value=btn.dataset.instagram;
-  document.getElementById('geoInput').value=btn.dataset.geo;
-  document.getElementById('nichoInput').value=btn.dataset.nicho;
-  document.getElementById('funilInput').value=btn.dataset.funil;
-  document.getElementById('form-title').textContent='✏️ Editando: '+btn.dataset.nome;
-  document.getElementById('submitBtn').textContent='Salvar alterações';
-  document.getElementById('cancelBtn').style.display='inline-block';
-  atualizarDica();
-  document.getElementById('form-card').scrollIntoView({behavior:'smooth',block:'start'});
+// FIX 4.2: container real da grade de anúncios, usado para escopar o MutationObserver principal
+// em vez de observar document.body inteiro. A Meta usa a landmark ARIA div[role="main"] de
+// forma estável na Ad Library — escopar a ela corta fora mutações de chat widgets, menus globais
+// e outras áreas fora da grade, sem depender de classes ofuscadas que mudam a cada deploy.
+function getObserverRoot() {
+  return document.querySelector('div[role="main"]') || document.body;
 }
 
-function cancelarEdicao(){
-  document.getElementById('mainForm').reset();
-  document.getElementById('originalSlug').value='';
-  document.getElementById('form-title').textContent='➕ Cadastrar novo rastreamento';
-  document.getElementById('submitBtn').textContent='Cadastrar';
-  document.getElementById('cancelBtn').style.display='none';
-  atualizarDica();
-}
-
-(function iniciarPollingLote(){
-  const params=new URLSearchParams(window.location.search);
-  const painel=document.getElementById('lote-progresso');
-  const texto=document.getElementById('lote-texto');
-  const barra=document.getElementById('lote-barra');
-  const errosEl=document.getElementById('lote-erros');
-  if(!painel)return;
-  async function checarStatus(){
-    try{
-      const r=await fetch('/api/lote/status');
-      const s=await r.json();
-      if(!s.emAndamento&&!s.total)return;
-      painel.style.display='block';
-      const pct=s.total?Math.round((s.concluidos/s.total)*100):0;
-      barra.style.width=pct+'%';
-      if(s.emAndamento){
-        texto.textContent='Processando '+s.concluidos+' de '+s.total+'... atual: '+(s.atual||'—');
-        setTimeout(checarStatus,3000);
-      }else{
-        texto.textContent='Lote finalizado — '+s.concluidos+' de '+s.total+' itens processados.';
-        if(s.erros&&s.erros.length){errosEl.innerHTML=s.erros.map(e=>'⚠️ '+e).join('<br>');}
-      }
-    }catch(e){console.error('Falha ao consultar status do lote',e);}
-  }
-  if(params.get('lote')==='iniciado'){checarStatus();}else{checarStatus();}
-})();
-</script>
-</body>
-</html>`);
-});
-
-app.post("/admin/salvar", async (req, res) => {
-  const { nome, url, tipo, instagram_url, geo, nicho, funil, original_slug } = req.body;
-  if (!nome || !url) return res.redirect("/admin?erro=campos-obrigatorios");
-  const tipoFinal = tipo === "dominio" ? "dominio" : "pagina";
-
-  // Modo edição: atualiza o registro existente pelo slug original — o slug NUNCA muda,
-  // mesmo que o nome de exibição mude, para preservar o vínculo com scrape_history/scrape_latest.
-  if (original_slug && original_slug.trim()) {
+// FIX 4.2: reconecta os serviços de fundo (MutationObserver principal, polling de URL e scroll
+// handler) depois de um fullTeardown real (toggle desligado no popup). Sem isso, religar a
+// extensão deixaria badges parando de aparecer em cards novos, navegação SPA parando de ser
+// detectada, e o scroll deixando de reprocessar cards — porque agora o toggle "desligar"
+// realmente desconecta essas 3 coisas (ver teardownVivaMonitor).
+function ensureVivaBackgroundServicesRunning() {
+  if (_vivaMainObserver) {
     try {
-      const { rowCount } = await query(
-        `UPDATE pages SET nome=$1, url=$2, tipo=$3, instagram_url=$4, geo=$5, nicho=$6, funil=$7 WHERE slug=$8`,
-        [nome, url, tipoFinal, instagram_url || null, geo || null, nicho || null, funil || null, original_slug.trim()]
-      );
-      if (rowCount === 0) {
-        console.warn(`[ADMIN] edição falhou — slug=${original_slug} não encontrado`);
-        return res.redirect("/admin?erro=erro-interno");
-      }
-      console.log(`[ADMIN] editou slug=${original_slug}`);
-      return res.redirect("/admin?ok=editado");
-    } catch (err) {
-      console.error("[ADMIN] erro ao editar:", err.message);
-      return res.redirect("/admin?erro=erro-interno");
-    }
+      _vivaMainObserver.observe(getObserverRoot(), { childList: true, subtree: true });
+    } catch (e) {}
   }
-
-  // Modo cadastro (novo item)
-  const slug = toSlug(nome);
-  if (!slug) return res.redirect("/admin?erro=nome-invalido");
-  try {
-    await query(
-      `INSERT INTO pages (slug, nome, url, tipo, instagram_url, geo, nicho, funil)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       ON CONFLICT (slug) DO UPDATE
-         SET nome=$2, url=$3, tipo=$4,
-             instagram_url=COALESCE(EXCLUDED.instagram_url, pages.instagram_url),
-             geo=COALESCE(EXCLUDED.geo, pages.geo),
-             nicho=COALESCE(EXCLUDED.nicho, pages.nicho),
-             funil=COALESCE(EXCLUDED.funil, pages.funil)`,
-      [slug, nome, url, tipoFinal, instagram_url || null, geo || null, nicho || null, funil || null]
-    );
-    console.log(`[ADMIN] cadastrou slug=${slug} tipo=${tipoFinal}`);
-    await captureInicial(slug, url);
-    res.redirect("/admin?ok=1");
-  } catch (err) {
-    console.error("[ADMIN] erro:", err.message);
-    res.redirect("/admin?erro=erro-interno");
+  if (!_vivaUrlIntervalId) {
+    _vivaUrlIntervalId = setInterval(checkUrlChangeTick, 2000);
   }
-});
-
-app.post("/admin/remover", async (req, res) => {
-  const { slug } = req.body;
-  if (!slug) return res.redirect("/admin");
-  await query("DELETE FROM pages WHERE slug=$1", [slug]);
-  await query("DELETE FROM scrape_history WHERE slug=$1", [slug]);
-  await query("DELETE FROM scrape_latest WHERE slug=$1", [slug]);
-  console.log(`[ADMIN] removeu slug=${slug}`);
-  res.redirect("/admin?ok=removido");
-});
-
-app.post("/admin/lote", async (req, res) => {
-  const { itens: textoItens } = req.body;
-  if (!textoItens || !textoItens.trim()) return res.redirect("/admin?erro=lote-vazio");
-  const itens = parseLoteInput(textoItens);
-  if (!itens.length) return res.redirect("/admin?erro=lote-invalido");
-  if (loteStatus.emAndamento) return res.redirect("/admin?erro=lote-em-andamento");
-  res.redirect("/admin?lote=iniciado");
-  runLote(itens).catch((err) => console.error("[LOTE] erro não tratado:", err.message));
-});
-
-app.get("/api/lote/status", (_req, res) => {
-  res.json(loteStatus);
-});
-
-// ─── Funis (modelo de grafo: nós + conexões) ────────────────────────────────
-
-const TIPO_INFO = {
-  advertorial: { icon: "📄", label: "Advertorial" },
-  tsl:         { icon: "📝", label: "TSL" },
-  vsl:         { icon: "🎬", label: "VSL" },
-  quiz:        { icon: "🧩", label: "Quiz" },
-  whatsapp:    { icon: "💬", label: "WhatsApp" },
-  checkout:    { icon: "💳", label: "Checkout" },
-};
-const TIPOS_ORDEM = ["advertorial", "tsl", "vsl", "quiz", "whatsapp", "checkout"];
-
-// Computa todos os caminhos (raiz → folha) de um grafo de nós/conexões.
-// Raiz = nó sem conexão de entrada. Folha = nó sem conexão de saída.
-// Guarda contra ciclos interrompendo o caminho se o nó já apareceu nele.
-function computarCaminhos(nodes, edges) {
-  const nodesById = {};
-  nodes.forEach(n => { nodesById[n.id] = n; });
-  const adj = {};
-  edges.forEach(e => {
-    if (!adj[e.from_node_id]) adj[e.from_node_id] = [];
-    adj[e.from_node_id].push(e.to_node_id);
-  });
-  const temEntrada = new Set(edges.map(e => e.to_node_id));
-  const raizes = nodes.filter(n => !temEntrada.has(n.id));
-
-  const caminhos = [];
-  function dfs(nodeId, caminho) {
-    if (caminho.includes(nodeId)) { caminhos.push([...caminho]); return; }
-    const novoCaminho = [...caminho, nodeId];
-    const proximos = adj[nodeId] || [];
-    if (proximos.length === 0) {
-      caminhos.push(novoCaminho);
-    } else {
-      proximos.forEach(p => dfs(p, novoCaminho));
-    }
+  if (_vivaScrollHandler) {
+    // addEventListener com a mesma referência de função é idempotente — nunca duplica o listener.
+    window.addEventListener("scroll", _vivaScrollHandler);
   }
-  raizes.forEach(r => dfs(r.id, []));
-  return caminhos.map(c => c.map(id => nodesById[id]).filter(Boolean));
 }
 
-async function getNodesEdges(slug) {
-  const { rows: nodes } = await query(
-    `SELECT id, tipo, rotulo, url FROM funnel_nodes WHERE slug=$1 ORDER BY created_at ASC`, [slug]
-  );
-  let edges = [];
-  if (nodes.length) {
-    const ids = nodes.map(n => n.id);
-    const { rows } = await query(
-      `SELECT id, from_node_id, to_node_id FROM funnel_edges WHERE from_node_id = ANY($1) OR to_node_id = ANY($1)`,
-      [ids]
-    );
-    edges = rows;
-  }
-  return { nodes, edges };
-}
-
-function renderChip(node) {
-  const info = TIPO_INFO[node.tipo] || { icon: "🔗", label: node.tipo };
-  return `<a href="${node.url}" target="_blank" rel="noopener" class="chip">
-    <span class="chip-icon">${info.icon}</span>
-    <span class="chip-label">${node.rotulo}</span>
-  </a>`;
-}
-
-function renderCaminho(caminho) {
-  return `<div class="caminho-row">${caminho.map(renderChip).join('<span class="chip-arrow">→</span>')}</div>`;
-}
-
-// Página de gerenciamento de nós/conexões de um player
-app.get("/admin/funis/:slug", async (req, res) => {
-  const { slug } = req.params;
-  const { rows: pages } = await query("SELECT nome, url FROM pages WHERE slug=$1 LIMIT 1", [slug]);
-  if (!pages.length) return res.status(404).send("Player não encontrado.");
-  const nomePage = pages[0].nome;
-
-  const { nodes, edges } = await getNodesEdges(slug);
-  const nodesById = {};
-  nodes.forEach(n => { nodesById[n.id] = n; });
-
-  const optionsNodes = nodes.map(n => {
-    const info = TIPO_INFO[n.tipo] || { icon: "🔗", label: n.tipo };
-    return `<option value="${n.id}">${info.icon} ${n.rotulo} (${info.label})</option>`;
-  }).join("");
-
-  const optionsTipos = TIPOS_ORDEM.map(t => `<option value="${t}">${TIPO_INFO[t].icon} ${TIPO_INFO[t].label}</option>`).join("");
-
-  const listaNodes = nodes.length ? nodes.map(n => {
-    const info = TIPO_INFO[n.tipo] || { icon: "🔗", label: n.tipo };
-    return `<div class="node-row">
-      <span class="node-tipo">${info.icon} ${info.label}</span>
-      <span class="node-rotulo">${n.rotulo}</span>
-      <a href="${n.url}" target="_blank" class="node-url">${n.url.length > 45 ? n.url.slice(0,45)+'...' : n.url}</a>
-      <form method="POST" action="/admin/funis/remover-node" style="display:inline">
-        <input type="hidden" name="node_id" value="${n.id}">
-        <input type="hidden" name="slug" value="${slug}">
-        <button type="submit" class="btn-del-sm" onclick="return confirm('Remover etapa ${n.rotulo}? Isso também remove as conexões dela.')">✕</button>
-      </form>
-    </div>`;
-  }).join("") : '<div class="empty-hint-sm">Nenhuma etapa cadastrada ainda. Crie a primeira acima.</div>';
-
-  const listaEdges = edges.length ? edges.map(e => {
-    const de = nodesById[e.from_node_id], para = nodesById[e.to_node_id];
-    if (!de || !para) return "";
-    return `<div class="edge-row">
-      ${renderChip(de)}<span class="chip-arrow">→</span>${renderChip(para)}
-      <form method="POST" action="/admin/funis/remover-edge" style="display:inline;margin-left:auto">
-        <input type="hidden" name="edge_id" value="${e.id}">
-        <input type="hidden" name="slug" value="${slug}">
-        <button type="submit" class="btn-del-sm" onclick="return confirm('Remover essa conexão?')">✕</button>
-      </form>
-    </div>`;
-  }).join("") : '<div class="empty-hint-sm">Nenhuma conexão criada ainda.</div>';
-
-  const caminhos = computarCaminhos(nodes, edges);
-  const previaCaminhos = caminhos.length
-    ? caminhos.map(renderCaminho).join("")
-    : '<div class="empty-hint-sm">Cadastre etapas e conecte-as para ver os caminhos aqui.</div>';
-
-  const msgOk = (() => {
-    const q = req.query;
-    if (q.ok === "node-add") return '<div class="msg ok">✅ Etapa criada.</div>';
-    if (q.ok === "node-rem") return '<div class="msg ok">🗑️ Etapa removida.</div>';
-    if (q.ok === "edge-add") return '<div class="msg ok">✅ Conexão criada.</div>';
-    if (q.ok === "edge-rem") return '<div class="msg ok">🗑️ Conexão removida.</div>';
-    if (q.erro === "sem-etapas") return '<div class="msg err">⚠️ Cadastre pelo menos 2 etapas antes de conectar.</div>';
-    if (q.erro === "mesma-etapa") return '<div class="msg err">⚠️ Uma etapa não pode se conectar a ela mesma.</div>';
-    return "";
-  })();
-
-  res.send(`<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Funil — ${nomePage}</title>
-<style>
-:root{--bg:#0a0a14;--surface:#12121f;--border:#23233f;--text:#f0f0fa;--text2:#b8b8d0;--muted:#7a7a98;--accent:#7c6fff;--up:#34d399;--down:#fb7185}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font-family:'Space Grotesk',sans-serif;padding:24px;max-width:900px;margin:0 auto}
-.hdr{display:flex;align-items:center;gap:14px;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid var(--border);flex-wrap:wrap}
-.hdr h1{font-size:17px;font-weight:700}
-.hdr-sub{font-size:12px;color:var(--muted);margin-top:3px}
-.hdr-nav{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
-.hdr-nav a{font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--accent);padding:6px 14px;border-radius:8px;white-space:nowrap}
-.hdr-nav a:hover{background:var(--accent);color:#fff}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px 22px;margin-bottom:18px}
-.card h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:16px}
-.field{display:flex;flex-direction:column;gap:6px}
-label{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-input,select{background:#0f0f1e;border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:'Space Grotesk',sans-serif;font-size:13px;padding:9px 13px;outline:none;transition:border-color .2s}
-input:focus,select:focus{border-color:var(--accent)}
-input::placeholder{color:var(--muted)}
-.form-row{display:grid;grid-template-columns:180px 160px 1fr auto;gap:10px;align-items:end}
-.form-row-edge{display:grid;grid-template-columns:1fr auto 1fr auto;gap:10px;align-items:end}
-@media(max-width:700px){.form-row,.form-row-edge{grid-template-columns:1fr}}
-.btn{background:var(--accent);color:#fff;border:none;border-radius:8px;font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;padding:9px 20px;cursor:pointer;white-space:nowrap}
-.btn:hover{opacity:.85}
-.btn-del-sm{background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;font-size:10px;padding:2px 6px;cursor:pointer;line-height:1.4;margin-left:8px}
-.btn-del-sm:hover{color:var(--down);border-color:var(--down)}
-.node-row{display:flex;align-items:center;gap:10px;background:#0f0f1e;border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:8px;flex-wrap:wrap}
-.node-tipo{font-size:11px;font-weight:600;color:#a78bfa;background:rgba(167,139,250,.12);padding:3px 9px;border-radius:5px;white-space:nowrap}
-.node-rotulo{font-size:13px;font-weight:700;color:#fff}
-.node-url{font-size:11px;color:var(--accent);text-decoration:none;font-family:'Space Mono',monospace;margin-left:auto}
-.node-url:hover{text-decoration:underline}
-.edge-row{display:flex;align-items:center;gap:6px;background:#0f0f1e;border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:8px;flex-wrap:wrap}
-.chip{display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;text-decoration:none;font-size:12px;font-weight:600;color:#fff}
-.chip:hover{border-color:var(--accent)}
-.chip-icon{font-size:13px}
-.chip-arrow{color:var(--muted);font-size:15px;font-weight:700;margin:0 2px}
-.caminho-row{display:flex;align-items:center;flex-wrap:wrap;gap:2px;background:#0f0f1e;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
-.empty-hint-sm{color:var(--muted);font-size:12px;text-align:center;padding:16px;border:1px dashed var(--border);border-radius:8px}
-.msg{padding:11px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
-.msg.ok{background:rgba(52,211,153,.12);color:#34d399;border:1px solid rgba(52,211,153,.25)}
-.msg.err{background:rgba(251,113,133,.12);color:#fb7185;border:1px solid rgba(251,113,133,.25)}
-.divider{border:none;border-top:1px solid var(--border);margin:14px 0}
-</style>
-</head>
-<body>
-<div class="hdr">
-  <div>
-    <h1>🔀 Funil — ${nomePage}</h1>
-    <div class="hdr-sub">Mapeamento de etapas e conexões</div>
-  </div>
-  <div class="hdr-nav">
-    <a href="/admin">⚙️ Admin</a>
-    <a href="/dashboard">📊 Dashboard</a>
-    <a href="/funis">🔀 Ver Mapa de Funis</a>
-  </div>
-</div>
-
-${msgOk}
-
-<div class="card">
-  <h2>➕ Nova etapa</h2>
-  <form method="POST" action="/admin/funis/add-node">
-    <input type="hidden" name="slug" value="${slug}">
-    <div class="form-row">
-      <div class="field"><label>Tipo</label><select name="tipo">${optionsTipos}</select></div>
-      <div class="field"><label>Rótulo</label><input type="text" name="rotulo" placeholder="Ex: TSL2, Checkout1" required></div>
-      <div class="field"><label>URL</label><input type="url" name="url" placeholder="https://..." required></div>
-      <button type="submit" class="btn">Adicionar</button>
-    </div>
-  </form>
-</div>
-
-<div class="card">
-  <h2>📋 Etapas cadastradas (${nodes.length})</h2>
-  ${listaNodes}
-</div>
-
-<div class="card">
-  <h2>🔗 Conectar etapas</h2>
-  ${nodes.length < 2
-    ? '<div class="empty-hint-sm">Cadastre pelo menos 2 etapas para poder conectá-las.</div>'
-    : `<form method="POST" action="/admin/funis/add-edge">
-        <input type="hidden" name="slug" value="${slug}">
-        <div class="form-row-edge">
-          <div class="field"><label>De</label><select name="from_node_id">${optionsNodes}</select></div>
-          <div style="padding-bottom:9px;color:var(--muted);font-size:16px">→</div>
-          <div class="field"><label>Para</label><select name="to_node_id">${optionsNodes}</select></div>
-          <button type="submit" class="btn">Conectar</button>
-        </div>
-      </form>`}
-</div>
-
-<div class="card">
-  <h2>🔀 Conexões atuais (${edges.length})</h2>
-  ${listaEdges}
-</div>
-
-<div class="card">
-  <h2>👁 Prévia dos caminhos completos</h2>
-  ${previaCaminhos}
-</div>
-
-</body>
-</html>`);
-});
-
-app.post("/admin/funis/add-node", async (req, res) => {
-  const { slug, tipo, rotulo, url } = req.body;
-  if (!slug || !tipo || !rotulo || !url) return res.redirect(`/admin/funis/${slug || ""}`);
-  if (!TIPOS_ORDEM.includes(tipo)) return res.redirect(`/admin/funis/${slug}`);
-  await query(`INSERT INTO funnel_nodes (slug, tipo, rotulo, url) VALUES ($1,$2,$3,$4)`, [slug, tipo, rotulo, url]);
-  console.log(`[FUNIS] add-node slug=${slug} tipo=${tipo} rotulo=${rotulo}`);
-  res.redirect(`/admin/funis/${slug}?ok=node-add`);
-});
-
-app.post("/admin/funis/remover-node", async (req, res) => {
-  const { node_id, slug } = req.body;
-  if (!node_id) return res.redirect("/admin");
-  await query(`DELETE FROM funnel_nodes WHERE id=$1`, [node_id]);
-  console.log(`[FUNIS] remover-node node_id=${node_id}`);
-  res.redirect(`/admin/funis/${slug}?ok=node-rem`);
-});
-
-app.post("/admin/funis/add-edge", async (req, res) => {
-  const { slug, from_node_id, to_node_id } = req.body;
-  if (!slug || !from_node_id || !to_node_id) return res.redirect(`/admin/funis/${slug || ""}`);
-  if (from_node_id === to_node_id) return res.redirect(`/admin/funis/${slug}?erro=mesma-etapa`);
-  await query(`INSERT INTO funnel_edges (from_node_id, to_node_id) VALUES ($1,$2)`, [from_node_id, to_node_id]);
-  console.log(`[FUNIS] add-edge ${from_node_id} -> ${to_node_id}`);
-  res.redirect(`/admin/funis/${slug}?ok=edge-add`);
-});
-
-app.post("/admin/funis/remover-edge", async (req, res) => {
-  const { edge_id, slug } = req.body;
-  if (!edge_id) return res.redirect("/admin");
-  await query(`DELETE FROM funnel_edges WHERE id=$1`, [edge_id]);
-  console.log(`[FUNIS] remover-edge edge_id=${edge_id}`);
-  res.redirect(`/admin/funis/${slug}?ok=edge-rem`);
-});
-
-app.post("/api/funis/salvar-node", async (req, res) => {
-  const { slug, tipo, rotulo, url, checkout_url } = req.body;
-  if (!slug || !tipo || !rotulo || !url) {
-    return res.status(400).json({ error: "Missing required fields" });
-  }
-
-  try {
-    // 1. Resolve ou cria o nó da Landing Page
-    let landingNodeId;
-    const { rows: existingLanding } = await query(
-      "SELECT id FROM funnel_nodes WHERE slug = $1 AND url = $2 LIMIT 1",
-      [slug, url]
-    );
-
-    if (existingLanding.length > 0) {
-      landingNodeId = existingLanding[0].id;
-      // Atualiza o tipo e rótulo caso tenham mudado
-      await query(
-        "UPDATE funnel_nodes SET tipo = $1, rotulo = $2 WHERE id = $3",
-        [tipo, rotulo, landingNodeId]
-      );
-    } else {
-      const { rows: newLanding } = await query(
-        "INSERT INTO funnel_nodes (slug, tipo, rotulo, url) VALUES ($1, $2, $3, $4) RETURNING id",
-        [slug, tipo, rotulo, url]
-      );
-      landingNodeId = newLanding[0].id;
-    }
-
-    // 2. Se houver checkout preenchido, resolve o nó do checkout e conecta
-    if (checkout_url && checkout_url.trim()) {
-      let checkoutNodeId;
-      const cleanCheckout = checkout_url.trim();
-
-      const { rows: existingCheckout } = await query(
-        "SELECT id FROM funnel_nodes WHERE slug = $1 AND url = $2 LIMIT 1",
-        [slug, cleanCheckout]
-      );
-
-      if (existingCheckout.length > 0) {
-        checkoutNodeId = existingCheckout[0].id;
-      } else {
-        const { rows: newCheckout } = await query(
-          "INSERT INTO funnel_nodes (slug, tipo, rotulo, url) VALUES ($1, 'checkout', 'Checkout', $2) RETURNING id",
-          [slug, cleanCheckout]
-        );
-        checkoutNodeId = newCheckout[0].id;
-      }
-
-      // 3. Cria a conexão (edge) entre a Landing Page e o Checkout se não existir
-      const { rows: existingEdge } = await query(
-        "SELECT id FROM funnel_edges WHERE from_node_id = $1 AND to_node_id = $2 LIMIT 1",
-        [landingNodeId, checkoutNodeId]
-      );
-
-      if (existingEdge.length === 0) {
-        await query(
-          "INSERT INTO funnel_edges (from_node_id, to_node_id) VALUES ($1, $2)",
-          [landingNodeId, checkoutNodeId]
-        );
-        console.log(`[FUNIL] Conectou nó ${landingNodeId} ao checkout ${checkoutNodeId}`);
-      }
-    }
-
-    res.json({ success: true, landingNodeId });
-  } catch (err) {
-    console.error("[API] Error saving funnel node:", err.message);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// Página de visão geral — mapa de funis de todos os players
-app.get("/funis", async (_req, res) => {
-  const { rows: pages } = await query(
-    "SELECT slug, nome, url, tipo FROM pages ORDER BY created_at DESC"
-  );
-
-  const { rows: allNodes } = await query(`SELECT id, slug, tipo, rotulo, url FROM funnel_nodes`);
-  const { rows: allEdges } = await query(`SELECT id, from_node_id, to_node_id FROM funnel_edges`);
-
-  const nodesBySlug = {};
-  allNodes.forEach(n => { (nodesBySlug[n.slug] ||= []).push(n); });
-
-  const nodeIdToSlug = {};
-  allNodes.forEach(n => { nodeIdToSlug[n.id] = n.slug; });
-  const edgesBySlug = {};
-  allEdges.forEach(e => {
-    const s = nodeIdToSlug[e.from_node_id];
-    if (s) (edgesBySlug[s] ||= []).push(e);
-  });
-
-  const comMapa = [];
-  const semMapa = [];
-  for (const p of pages) {
-    const nodes = nodesBySlug[p.slug] || [];
-    if (nodes.length === 0) { semMapa.push(p); continue; }
-    const edges = edgesBySlug[p.slug] || [];
-    const caminhos = computarCaminhos(nodes, edges);
-    comMapa.push({ ...p, caminhos });
-  }
-
-  const cardsHtml = comMapa.map(p => `
-    <div class="player-card">
-      <div class="player-hdr">
-        <span class="player-tipo-badge ${p.tipo === "dominio" ? "b-dom" : "b-pag"}">${p.tipo === "dominio" ? "🌐" : "📡"}</span>
-        <a href="${p.url}" target="_blank" rel="noopener" class="player-nome">${p.nome}</a>
-        <a href="/admin/funis/${p.slug}" class="player-edit-link">✏️ Editar</a>
-      </div>
-      <div class="player-caminhos">
-        ${p.caminhos.map(renderCaminho).join("")}
-      </div>
-    </div>`).join("");
-
-  const semMapaHtml = semMapa.length ? `
-    <div class="card" style="margin-top:8px">
-      <h2>💤 Sem funil mapeado ainda (${semMapa.length})</h2>
-      <div class="sem-mapa-list">
-        ${semMapa.map(p => `<a href="/admin/funis/${p.slug}" class="sem-mapa-item">${p.tipo === "dominio" ? "🌐" : "📡"} ${p.nome}</a>`).join("")}
-      </div>
-    </div>` : "";
-
-  res.send(`<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mapa de Funis — Lowticket Monitor</title>
-<style>
-:root{--bg:#0a0a14;--surface:#12121f;--border:#23233f;--text:#f0f0fa;--text2:#b8b8d0;--muted:#7a7a98;--accent:#7c6fff;--up:#34d399;--down:#fb7185}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font-family:'Space Grotesk',sans-serif;padding:24px;max-width:1100px;margin:0 auto}
-.hdr{display:flex;align-items:center;gap:14px;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid var(--border);flex-wrap:wrap}
-.hdr h1{font-size:19px;font-weight:700}
-.hdr-sub{font-size:12px;color:var(--muted);margin-top:3px}
-.hdr-nav{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
-.hdr-nav a{font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--accent);padding:6px 14px;border-radius:8px;white-space:nowrap}
-.hdr-nav a:hover{background:var(--accent);color:#fff}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px 22px;margin-bottom:18px}
-.card h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
-.player-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:14px}
-.player-hdr{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)}
-.player-tipo-badge{font-size:15px}
-.player-nome{font-size:15px;font-weight:700;color:#fff;text-decoration:none}
-.player-nome:hover{color:var(--accent)}
-.player-edit-link{margin-left:auto;font-size:11px;color:var(--accent);text-decoration:none;border:1px solid var(--accent);padding:4px 10px;border-radius:6px;white-space:nowrap}
-.player-edit-link:hover{background:var(--accent);color:#fff}
-.player-caminhos{display:flex;flex-direction:column;gap:8px}
-.caminho-row{display:flex;align-items:center;flex-wrap:wrap;gap:2px;background:#0f0f1e;border:1px solid var(--border);border-radius:8px;padding:10px 12px}
-.chip{display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;text-decoration:none;font-size:12px;font-weight:600;color:#fff}
-.chip:hover{border-color:var(--accent)}
-.chip-icon{font-size:13px}
-.chip-arrow{color:var(--muted);font-size:15px;font-weight:700;margin:0 2px}
-.empty-state{color:var(--muted);font-size:13px;text-align:center;padding:32px;border:1px dashed var(--border);border-radius:12px}
-.sem-mapa-list{display:flex;flex-wrap:wrap;gap:8px}
-.sem-mapa-item{font-size:12px;color:var(--muted);text-decoration:none;background:#0f0f1e;border:1px solid var(--border);border-radius:7px;padding:6px 12px}
-.sem-mapa-item:hover{color:var(--accent);border-color:var(--accent)}
-@media(max-width:640px){.hdr-nav{width:100%}.hdr-nav a{flex:1;text-align:center}}
-</style>
-</head>
-<body>
-<div class="hdr">
-  <div>
-    <h1>🔀 Mapa de Funis</h1>
-    <div class="hdr-sub">Visão geral de todos os caminhos mapeados por biblioteca/domínio</div>
-  </div>
-  <div class="hdr-nav">
-    <a href="/admin">⚙️ Admin</a>
-    <a href="/dashboard">📊 Dashboard</a>
-  </div>
-</div>
-
-${comMapa.length === 0
-  ? '<div class="empty-state">Nenhum funil mapeado ainda. Vá em Admin → 🔀 Funis num player para começar.</div>'
-  : cardsHtml}
-
-${semMapaHtml}
-
-</body>
-</html>`);
-});
-
-// ─── Dashboard ───────────────────────────────────────────────────────────────
-
-// SVG da logo do Instagram (inline, sem dependência externa)
-const IG_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="ig" x1="0" y1="24" x2="24" y2="0"><stop offset="0%" stop-color="#f09433"/><stop offset="25%" stop-color="#e6683c"/><stop offset="50%" stop-color="#dc2743"/><stop offset="75%" stop-color="#cc2366"/><stop offset="100%" stop-color="#bc1888"/></linearGradient></defs><rect width="24" height="24" rx="6" fill="url(#ig)"/><rect x="3" y="3" width="18" height="18" rx="5" stroke="white" stroke-width="1.8" fill="none"/><circle cx="12" cy="12" r="4.5" stroke="white" stroke-width="1.8" fill="none"/><circle cx="17.5" cy="6.5" r="1.2" fill="white"/></svg>`;
-
-app.get("/dashboard", async (_req, res) => {
-  try {
-    const { rows: allPages } = await query(
-      "SELECT slug, nome, url, tipo, created_at, inicial_count, instagram_url, geo, nicho, funil FROM pages"
-    );
-
-    const BR_OFFSET_MS = 3 * 60 * 60 * 1000;
-    function toBrDate(utcNaiveTimestamp) {
-      return new Date(new Date(utcNaiveTimestamp).getTime() - BR_OFFSET_MS);
-    }
-
-    async function processarGrupo(pagesDoGrupo) {
-      const ultimaLeitura = {};
-      const primeiraData = {};
-      const paginas = {};
-      const mon = {};
-      const meta = {}; // instagram_url, geo, nicho, funil por nome
-
-      for (const p of pagesDoGrupo) {
-        const { rows: hist } = await query(
-          `SELECT ads_count, slot, collected_at
-           FROM scrape_history WHERE slug=$1 ORDER BY collected_at ASC`,
-          [p.slug]
-        );
-
-        const { rows: latest } = await query(
-          `SELECT ads_count, collected_at FROM scrape_latest WHERE slug = $1 LIMIT 1`,
-          [p.slug]
-        );
-
-        const latestRow = latest[0];
-        const temDado = hist.length > 0 || !!latestRow;
-        if (!temDado) continue;
-
-        ultimaLeitura[p.nome] = {
-          ads:          latestRow ? latestRow.ads_count : hist[hist.length - 1].ads_count,
-          url:          p.url,
-          ultimaColeta: latestRow ? toBrDate(latestRow.collected_at).toISOString() : null,
-        };
-
-        primeiraData[p.nome] = toBrDate(p.created_at).toISOString().slice(0, 10);
-
-        mon[p.nome] = {
-          ini: p.inicial_count ?? (hist.length ? hist[0].ads_count : (latestRow ? latestRow.ads_count : 0))
-        };
-
-        // Metadados para a dashboard
-        meta[p.nome] = {
-          instagram_url: p.instagram_url || null,
-          geo:           p.geo || null,
-          nicho:         p.nicho || null,
-          funil:         p.funil || null,
-        };
-
-        paginas[p.nome] = {};
-        for (const h of hist) {
-          const brDt = toBrDate(h.collected_at);
-          const dk = brDt.toISOString().slice(0, 10);
-          const slot = (h.slot !== null && h.slot !== undefined)
-            ? Number(h.slot)
-            : [3, 12, 22].reduce((b, s) => Math.abs(brDt.getUTCHours() - s) < Math.abs(brDt.getUTCHours() - b) ? s : b, 3);
-          if (!paginas[p.nome][dk]) paginas[p.nome][dk] = {};
-          paginas[p.nome][dk][slot] = h.ads_count;
-        }
-      }
-
-      const slugs = pagesDoGrupo.map(p => p.slug);
-      let histMap = {}, histDates = [];
-      if (slugs.length) {
-        const { rows: histAll } = await query(`
-          SELECT p.nome, sh.ads_count, sh.slot, sh.collected_at
-          FROM scrape_history sh
-          JOIN pages p ON p.slug = sh.slug
-          WHERE sh.slug = ANY($1) AND sh.collected_at >= NOW() - INTERVAL '60 days'
-          ORDER BY sh.collected_at DESC
-        `, [slugs]);
-        for (const r of histAll) {
-          const nome = r.nome;
-          const brDt = toBrDate(r.collected_at);
-          const dk = brDt.toISOString().slice(0, 10);
-          const slot = (r.slot !== null && r.slot !== undefined)
-            ? Number(r.slot)
-            : [3, 12, 22].reduce((b, s) => Math.abs(brDt.getUTCHours() - s) < Math.abs(brDt.getUTCHours() - b) ? s : b, 3);
-          if (!histMap[nome]) histMap[nome] = {};
-          if (!histMap[nome][dk]) histMap[nome][dk] = {};
-          if (histMap[nome][dk][slot] === undefined) histMap[nome][dk][slot] = r.ads_count;
-        }
-        histDates = [...new Set(histAll.map(r => toBrDate(r.collected_at).toISOString().slice(0, 10)))]
-          .sort((a, b) => b.localeCompare(a));
-      }
-      const histLibs = Object.keys(paginas).sort((a, b) => (ultimaLeitura[b]?.ads || 0) - (ultimaLeitura[a]?.ads || 0));
-
-      return {
-        geral: { pags: paginas, ultima: ultimaLeitura, primeira: primeiraData, mon, meta },
-        hist:  { map: histMap, dates: histDates, libs: histLibs },
-        count: Object.keys(paginas).length,
-      };
-    }
-
-    const grupoPaginas  = await processarGrupo(allPages.filter(p => p.tipo !== "dominio"));
-    const grupoDominios = await processarGrupo(allPages.filter(p => p.tipo === "dominio"));
-
-    const dados       = JSON.stringify(grupoPaginas.geral);
-    const histDados   = JSON.stringify(grupoPaginas.hist);
-    const dadosDom    = JSON.stringify(grupoDominios.geral);
-    const histDadosDom = JSON.stringify(grupoDominios.hist);
-
-    // Serializa o SVG do Instagram para uso seguro dentro do template literal JS
-    const IG_SVG_ESC = IG_SVG.replace(/`/g, "\\`").replace(/\$/g, "\\$");
-
-    res.send(`<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lowticket Monitor</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>
-<style>
-:root{--bg:#0a0a14;--surface:#12121f;--surface2:#171728;--border:#23233f;--text:#f0f0fa;--text2:#b8b8d0;--muted:#7a7a98;--accent:#7c6fff;--up:#34d399;--up2:#10b981;--down:#fb7185;--flat:#8888aa;--hot:#a78bfa}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font-family:'Space Grotesk',system-ui,sans-serif;padding:18px;max-width:1600px;margin:0 auto}
-.hdr{display:flex;align-items:center;gap:12px;margin-bottom:18px}
-.hdr h1{font-size:19px;font-weight:700;color:#fff;letter-spacing:.2px}
-.hdr-sub{font-size:12px;color:var(--text2);margin-top:3px;font-family:'Space Mono',monospace}
-.hdr-live{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);background:var(--surface);border:1px solid var(--border);padding:7px 14px;border-radius:8px}
-.hdr-admin-btn{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;border:1px solid var(--accent);padding:6px 14px;border-radius:8px;transition:all .15s;white-space:nowrap}
-.hdr-admin-btn:hover{background:var(--accent);color:#fff}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--up);box-shadow:0 0 8px var(--up)}
-.section-label{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:0 0 12px 2px;display:flex;align-items:center;gap:8px}
-.scaling-strip{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:26px}
-.scale-card{background:linear-gradient(135deg,#1a1530,#14122a);border:1px solid #2e2658;border-radius:14px;padding:16px 18px;position:relative;overflow:hidden}
-.scale-card-rank{position:absolute;top:12px;right:14px;font-size:11px;color:var(--muted);font-family:'Space Mono',monospace}
-.scale-card-name{font-size:13px;font-weight:600;color:#fff;margin-bottom:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:24px}
-.scale-card-val{font-size:30px;font-weight:700;color:#fff;font-family:'Space Mono',monospace;line-height:1}
-.scale-card-meta{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px}
-.scale-pct{font-weight:600;font-family:'Space Mono',monospace}
-.scale-spark{margin-top:10px;height:32px;position:relative}
-.empty-hint{background:var(--surface);border:1px dashed var(--border);border-radius:12px;padding:22px;text-align:center;color:var(--muted);font-size:13px;margin-bottom:26px}
-.lib-link{color:var(--text);text-decoration:none;border-bottom:1px solid var(--border);padding-bottom:1px;transition:color .15s,border-color .15s}
-.lib-link:hover{color:var(--accent);border-color:var(--accent)}
-.accordion-wrap{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
-.accordion-btn{width:100%;display:flex;align-items:center;gap:10px;padding:14px 18px;background:transparent;border:none;color:var(--text);font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;cursor:pointer;text-align:left;transition:background .15s}
-.accordion-btn:hover{background:var(--surface2)}
-.acc-meta{font-size:11px;color:var(--muted);font-family:'Space Mono',monospace;margin-left:4px}
-.acc-icon{margin-left:auto;font-size:12px;color:var(--muted);transition:transform .25s;flex-shrink:0}
-.acc-icon.open{transform:rotate(180deg)}
-.accordion-body{display:none;padding:0 18px 16px;overflow-x:auto;-webkit-overflow-scrolling:touch}
-.accordion-body.open{display:block}
-.grid-charts{display:grid;grid-template-columns:380px 1fr;gap:14px;margin-bottom:26px}
-.panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
-.panel-title{font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
-.rosca-wrap{display:flex;gap:16px;align-items:center}
-.rosca-canvas{width:150px;height:150px;position:relative;flex-shrink:0}
-.legend{display:flex;flex-direction:column;gap:7px;flex:1;min-width:0}
-.leg-item{display:flex;align-items:center;gap:9px}
-.leg-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
-.leg-name{font-size:12px;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.leg-val{font-size:12px;font-weight:600;color:#fff;font-family:'Space Mono',monospace}
-.leg-pct{font-size:11px;color:var(--muted);font-family:'Space Mono',monospace;width:32px;text-align:right}
-.chart-box{height:240px;position:relative}
-.hist-box{height:300px;position:relative}
-.tbl-panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}
-table{width:100%;border-collapse:collapse;font-size:13px}
-thead th{background:var(--surface2);color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.6px;padding:11px 16px;text-align:left;font-weight:600}
-td{padding:11px 16px;border-top:1px solid var(--border);color:var(--text2);white-space:nowrap}
-tbody tr:hover td{background:var(--surface2)}
-.t-name{font-weight:600;color:#fff;white-space:normal}
-.t-name-main{display:block;font-weight:600;color:#fff;margin-bottom:4px}
-.t-meta-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
-.t-geo-badge{font-size:10px;background:rgba(34,211,238,.1);color:#22d3ee;padding:2px 7px;border-radius:5px;font-weight:500;white-space:nowrap}
-.t-nicho-badge{font-size:10px;background:rgba(167,139,250,.12);color:#a78bfa;padding:2px 7px;border-radius:5px;font-weight:500;white-space:nowrap}
-.t-funil-badge{font-size:10px;background:rgba(251,191,36,.12);color:#fbbf24;padding:2px 7px;border-radius:5px;font-weight:500;white-space:nowrap}
-.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:7px;font-size:11px;font-weight:600;font-family:'Space Grotesk'}
-.b-up{background:rgba(52,211,153,.13);color:#34d399}
-.b-hot{background:rgba(167,139,250,.15);color:#a78bfa}
-.b-down{background:rgba(251,113,133,.13);color:#fb7185}
-.b-flat{background:rgba(136,136,170,.12);color:#9999b8}
-.b-off{background:rgba(120,120,140,.1);color:#777}
-.scalebar-bg{width:80px;height:5px;background:var(--border);border-radius:3px;display:inline-block;vertical-align:middle;margin-right:8px}
-.scalebar{height:5px;border-radius:3px;display:block}
-.spark3{font-family:'Space Mono',monospace;font-size:13px}
-.ig-cell{text-align:center}
-.ig-link{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;transition:background .15s}
-.ig-link:hover{background:rgba(220,39,67,.15)}
-.ig-none{color:var(--muted);font-size:13px}
-.mono{font-family:'Space Mono',monospace}
-.hist-tbl thead th{white-space:nowrap}
-.hist-tbl td{font-family:'Space Mono',monospace;font-size:12px;text-align:center}
-.hist-tbl td.lib-name{text-align:left;font-family:'Space Grotesk',sans-serif;font-weight:600;color:#fff;white-space:nowrap}
-.hist-tbl td.date-col{color:var(--muted);text-align:left;white-space:nowrap}
-.hist-slot{display:inline-block;min-width:42px;text-align:right}
-.hist-slot.empty{color:var(--border)}
-.tbl-scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.group-title{font-size:15px;font-weight:700;color:#fff;letter-spacing:.4px;margin:0 0 16px 2px;padding-bottom:10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
-@media(max-width:1100px){.grid-charts{grid-template-columns:1fr}.rosca-wrap{flex-direction:column}}
-@media(max-width:768px){
-  body{padding:12px}
-  .hdr{flex-wrap:wrap;gap:8px}
-  .hdr-live{margin-left:0;width:100%}
-  .hdr-admin-btn{width:100%;justify-content:center;box-sizing:border-box}
-  .hdr h1{font-size:15px}
-  .hdr-sub{font-size:10px}
-  .scaling-strip{grid-template-columns:1fr 1fr}
-  .scale-card-val{font-size:24px}
-  .grid-charts{grid-template-columns:1fr}
-  .rosca-wrap{flex-direction:column;align-items:flex-start}
-  .rosca-canvas{width:120px;height:120px}
-  .hist-box{height:220px}
-  .tbl-panel table thead{display:none}
-  .tbl-panel table tbody tr{display:block;background:var(--surface2);border:1px solid var(--border);border-radius:10px;margin-bottom:10px;padding:12px 14px}
-  .tbl-panel table tbody td{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-top:none;white-space:normal;font-size:12px}
-  .tbl-panel table tbody td::before{content:attr(data-label);font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-right:10px;flex-shrink:0}
-  .tbl-panel table tbody td.t-name{font-size:14px;font-weight:700;color:#fff;border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:4px}
-  .tbl-panel table tbody td.t-name::before{display:none}
-  .scalebar-bg{width:50px}
-}
-@media(max-width:480px){.scaling-strip{grid-template-columns:1fr}}
-</style>
-</head>
-<body>
-
-<div class="hdr">
-  <div>
-    <h1>📊 Lowticket Monitor</h1>
-    <div class="hdr-sub" id="upd"></div>
-  </div>
-  <div style="margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:8px">
-    <div class="hdr-live" style="margin-left:0"><span class="dot"></span><span id="livecount"></span></div>
-    <div style="display:flex;gap:8px">
-      <a href="/admin" class="hdr-admin-btn">⚙️ Ir para Admin</a>
-      <a href="/funis" class="hdr-admin-btn">🔀 Ver Mapa de Funis</a>
-    </div>
-  </div>
-</div>
-
-<div class="group-title">📡 BIBLIOTECAS — rastreio por página</div>
-
-<div class="section-label">🚀 Escalando agora — bibliotecas em ascensão</div>
-<div class="scaling-strip" id="pag_scaling"></div>
-<div class="empty-hint" id="pag_scaling-empty" style="display:none">Nenhum item em ascensão no período. Conforme as coletas acumulam, o que cresce aparece aqui.</div>
-
-<div class="grid-charts">
-  <div class="panel">
-    <div class="panel-title">🍩 Distribuição atual</div>
-    <div class="rosca-wrap">
-      <div class="rosca-canvas"><canvas id="pag_cRosca"></canvas></div>
-      <div class="legend" id="pag_legend"></div>
-    </div>
-  </div>
-  <div class="panel">
-    <div class="panel-title">📈 Evolução histórica — média diária <span style="color:var(--down);font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px">● dia de descoberta</span></div>
-    <div class="hist-box"><canvas id="pag_cHist"></canvas></div>
-  </div>
-</div>
-
-<div class="section-label">📋 Resumo completo</div>
-<div class="tbl-panel">
-  <table>
-    <thead><tr>
-      <th>#</th><th>Bibliotecas</th><th>Descoberta</th><th>Inicial</th><th>Atual</th><th>Última Checagem</th>
-      <th>Δ Total</th><th>Tendência</th><th>Participação</th><th>3 dias</th><th>Instagram</th>
-    </tr></thead>
-    <tbody id="pag_tbody"></tbody>
-  </table>
-</div>
-
-<div style="height:36px"></div>
-
-<div class="group-title">🌐 DOMÍNIOS — rastreio por URL</div>
-
-<div class="section-label">🚀 Escalando agora — domínios em ascensão</div>
-<div class="scaling-strip" id="dom_scaling"></div>
-<div class="empty-hint" id="dom_scaling-empty" style="display:none">Nenhum item em ascensão no período. Conforme as coletas acumulam, o que cresce aparece aqui.</div>
-
-<div class="grid-charts">
-  <div class="panel">
-    <div class="panel-title">🍩 Distribuição atual</div>
-    <div class="rosca-wrap">
-      <div class="rosca-canvas"><canvas id="dom_cRosca"></canvas></div>
-      <div class="legend" id="dom_legend"></div>
-    </div>
-  </div>
-  <div class="panel">
-    <div class="panel-title">📈 Evolução histórica — média diária <span style="color:var(--down);font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px">● dia de descoberta</span></div>
-    <div class="hist-box"><canvas id="dom_cHist"></canvas></div>
-  </div>
-</div>
-
-<div class="section-label">📋 Resumo completo</div>
-<div class="tbl-panel">
-  <table>
-    <thead><tr>
-      <th>#</th><th>Domínios</th><th>Descoberta</th><th>Inicial</th><th>Atual</th><th>Última Checagem</th>
-      <th>Δ Total</th><th>Tendência</th><th>Participação</th><th>3 dias</th><th>Instagram</th>
-    </tr></thead>
-    <tbody id="dom_tbody"></tbody>
-  </table>
-</div>
-
-<div style="height:36px"></div>
-
-<div class="group-title">🔀 Mapeamento de Funis</div>
-<div class="empty-hint" style="display:flex;align-items:center;justify-content:center;gap:14px">
-  <span>O mapeamento completo de funis agora tem uma página dedicada.</span>
-  <a href="/funis" style="font-size:13px;font-weight:600;color:var(--accent);text-decoration:none;border:1px solid var(--accent);padding:8px 18px;border-radius:8px;white-space:nowrap">🔀 Abrir Mapa de Funis</a>
-</div>
-
-<div style="height:36px"></div>
-
-<div class="group-title">📅 Histórico de Coletas</div>
-
-<div class="accordion-wrap">
-  <button class="accordion-btn" onclick="toggleAccordion('pag_hist-section','pag_acc-icon')">
-    <span>📡 Histórico de Coletas — Bibliotecas · 03h · 12h · 22h</span>
-    <span class="acc-meta" id="pag_acc-meta"></span>
-    <span class="acc-icon" id="pag_acc-icon">▼</span>
-  </button>
-  <div class="accordion-body" id="pag_hist-section">Carregando histórico...</div>
-</div>
-
-<div class="accordion-wrap" style="margin-top:12px">
-  <button class="accordion-btn" onclick="toggleAccordion('dom_hist-section','dom_acc-icon')">
-    <span>🌐 Histórico de Coletas — Domínios · 03h · 12h · 22h</span>
-    <span class="acc-meta" id="dom_acc-meta"></span>
-    <span class="acc-icon" id="dom_acc-icon">▼</span>
-  </button>
-  <div class="accordion-body" id="dom_hist-section">Carregando histórico...</div>
-</div>
-
-<script>
-const IG_SVG=\`${IG_SVG_ESC}\`;
-
-document.getElementById("upd").textContent="Atualizado "+new Date().toLocaleString("pt-BR")+"  ·  coletas 03h · 12h · 22h";
-
-function toggleAccordion(bodyId,iconId){
-  const body=document.getElementById(bodyId);
-  const icon=document.getElementById(iconId);
-  body.classList.toggle('open');
-  icon.classList.toggle('open');
-}
-
-function render(D,HD,P){
-const COR=["#7c6fff","#34d399","#fb7185","#fbbf24","#22d3ee","#a78bfa","#f97316","#4ade80","#ec4899","#38bdf8","#facc15","#2dd4bf","#fb923c","#a3e635","#e879f9","#60a5fa"];
-function med(s){const v=Object.values(s).filter(x=>!isNaN(x));return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):null}
-function fd(dk){const[y,m,d]=dk.split("-");return d+"/"+m}
-function fdFull(dk){const[y,m,d]=dk.split("-");return d+"/"+m+"/"+y}
-const{pags,ultima,primeira,mon,meta}=D;
-const LP=Object.keys(pags).sort();
-const dSet=new Set();LP.forEach(p=>Object.keys(pags[p]).forEach(d=>dSet.add(d)));
-const datas=Array.from(dSet).sort();
-
-function serie(pag){return datas.map(dk=>pags[pag]?.[dk]?med(pags[pag][dk]):null)}
-function slope(pag){
-  const s=serie(pag).filter(v=>v!==null);
-  if(s.length<2)return 0;
-  const recent=s.slice(-3);
-  return recent[recent.length-1]-recent[0];
-}
-function info(pag){
-  const at=ultima[pag]?.ads??0;
-  const ini=mon[pag]?.ini??at;
-  const vn=at-ini;
-  const pct=ini>0?Math.round(((at-ini)/ini)*100):0;
-  const sl=slope(pag);
-  let cls,label,color;
-  if(at===0){cls="b-off";label="Inativo";color=getComputedStyle(document.documentElement).getPropertyValue('--muted')}
-  else if(pct>50){cls="b-hot";label="Escalando forte";color="#a78bfa"}
-  else if(sl>0&&pct>5){cls="b-up";label="Crescendo";color="#34d399"}
-  else if(sl<0&&pct<-5){cls="b-down";label="Cortando";color="#fb7185"}
-  else if(vn===0){cls="b-flat";label="Estável";color="#9999b8"}
-  else if(vn>0){cls="b-up";label="Subindo";color="#34d399"}
-  else{cls="b-down";label="Caindo";color="#fb7185"}
-  return{at,ini,vn,pct,sl,cls,label,color};
-}
-
-const porAds=[...LP].sort((a,b)=>(ultima[b]?.ads||0)-(ultima[a]?.ads||0));
-const maxAds=ultima[porAds[0]]?.ads||1;
-
-const escalando=LP.map(p=>({p,...info(p)}))
-  .filter(x=>x.at>0&&(x.label==="Escalando forte"||x.label==="Crescendo"||x.label==="Subindo")&&x.pct>0)
-  .sort((a,b)=>b.pct-a.pct);
-
-const strip=document.getElementById(P+"scaling");
-if(escalando.length===0){
-  document.getElementById(P+"scaling-empty").style.display="block";
-}else{
-  escalando.forEach((x,i)=>{
-    const card=document.createElement("div");
-    card.className="scale-card";
-    card.innerHTML='<div class="scale-card-rank">#'+(i+1)+'</div>'
-      +'<div class="scale-card-name">'+x.p+'</div>'
-      +'<div class="scale-card-val">'+x.at.toLocaleString("pt-BR")+'</div>'
-      +'<div class="scale-card-meta"><span class="scale-pct" style="color:'+x.color+'">'+(x.pct>=0?"+":"")+x.pct+'%</span>'
-      +'<span style="color:var(--muted)">'+(x.vn>=0?"+":"")+x.vn+' ads desde início</span></div>'
-      +'<div class="scale-spark"><canvas id="'+P+'spark'+i+'"></canvas></div>';
-    strip.appendChild(card);
-  });
-}
-
-const tbody=document.getElementById(P+"tbody");
-porAds.forEach((pag,idx)=>{
-  const x=info(pag);
-  const did=primeira[pag]?fdFull(primeira[pag]):"—";
-  const s=serie(pag).filter(v=>v!==null);
-  const last3=s.slice(-3);
-  const spark3=last3.length>=2?(last3[last3.length-1]>last3[0]?'<span style="color:#34d399">▲ sub</span>':last3[last3.length-1]<last3[0]?'<span style="color:#fb7185">▼ cai</span>':'<span style="color:#888">= est</span>'):"—";
-  const partPct=Math.round((x.at/maxAds)*100);
-  const corLib=COR[idx%COR.length];
-
-  // Monta célula do nome com badges de geo e nicho
-  const m=meta?.[pag]||{};
-  const geoBadge=m.geo?'<span class="t-geo-badge">🌍 '+m.geo+'</span>':'';
-  const nichoBadge=m.nicho?'<span class="t-nicho-badge">🏷️ '+m.nicho+'</span>':'';
-  const funilBadge=m.funil?'<span class="t-funil-badge">🎯 '+m.funil+'</span>':'';
-  const metaBadgesHtml=(geoBadge||nichoBadge||funilBadge)?'<div class="t-meta-badges">'+geoBadge+nichoBadge+funilBadge+'</div>':'';
-  const nomeCell='<span class="t-name-main"><a href="'+(ultima[pag]?.url||'#')+'" target="_blank" rel="noopener" class="lib-link">'+pag+'</a></span>'+metaBadgesHtml;
-
-  // Célula do Instagram
-  const igCell=m.instagram_url
-    ?'<a href="'+m.instagram_url+'" target="_blank" rel="noopener" class="ig-link" title="Ver Instagram">'+IG_SVG+'</a>'
-    :'<span class="ig-none">—</span>';
-
-  const tr=document.createElement("tr");
-  tr.innerHTML=
-    '<td class="mono" data-label="#" style="color:var(--muted)">'+(idx+1)+'</td>'
-    +'<td class="t-name" data-label="Nome">'+nomeCell+'</td>'
-    +'<td data-label="Descoberta" style="color:var(--muted)">'+did+'</td>'
-    +'<td class="mono" data-label="Inicial">'+x.ini+'</td>'
-    +'<td class="mono" data-label="Atual" style="color:#fff;font-weight:600">'+x.at+'</td>'
-    +'<td data-label="Últ. Checagem" style="color:var(--muted);font-family:Space Mono,monospace;font-size:11px">'
-    +(ultima[pag]?.ultimaColeta?new Date(ultima[pag].ultimaColeta).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—')
-    +'</td>'
-    +'<td class="mono" data-label="Δ Total" style="color:'+(x.vn>0?"#34d399":x.vn<0?"#fb7185":"#888")+'">'+(x.vn>=0?"+":"")+x.vn+'</td>'
-    +'<td data-label="Tendência"><span class="badge '+x.cls+'">'+x.label+'</span></td>'
-    +'<td data-label="Participação"><span class="scalebar-bg"><span class="scalebar" style="width:'+partPct+'%;background:'+corLib+'"></span></span><span class="mono" style="font-size:11px;color:var(--muted)">'+partPct+'%</span></td>'
-    +'<td class="spark3" data-label="3 dias">'+spark3+'</td>'
-    +'<td class="ig-cell" data-label="Instagram">'+igCell+'</td>';
-  tbody.appendChild(tr);
-});
-
-const ro=porAds.filter(p=>(ultima[p]?.ads||0)>0);
-const totalRo=ro.reduce((s,p)=>s+(ultima[p]?.ads||0),0);
-const legend=document.getElementById(P+"legend");
-ro.forEach((p,i)=>{
-  const at=ultima[p]?.ads||0;
-  const pct=totalRo>0?Math.round((at/totalRo)*100):0;
-  const it=document.createElement("div");it.className="leg-item";
-  it.innerHTML='<span class="leg-dot" style="background:'+COR[porAds.indexOf(p)%COR.length]+'"></span>'
-    +'<span class="leg-name" title="'+p+'">'+p+'</span>'
-    +'<span class="leg-val">'+at.toLocaleString("pt-BR")+'</span>'
-    +'<span class="leg-pct">'+pct+'%</span>';
-  legend.appendChild(it);
-});
-
-new Chart(document.getElementById(P+"cRosca"),{
-  type:"doughnut",
-  data:{labels:ro,datasets:[{data:ro.map(p=>ultima[p]?.ads||0),backgroundColor:ro.map(p=>COR[porAds.indexOf(p)%COR.length]),borderWidth:2,borderColor:"#12121f"}]},
-  options:{responsive:true,maintainAspectRatio:false,cutout:"62%",plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>" "+ctx.label+": "+ctx.parsed.toLocaleString("pt-BR")+" ads"}}}}
-});
-
-const LP_hist=porAds.slice(0,8);
-new Chart(document.getElementById(P+"cHist"),{
-  type:"line",
-  data:{labels:datas.map(fd),datasets:LP_hist.map((p)=>{const didK=primeira[p]||null;const c=COR[porAds.indexOf(p)%COR.length];return{label:p,data:serie(p),borderColor:c,backgroundColor:"transparent",borderWidth:2,pointBackgroundColor:datas.map(dk=>dk===didK?"#fb7185":c),pointRadius:datas.map(dk=>dk===didK?5:2),pointHoverRadius:6,tension:.35,spanGaps:true};})},
-  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{color:"#b8b8d0",font:{size:11,family:"Space Grotesk"},padding:10,boxWidth:8,usePointStyle:true}},tooltip:{callbacks:{label:ctx=>" "+ctx.dataset.label+": "+(ctx.parsed.y??"—")+" ads"}}},scales:{x:{ticks:{color:"#7a7a98",font:{size:11}},grid:{color:"#1c1c30"}},y:{ticks:{color:"#7a7a98",font:{size:11}},grid:{color:"#1c1c30"},beginAtZero:false}}}
-});
-
-escalando.forEach((x,i)=>{
-  const el=document.getElementById(P+"spark"+i);
-  if(!el)return;
-  new Chart(el,{type:"line",data:{labels:datas,datasets:[{data:serie(x.p),borderColor:x.color,backgroundColor:"transparent",borderWidth:2,pointRadius:0,tension:.4,spanGaps:true}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{enabled:false}},scales:{x:{display:false},y:{display:false}},elements:{line:{borderCapStyle:"round"}}}});
-});
-
-// ── Tabela histórica de coletas ──────────────────────────────────────────────
-const histSection=document.getElementById(P+"hist-section");
-if(!HD.dates.length||!HD.libs.length){
-  histSection.innerHTML='<div class="empty-hint" style="margin:0">Nenhum dado histórico disponível ainda. Aguarde as próximas coletas automáticas.</div>';
-}else{
-  function fdH(dk){const[y,m,d]=dk.split("-");return d+"/"+m+"/"+y.slice(2)}
-  function slotCell(nome,dk,slot){
-    const v=HD.map[nome]?.[dk]?.[slot];
-    if(v===undefined||v===null)return '<span class="hist-slot empty">—</span>';
-    return '<span class="hist-slot">'+v+'</span>';
-  }
-  let thead='<thead><tr>'
-    +'<th style="text-align:left;white-space:nowrap">Biblioteca</th>'
-    +'<th style="text-align:left;white-space:nowrap">Data</th>'
-    +'<th style="text-align:center">03h</th>'
-    +'<th style="text-align:center">12h</th>'
-    +'<th style="text-align:center">22h</th>'
-    +'</tr></thead>';
-  let tbody2='<tbody>';
-  let rowCount=0;
-  for(const lib of HD.libs){
-    let firstForLib=true;
-    for(const dk of HD.dates){
-      const slots=HD.map[lib]?.[dk];
-      if(!slots)continue;
-      const hasAny=slots[3]!==undefined||slots[12]!==undefined||slots[22]!==undefined;
-      if(!hasAny)continue;
-      tbody2+='<tr>'
-        +'<td class="lib-name">'+(firstForLib?lib:'')+'</td>'
-        +'<td class="date-col">'+fdH(dk)+'</td>'
-        +'<td>'+slotCell(lib,dk,3)+'</td>'
-        +'<td>'+slotCell(lib,dk,12)+'</td>'
-        +'<td>'+slotCell(lib,dk,22)+'</td>'
-        +'</tr>';
-      firstForLib=false;
-      rowCount++;
-    }
-    if(!firstForLib){
-      tbody2+='<tr style="height:4px;background:var(--bg)"><td colspan="5"></td></tr>';
-    }
-  }
-  tbody2+='</tbody>';
-  histSection.innerHTML='<div class="tbl-scroll-x"><table class="hist-tbl">'+thead+tbody2+'</table></div>';
-  const metaEl=document.getElementById(P+"acc-meta");
-  if(metaEl)metaEl.textContent='('+rowCount+' registros)';
-}
-}
-
-const D_DOM=__DADOS_DOM__;
-const HD_DOM=__HIST_DOM__;
-const D_PAG=__DADOS_PLACEHOLDER__;
-const HD_PAG=__HIST_PLACEHOLDER__;
-
-const totalLibs=Object.keys(D_DOM.pags).length+Object.keys(D_PAG.pags).length;
-document.getElementById("livecount").textContent=Object.keys(D_DOM.pags).length+" domínios · "+Object.keys(D_PAG.pags).length+" Páginas/FanPage";
-
-render(D_PAG,HD_PAG,"pag_");
-render(D_DOM,HD_DOM,"dom_");
-
-<\/script>
-</body>
-</html>`
-      .replace("__DADOS_DOM__", dadosDom)
-      .replace("__HIST_DOM__", histDadosDom)
-      .replace("__DADOS_PLACEHOLDER__", dados)
-      .replace("__HIST_PLACEHOLDER__", histDados));
-  } catch (err) {
-    res.status(500).send("Erro: " + err.message);
-  }
-});
-
-// ─── Scheduler ───────────────────────────────────────────────────────────────
-
-// Cron em UTC explícito: 03h BR=06h UTC | 12h BR=15h UTC | 22h BR=01h UTC
-cron.schedule("0 6 * * *",  () => runAllScrapes("cron-03h"), { timezone: "UTC" });
-cron.schedule("0 15 * * *", () => runAllScrapes("cron-12h"), { timezone: "UTC" });
-cron.schedule("0 1 * * *",  () => runAllScrapes("cron-22h"), { timezone: "UTC" });
-console.log("[CRON] scheduled 03h/12h/22h BRT = 06h/15h/01h UTC");
-
-// ─── Start ────────────────────────────────────────────────────────────────────
-
-const PORT = process.env.PORT || 3000;
-initDb().then(() => {
-  app.listen(PORT, () => console.log(`[SERVER] Running on port ${PORT}`));
-});
+init();

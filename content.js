@@ -770,7 +770,17 @@ function processCards() {
   const mediaSignatures = {};
   const domainSignatures = {};
   activeCardData = cards.map(card => {
-    const data = card._vivaData || extractCardData(card);
+    // AUDITORIA #01 (crítico): antes era `card._vivaData || extractCardData(card)`. Esse `||`
+    // fazia extractCardData() nunca mais ser chamada para este nó de DOM depois do 1º ciclo —
+    // `card._vivaData` vira truthy na primeira passagem e fica truthy para sempre, então a
+    // invalidação por identitySignal do FIX 4.5 (que mora DENTRO de extractCardData) nunca
+    // chegava a rodar. A Meta recicla nós de DOM da grade virtualizada ao rolar; sem essa
+    // invalidação, um card podia continuar exibindo para sempre os dados do PRIMEIRO anúncio
+    // que ocupou aquele slot, mesmo depois da Meta trocar o conteúdo por baixo. extractCardData()
+    // já faz seu próprio cache barato via cardDataMap (WeakMap O(1)) + identitySignal
+    // (querySelector("video, img") restrito ao card, não à página inteira), então chamá-la
+    // sempre aqui não reintroduz custo — só reabilita a invalidação que já existia e nunca rodava.
+    const data = extractCardData(card);
     // FIX 4.3: registra o card no gate de proximidade assim que descoberto, independente de já
     // ter sido decidido se ele será exibido ou processado neste ciclo — o próprio
     // IntersectionObserver decide de forma assíncrona e barata quando ele está perto o bastante.

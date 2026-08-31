@@ -15,6 +15,7 @@
   --viva-warning: #ff9500; /* Apple Orange */
   --viva-danger: #ff3b30; /* Apple Red */
   --viva-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.08);
+  --viva-dock-height: 64px; /* altura da barra fixa de filtros no rodapé */
 }
 
 /* REMOVIDO: a regra "html, body { overflow-x: hidden }" quebrava o position:sticky nativo
@@ -36,36 +37,55 @@
   z-index: 1 !important;
 }
 
-/* ─── Destaques Graduais de Bordas (Média Ponderada no Scroll) ───────────── */
+/* ─── VIVA Card Frame: caixa Apple-style que envolve o card nativo intacto ────────────────── */
+/* O card nativo entra 100% intocado dentro deste wrapper; todo o UI da VIVA (faixa de escala,
+   badges, rodapé) fica em volta dele, nunca dentro — o card em si nunca ganha filhos novos.
+   Design: cartão branco, cantos arredondados únicos (14px, controlados só aqui — as classes de
+   nível abaixo NÃO redefinem raio/sombra, só o acento lateral e um tint muito sutil de fundo,
+   para não competir com o raio do frame e não virar um "brilho neon" chamativo). */
+.viva-card-frame {
+  display: flex !important;
+  flex-direction: column !important;
+  background: #ffffff !important;
+  border: 1px solid rgba(0, 0, 0, 0.07) !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+  transition: box-shadow 0.2s ease, transform 0.2s ease !important;
+  contain: layout style !important;
+}
 
-/* ─── Sistema de Destaque de Escala em 3 Graus ───────────────────────────── */
+.viva-card-frame:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.09) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* ─── Sistema de 3 Fases por Tempo de Veiculação (única fonte de verdade) ─────────────────── */
 /*
- * Nível 1 — Em Escala   : 7-29 dias OU 2-3 repetições → Âmbar
- * Nível 2 — Escalando   : 30-89 dias OU 4-5 repetições → Laranja
- * Nível 3 — Escalado Pesado: 90+ dias OU 6+ repetições → Vermelho Apple
+ * Fase determinada SOMENTE pelo tempo ativo do anúncio (ver resolveStage() em content.js) —
+ * duplicação/mesmo criativo é sinal à parte (badge "Mesmo Criativo"), nunca critério de fase.
  *
- * Princípio: borda esquerda sólida + tint de fundo suave.
- * O olho lê a barra esquerda como um semáforo de prioridade.
+ *   EM TESTE          : < 3 dias (ou data não detectada)  → sem acento — não compete visualmente
+ *   POTENCIAL ESCALA   : 3 a 6 dias                          → âmbar, sinal de atenção
+ *   ESCALA BRUTA        : 7+ dias                             → vermelho, o que se quer achar rápido
+ *
+ * Princípio de eficiência: a maioria dos cards vai cair em EM TESTE. Dar destaque visual pra
+ * maioria anula o propósito de "bater o olho e achar o que escalou" — por isso só potencial e
+ * bruta ganham acento lateral. Sem glow, sem raio próprio no acento — o olho lê a cor como um
+ * semáforo discreto, não como um alerta piscando.
  */
-.viva-border-level-1 {
-  border-left: 4px solid #FF9F0A !important;
-  background-color: rgba(255, 159, 10, 0.05) !important;
-  border-radius: 8px !important;
+.viva-stage-teste {
+  /* Sem acento de propósito — frame plano, herda só a base de .viva-card-frame. */
 }
 
-.viva-border-level-2 {
-  border-left: 5px solid #FF6300 !important;
-  background-color: rgba(255, 99, 0, 0.07) !important;
-  border-radius: 8px !important;
-  box-shadow: inset 4px 0 12px rgba(255, 99, 0, 0.12) !important;
+.viva-stage-potencial {
+  border-left: 3px solid #FF9F0A !important;
+  background-color: rgba(255, 159, 10, 0.035) !important;
 }
 
-.viva-border-level-3,
-.viva-border-escala {
-  border: 2px solid #FF3B30 !important;
+.viva-stage-bruta {
+  border-left: 4px solid #FF3B30 !important;
   background-color: rgba(255, 59, 48, 0.04) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 0 14px rgba(255, 59, 48, 0.35), inset 0 0 10px rgba(255, 59, 48, 0.1) !important;
 }
 
 /* Escala Potencial Modular Apple Banner (32px / 13px Bold) */
@@ -74,9 +94,14 @@
   align-items: center !important;
   flex-wrap: wrap !important;
   gap: 6px !important;
-  margin: 6px 12px 8px 12px !important;
-  width: fit-content !important;
+  width: auto !important;
   box-sizing: border-box !important;
+}
+
+/* Só o frame define o respiro externo do header — assim escalaStrip e badgeContainer ficam
+   visualmente como UM bloco de cabeçalho coeso, não duas faixas soltas com margens próprias. */
+.viva-card-frame > .viva-escala-strip {
+  margin: 12px 14px 6px 14px !important;
 }
 
 .viva-escala-chip {
@@ -91,10 +116,19 @@
   box-sizing: border-box !important;
 }
 
-.viva-escala-chip-hot {
-  background: linear-gradient(135deg, #FF3B30, #FF9500) !important;
+.viva-escala-chip-teste {
+  background: rgba(142, 142, 147, 0.14) !important;
+  color: var(--viva-muted) !important;
+}
+
+.viva-escala-chip-potencial {
+  background: rgba(255, 159, 10, 0.16) !important;
+  color: #B25900 !important;
+}
+
+.viva-escala-chip-bruta {
+  background: linear-gradient(135deg, #FF3B30, #FF6300) !important;
   color: #FFFFFF !important;
-  box-shadow: 0 2px 8px rgba(255, 59, 48, 0.3) !important;
 }
 
 .viva-escala-chip-whatsapp {
@@ -104,11 +138,6 @@
   border: 1px solid rgba(255, 255, 255, 0.35) !important;
   box-shadow: 0 2px 10px rgba(37, 211, 102, 0.45) !important;
   letter-spacing: 0.3px !important;
-}
-
-.viva-escala-chip-normal {
-  background: rgba(142, 142, 147, 0.15) !important;
-  color: var(--viva-text) !important;
 }
 
 .viva-escala-chip-sub {
@@ -148,11 +177,21 @@
   flex-wrap: wrap !important;
   gap: 6px !important;
   align-items: center !important;
-  margin: 2px 12px 10px 12px !important;
   padding: 0 !important;
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
+}
+
+.viva-card-frame > .viva-card-badge-container {
+  margin: 0 14px 12px 14px !important;
+}
+
+/* Linha fina separando o cabeçalho VIVA do conteúdo nativo da Meta logo abaixo — deixa claro
+   onde termina "o que a extensão acrescentou" e começa o anúncio original, sem sobrepor nada. */
+.viva-card-frame > .viva-card-badge-container {
+  padding-bottom: 12px !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06) !important;
 }
 
 .viva-domain-badge {
@@ -267,9 +306,14 @@
   display: flex !important;
   align-items: center !important;
   gap: 8px !important;
-  margin: 10px 14px 14px 14px !important;
   position: relative !important;
   box-sizing: border-box !important;
+}
+
+.viva-card-frame > .viva-card-footer {
+  margin: 12px 14px 14px 14px !important;
+  padding-top: 12px !important;
+  border-top: 1px solid rgba(0, 0, 0, 0.06) !important;
 }
 
 /* Input da URL Copiável */
@@ -314,10 +358,6 @@
   z-index: 2 !important;
 }
 
-.viva-processed:has(.viva-gear-dropdown.viva-active) {
-  z-index: 50 !important;
-}
-
 .viva-gear-btn {
   width: 34px !important;
   height: 34px !important;
@@ -347,12 +387,13 @@
   transition: transform 0.25s ease;
 }
 
-/* Menu Dropdown Suspenso */
+/* Menu Dropdown Suspenso — PORTAL: agora é filho direto de <body> (ver content.js,
+   gearBtn click handler), nunca mais descendente de .viva-card-frame. position:fixed +
+   coordenadas calculadas via JS (positionDropdown) a cada abertura. Isso resolve de vez a
+   disputa de stacking-context entre cards de linhas diferentes — o dropdown nunca mais
+   compete com nenhum outro card por z-index, porque não é mais filho de nenhum deles. */
 .viva-gear-dropdown {
-  position: absolute !important;
-  top: 100% !important; /* Dropdown now opens downwards from the top right */
-  right: 0 !important;
-  margin-top: 8px !important;
+  position: fixed !important;
   width: 200px !important;
   background: rgba(255, 255, 255, 0.96) !important;
   backdrop-filter: blur(20px) saturate(180%) !important;
@@ -361,7 +402,7 @@
   border-radius: 12px !important;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16) !important;
   padding: 6px !important;
-  z-index: 60 !important;
+  z-index: 2147483000 !important;
   pointer-events: auto !important;
   display: flex !important;
   flex-direction: column !important;
@@ -417,7 +458,7 @@
   top: 96px !important;
   right: 40px !important;
   width: 280px !important;
-  max-height: calc(100vh - 128px) !important;
+  max-height: calc(100vh - 128px - var(--viva-dock-height)) !important; /* nunca fica atrás do dock */
   background: var(--viva-bg) !important;
   backdrop-filter: blur(20px) saturate(190%) !important;
   -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
@@ -434,6 +475,114 @@
 .viva-sidebar.viva-minimized .viva-sidebar-content {
   display: none !important;
 }
+
+/* ─── VIVA Dock: barra fixa no rodapé com os filtros de tela ──────────────────────────────── */
+/* Extraído da sidebar para ficar sempre visível, independente de scroll. Mesmo vidro
+   translúcido da sidebar (consistência de material), altura fina de toolbar — não compete
+   visualmente com os anúncios. Os controles aqui são cumulativos entre si (Mín. Ads Ativos +
+   Recentes, por exemplo, podem estar ligados ao mesmo tempo — nenhum desliga o outro). */
+.viva-dock {
+  position: fixed !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  height: var(--viva-dock-height) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-wrap: wrap !important;
+  gap: 20px !important;
+  padding: 0 24px !important;
+  background: var(--viva-bg) !important;
+  backdrop-filter: blur(20px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
+  border-top: 1px solid var(--viva-border) !important;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.06) !important;
+  z-index: 999998 !important;
+  box-sizing: border-box !important;
+  font-family: var(--viva-font) !important;
+}
+
+.viva-dock-group {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+}
+
+.viva-dock-label {
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  color: var(--viva-muted) !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.4px !important;
+  white-space: nowrap !important;
+}
+
+.viva-dock-input {
+  width: 68px !important;
+  height: 28px !important;
+  background-color: rgba(0, 0, 0, 0.03) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  border-radius: 7px !important;
+  color: var(--viva-text) !important;
+  font-size: 13px !important;
+  padding: 0 8px !important;
+  outline: none !important;
+  box-sizing: border-box !important;
+  transition: all 0.2s !important;
+}
+
+.viva-dock-input:focus {
+  background-color: #fff !important;
+  border-color: var(--viva-accent) !important;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15) !important;
+}
+
+.viva-dock-apply-btn {
+  height: 30px !important;
+  padding: 0 16px !important;
+  font-size: 12px !important;
+  border-radius: 8px !important;
+  white-space: nowrap !important;
+}
+
+.viva-dock-divider {
+  width: 1px !important;
+  height: 32px !important;
+  background-color: rgba(0, 0, 0, 0.1) !important;
+  flex-shrink: 0 !important;
+}
+
+.viva-dock-toggle-group {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.viva-dock-toggle-label {
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  color: var(--viva-text) !important;
+  white-space: nowrap !important;
+}
+
+/* Variante compacta do switch iOS — só pra caber na altura fina do dock. Seletores compostos
+   (.viva-switch.viva-switch-sm) de propósito, pra vencer a especificidade da regra base
+   independente de onde este bloco fique no arquivo. */
+.viva-switch.viva-switch-sm {
+  width: 36px !important;
+  height: 21px !important;
+}
+
+.viva-switch.viva-switch-sm .viva-slider:before {
+  height: 17px !important;
+  width: 17px !important;
+}
+
+.viva-switch.viva-switch-sm input:checked + .viva-slider:before {
+  transform: translateX(15px) !important;
+}
+
 
 .viva-sidebar-minimize-btn {
   background: none !important;
@@ -606,29 +755,30 @@ input:checked + .viva-slider:before {
 /* Segmented Control (Estilo Toggle de Abas iOS) */
 .viva-segmented-control {
   display: flex !important;
-  background-color: rgba(120, 120, 128, 0.12) !important;
-  border-radius: 8px !important;
-  padding: 2px !important;
-  border: none !important;
+  background: rgba(142, 142, 147, 0.14) !important;
+  border-radius: 9px !important;
+  padding: 3px !important;
+  margin-bottom: 12px !important;
 }
 
-.viva-segmented-button {
+.viva-segmented-btn {
   flex: 1 !important;
-  background: none !important;
   border: none !important;
-  color: var(--viva-text) !important;
+  background: transparent !important;
+  border-radius: 7px !important;
+  padding: 6px 4px !important;
   font-size: 11px !important;
   font-weight: 600 !important;
-  padding: 6px 2px !important;
+  color: var(--viva-muted, #86868b) !important;
   cursor: pointer !important;
-  border-radius: 6px !important;
-  transition: all 0.2s !important;
+  transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
 }
 
-.viva-segmented-button-active {
-  background-color: #fff !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 1px rgba(0, 0, 0, 0.06) !important;
-  color: #000 !important;
+.viva-segmented-btn.active {
+  background: #ffffff !important;
+  color: var(--viva-text, #1d1d1f) !important;
+  font-weight: 700 !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
 }
 
 /* Tabela de Resultados Agregados */
@@ -806,7 +956,7 @@ input:checked + .viva-slider:before {
 /* Botão Flutuante de Voltar ao Topo */
 .viva-scroll-top-btn {
   position: fixed !important;
-  bottom: 24px !important;
+  bottom: calc(var(--viva-dock-height) + 24px) !important; /* nunca fica embaixo do dock */
   right: 24px !important;
   width: 44px !important;
   height: 44px !important;
