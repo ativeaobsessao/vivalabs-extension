@@ -437,9 +437,11 @@ function getCardDomElements(card) {
   return cache;
 }
 
-function getAdCount(advertiserName) {
-  return activeCardData.filter(item => item.data.advertiserName === advertiserName).length;
-}
+// AUDITORIA #02: getAdCount(advertiserName) foi removida daqui. Fazia activeCardData.filter()
+// completo (O(n)) a cada chamada, e era chamada uma vez por item dentro de outro loop O(n) em
+// processCards() — O(n²) por ciclo. A contagem por anunciante agora é acumulada em O(n) único,
+// no mesmo passe que já monta cardSignatures/mediaSignatures/domainSignatures (ver
+// `advertiserCounts` dentro de processCards()).
 
 function extractAdvertiserName(card) {
   const dom = getCardDomElements(card);
@@ -769,6 +771,15 @@ function processCards() {
   cardSignatures = {};
   const mediaSignatures = {};
   const domainSignatures = {};
+  // AUDITORIA #02 (crítico — O(n²) -> O(n)): contagem de anúncios por anunciante, construída no
+  // MESMO passe único que já monta as 3 contagens acima. Antes vivia numa função separada
+  // (getAdCount), chamada dentro do loop `activeCardData.forEach` logo abaixo — ou seja, um
+  // activeCardData.filter() inteiro (O(n)) rodando para CADA um dos n cards, O(n²) por ciclo de
+  // processCards(). Com ~20 mil cards ativos isso são ~400 milhões de comparações de string por
+  // ciclo, disparado a cada scroll e mutação — a maior fonte de travamento em bibliotecas
+  // grandes. Passa a seguir o mesmo padrão de acumulação O(1)-por-item que as 3 contagens
+  // vizinhas já usavam.
+  const advertiserCounts = {};
   activeCardData = cards.map(card => {
     // AUDITORIA #01 (crítico): antes era `card._vivaData || extractCardData(card)`. Esse `||`
     // fazia extractCardData() nunca mais ser chamada para este nó de DOM depois do 1º ciclo —
@@ -796,6 +807,7 @@ function processCards() {
     if (rootDom) {
       domainSignatures[rootDom] = (domainSignatures[rootDom] || 0) + 1;
     }
+    advertiserCounts[data.advertiserName] = (advertiserCounts[data.advertiserName] || 0) + 1;
     data.rootDom = rootDom;
     return { card, data };
   });
@@ -810,7 +822,10 @@ function processCards() {
     item.twinCount = twinCount;
     item.domainCount = domainCount;
 
-    const adsCount = getAdCount(data.advertiserName);
+    // AUDITORIA #02: lookup O(1) no mapa construído no primeiro passe acima, no lugar da antiga
+    // getAdCount() (removida) — que recalculava um activeCardData.filter() inteiro (O(n)) para
+    // cada um dos n cards deste mesmo loop, o que era o O(n²) por ciclo de processCards().
+    const adsCount = advertiserCounts[data.advertiserName] || 1;
     item.isEscala = (data.adAgeDays !== null && data.adAgeDays >= 3) || effectiveDupCount >= 2;
     
     let shouldShow = true;
