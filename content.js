@@ -228,6 +228,24 @@ function cleanInstagramUrl(url) {
   return url;
 }
 
+// AUDITORIA #06 (crítico — XSS): nenhuma função de escape de HTML existia neste arquivo (o
+// backend index.js tem escAttr() para o mesmo propósito, mas a extensão nunca adotou o
+// equivalente). Nome do anunciante, nome da página, domínio de destino e link do Instagram são
+// todos extraídos do DOM da própria Meta Ad Library — texto que qualquer anunciante controla ao
+// configurar seu anúncio/página — e vários desses valores eram interpolados direto em innerHTML
+// sem nenhuma sanitização, permitindo injeção de markup/atributos arbitrários que executariam no
+// contexto do content script (com acesso a chrome.storage, ao DOM da página e à API do backend).
+// Escapa & < > " ' — seguro tanto em texto quanto dentro de atributos entre aspas (todo uso
+// neste arquivo delimita atributos com aspas duplas ou simples).
+function vivaEscapeHtml(str) {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // FIX 4.1 (gargalo de inicialização): esta função só lê chrome.storage.local — é 100% local,
 // sem rede, e resolve quase instantaneamente. Antes, loadConfig() também esperava
 // fetchMonitoredPages() terminar antes de devolver o controle para init(), o que travava a
@@ -1050,7 +1068,7 @@ function processCards() {
               <line x1="2" y1="12" x2="22" y2="12"></line>
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
-            ${rootDom} (${item.domainCount}x)
+            ${vivaEscapeHtml(rootDom)} (${item.domainCount}x)
           `;
           domBadge.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -1315,7 +1333,7 @@ function openFunnelModal(landingUrl, advertiserContext) {
       <div class="viva-modal-header" style="display:flex; justify-content:space-between; align-items:center;">
         <div>
           <h2 class="viva-modal-title" style="margin:0;">Salvar Funil Operacional (Multi-Etapas)</h2>
-          <div style="font-size:12px; color:var(--viva-muted); margin-top:3px;">Anunciante: <strong style="color:var(--viva-text)">${activeName}</strong></div>
+          <div style="font-size:12px; color:var(--viva-muted); margin-top:3px;">Anunciante: <strong style="color:var(--viva-text)">${vivaEscapeHtml(activeName)}</strong></div>
         </div>
         <span class="viva-funnel-step-badge">${getOfficialMetaTotalResults()} criativos ativos</span>
       </div>
@@ -1363,12 +1381,12 @@ function openFunnelModal(landingUrl, advertiserContext) {
           </div>
           <div style="flex:2;">
             <label class="viva-label" style="font-size:11px;">Rótulo da Etapa</label>
-            <input type="text" class="viva-input step-rotulo" value="${step.rotulo}" placeholder="${step.tipo.toUpperCase()}">
+            <input type="text" class="viva-input step-rotulo" value="${vivaEscapeHtml(step.rotulo)}" placeholder="${step.tipo.toUpperCase()}">
           </div>
         </div>
         <div>
           <label class="viva-label" style="font-size:11px;">URL da Etapa</label>
-          <input type="text" class="viva-input step-url" value="${step.url}" placeholder="https://...">
+          <input type="text" class="viva-input step-url" value="${vivaEscapeHtml(step.url)}" placeholder="https://...">
         </div>
       `;
 
@@ -1544,9 +1562,9 @@ function showFunnelConfirmAppleModal(info, onConfirm) {
   const stepsHtml = info.steps.map((s, idx) => `
     <div class="viva-funnel-summary-item">
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span class="viva-funnel-summary-step-title">#${idx + 1} • [${s.tipo.toUpperCase()}] ${s.rotulo ? s.rotulo : ''}</span>
+        <span class="viva-funnel-summary-step-title">#${idx + 1} • [${s.tipo.toUpperCase()}] ${s.rotulo ? vivaEscapeHtml(s.rotulo) : ''}</span>
       </div>
-      <span class="viva-funnel-summary-step-url">${s.url}</span>
+      <span class="viva-funnel-summary-step-url">${vivaEscapeHtml(s.url)}</span>
     </div>
   `).join("");
 
@@ -1563,7 +1581,7 @@ function showFunnelConfirmAppleModal(info, onConfirm) {
       <div class="viva-confirm-body">
         <div class="viva-confirm-row">
           <span class="viva-confirm-label">Anunciante Alvo:</span>
-          <span class="viva-confirm-value" title="${info.nome}">${info.nome}</span>
+          <span class="viva-confirm-value" title="${vivaEscapeHtml(info.nome)}">${vivaEscapeHtml(info.nome)}</span>
         </div>
         <div class="viva-confirm-row">
           <span class="viva-confirm-label">Criativos Ativos (Meta):</span>
@@ -2046,7 +2064,7 @@ function setupSidebarInteractions() {
         <div class="viva-confirm-body">
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">Alvo Operacional:</span>
-            <span class="viva-confirm-value" title="${info.nome}">${info.nome}</span>
+            <span class="viva-confirm-value" title="${vivaEscapeHtml(info.nome)}">${vivaEscapeHtml(info.nome)}</span>
           </div>
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">Tipo do Cadastro:</span>
@@ -2058,7 +2076,7 @@ function setupSidebarInteractions() {
           </div>
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">Instagram:</span>
-            <span class="viva-confirm-value" title="${info.instagram}">${info.instagram.replace("https://www.", "").replace("https://", "")}</span>
+            <span class="viva-confirm-value" title="${vivaEscapeHtml(info.instagram)}">${vivaEscapeHtml(info.instagram.replace("https://www.", "").replace("https://", ""))}</span>
           </div>
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">Total Oficial (Meta):</span>
@@ -2106,7 +2124,7 @@ function setupSidebarInteractions() {
           <div class="viva-success-icon-wrap">✓</div>
           <div>
             <div class="viva-confirm-title" style="font-size: 17px; color: #1D1D1F;">Monitoramento Ativado!</div>
-            <div class="viva-confirm-sub">${info.tipo} "<strong>${info.nome}</strong>" foi salvo com sucesso no ecossistema VIVA.</div>
+            <div class="viva-confirm-sub">${info.tipo} "<strong>${vivaEscapeHtml(info.nome)}</strong>" foi salvo com sucesso no ecossistema VIVA.</div>
           </div>
         </div>
         <div class="viva-confirm-actions" style="margin-top: 14px;">
@@ -2222,7 +2240,7 @@ function showTopAdvertisersModal() {
             <span style="font-size: 16px; font-weight: 700; width: 28px; text-align: center; color: var(--viva-text);">${medal}</span>
             <div style="display: flex; flex-direction: column; overflow: hidden;">
               <span style="font-weight: 600; font-size: 13.5px; color: var(--viva-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 5px;">
-                ${adv.name} <span style="font-size: 11px; color: var(--viva-accent); font-weight: 700;">↗</span>
+                ${vivaEscapeHtml(adv.name)} <span style="font-size: 11px; color: var(--viva-accent); font-weight: 700;">↗</span>
               </span>
               <span style="font-size: 11px; color: var(--viva-muted);">Ativo no DOM: ${adv.count} cards • Pico de Variações: ${adv.maxDup}x</span>
             </div>
