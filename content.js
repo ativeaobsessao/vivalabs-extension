@@ -1371,7 +1371,7 @@ function openFunnelModal(landingUrl, advertiserContext) {
             <label class="viva-label" style="font-size:11px;">Tipo</label>
             <select class="viva-input step-tipo" style="padding:6px 10px;">
               <option value="quiz" ${step.tipo === "quiz" ? "selected" : ""}>QUIZ</option>
-              <option value="adv" ${step.tipo === "adv" ? "selected" : ""}>ADV (Advertorial)</option>
+              <option value="advertorial" ${step.tipo === "advertorial" ? "selected" : ""}>ADV (Advertorial)</option>
               <option value="vsl" ${step.tipo === "vsl" ? "selected" : ""}>VSL</option>
               <option value="tsl" ${step.tipo === "tsl" ? "selected" : ""}>TSL</option>
               <option value="checkout" ${step.tipo === "checkout" ? "selected" : ""}>CHECKOUT</option>
