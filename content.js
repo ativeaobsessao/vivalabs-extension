@@ -754,6 +754,37 @@ function extractCardData(card) {
   return data;
 }
 
+// AUDITORIA #12 (Fase 1 — correção do grid quebrado): substitui a heurística antiga do
+// reflow ("sobe 1 nível se o pai imediato tem exatamente 1 filho"), que rodava
+// independentemente para CADA card sem nunca confirmar que todos concordavam sobre qual é
+// o container compartilhado. Se a estrutura da Meta tiver uma camada de wrapper diferente
+// da que existia quando aquela heurística foi escrita — uma a mais, uma a menos, ou um
+// filho irmão extra em algum nível — cada card podia acabar configurando o PRÓPRIO
+// container como flex, virando uma "grade" de 1 item por linha, empilhada verticalmente
+// (exatamente o sintoma relatado: só um card aparece por vez, badges fora de posição,
+// engrenagem do rodapé tampada pelo card seguinte por sobreposição de caixas).
+// findCardCell() sobe a árvore a partir do card e só para quando encontra um nível cujo
+// pai de fato tem MAIS de um card (ou descendente de card) como filho direto — não assume
+// profundidade fixa, então se adapta sozinha se a Meta mudar a estrutura de novo no futuro.
+function findCardCell(card) {
+  let cell = card;
+  let depth = 0;
+  while (cell.parentElement && depth < 8) {
+    const parent = cell.parentElement;
+    let cardSiblings = 0;
+    for (const child of parent.children) {
+      if (child.classList.contains("viva-processed") || child.querySelector(".viva-processed")) {
+        cardSiblings++;
+        if (cardSiblings > 1) break;
+      }
+    }
+    if (cardSiblings > 1) return { cell, parent };
+    cell = parent;
+    depth++;
+  }
+  return { cell: card, parent: cell.parentElement };
+}
+
 let isBatching = false;
 let pendingBatchCards = false;
 
@@ -895,22 +926,25 @@ function processCards() {
       // !important força recálculo de estilo do navegador, então isso era trabalho puro
       // perdido em buscas grandes com milhares de cards já estáveis na tela.
       activeCardData.forEach(item => {
-        let cell = item.card;
-        let parent = cell.parentElement;
-        if (parent && parent.children.length === 1 && parent.parentElement) {
-          cell = parent;
-          parent = parent.parentElement;
-        }
+        const { cell, parent } = findCardCell(item.card);
 
         const reflowState = item.shouldShow ? "show" : "hide";
         if (cell._vivaReflowState !== reflowState) {
           cell._vivaReflowState = reflowState;
           if (item.shouldShow) {
             cell.style.setProperty("display", "block", "important");
-            cell.style.setProperty("position", "relative", "important");
-            cell.style.setProperty("top", "auto", "important");
-            cell.style.setProperty("left", "auto", "important");
-            cell.style.setProperty("transform", "none", "important");
+            // AUDITORIA #12: só contra-ataca position:absolute se a Meta REALMENTE
+            // estiver posicionando esse card por coordenadas (a técnica antiga de
+            // virtualização que esse override foi escrito pra contornar). Forçar
+            // position:relative/top/left incondicionalmente — mesmo quando a Meta já não
+            // usa mais absolute — briga com o próprio layout dela sem necessidade.
+            const computedPosition = getComputedStyle(cell).position;
+            if (computedPosition === "absolute" || computedPosition === "fixed") {
+              cell.style.setProperty("position", "relative", "important");
+              cell.style.setProperty("top", "auto", "important");
+              cell.style.setProperty("left", "auto", "important");
+              cell.style.setProperty("transform", "none", "important");
+            }
             cell.style.setProperty("margin", "0", "important");
           } else {
             cell.style.setProperty("display", "none", "important");
@@ -919,10 +953,18 @@ function processCards() {
 
         if (item.shouldShow && parent && !_vivaConfiguredFlexParents.has(parent)) {
           _vivaConfiguredFlexParents.add(parent);
-          parent.style.setProperty("display", "flex", "important");
-          parent.style.setProperty("flex-wrap", "wrap", "important");
-          parent.style.setProperty("justify-content", "center", "important");
-          parent.style.setProperty("gap", "16px", "important");
+          // AUDITORIA #12: só força flex-wrap se o container ainda NÃO estiver
+          // organizando os cards em grade por conta própria. Se a Meta já faz isso
+          // nativamente, sobrescrever por cima é provavelmente o que estava quebrando a
+          // grade quando a estrutura dela mudou — melhor confiar no layout que já funciona.
+          const parentStyle = getComputedStyle(parent);
+          const alreadyWraps = (parentStyle.display === "flex" || parentStyle.display === "grid") && parentStyle.flexWrap !== "nowrap";
+          if (!alreadyWraps) {
+            parent.style.setProperty("display", "flex", "important");
+            parent.style.setProperty("flex-wrap", "wrap", "important");
+            parent.style.setProperty("justify-content", "center", "important");
+            parent.style.setProperty("gap", "16px", "important");
+          }
         }
       });
 
