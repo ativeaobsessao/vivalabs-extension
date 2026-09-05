@@ -74,13 +74,26 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Verifica a saúde da API do Monitor
+  // AUDITORIA #24: Verifica a saúde da API do Monitor. Antes, esta função fazia um fetch()
+  // simples sem AbortController nem timeout — se o backend (Render.com, plano free) estivesse
+  // hibernado, o popup ficava preso em "Verificando..." por dezenas de segundos, sem nenhum
+  // feedback intermediário, inconsistente com o cuidado já tomado em content.js
+  // (fetchMonitoredPages) para exatamente o mesmo endpoint/servidor. Agora usa AbortController
+  // com 5000ms de timeout, no mesmo padrão de content.js, e diferencia "tempo esgotado" de
+  // outros erros de rede para dar um feedback mais preciso ao usuário.
   async function checkHealth(apiUrl) {
     statusDot.className = "status-dot";
     statusText.textContent = "Verificando...";
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    let timedOut = false;
+
     try {
-      const response = await fetch(`${apiUrl}/api/healthz`, { method: "GET" });
+      const response = await fetch(`${apiUrl}/api/healthz`, {
+        method: "GET",
+        signal: controller.signal
+      });
       const data = await response.json();
       if (data.status === "ok") {
         statusDot.className = "status-dot online";
@@ -90,8 +103,14 @@ document.addEventListener("DOMContentLoaded", () => {
         statusText.textContent = "Status Inválido";
       }
     } catch (err) {
+      // AbortError é disparado tanto por timeout quanto por um abort manual — como só
+      // abortamos via setTimeout aqui, distinguir por timedOut deixa a mensagem mais precisa
+      // para o caso comum (backend hibernado no plano free) sem inventar falsos positivos.
+      timedOut = err.name === "AbortError";
       statusDot.className = "status-dot offline";
-      statusText.textContent = "Sem Conexão";
+      statusText.textContent = timedOut ? "Tempo esgotado (backend hibernado?)" : "Sem Conexão";
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 });
