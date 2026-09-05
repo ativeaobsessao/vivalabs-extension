@@ -834,31 +834,31 @@ function getOrCreateCardFrame(card) {
   return frame;
 }
 
-// AUDITORIA #12 (Fase 2 — correção do grid quebrado sob a arquitetura de frame): a heurística
-// antiga ("sobe 1 nível se o pai imediato tem exatamente 1 filho") assumia profundidade fixa e
-// quebrava sempre que a Meta muda a estrutura por baixo — cada frame podia acabar configurando
-// o PRÓPRIO container como grid, virando "1 item por linha" empilhado verticalmente (exatamente
-// o sintoma relatado: cards não ficam lado a lado). findFrameCell() sobe a árvore a partir do
-// FRAME e só para quando encontra um nível cujo pai de fato tem MAIS de um frame (ou descendente
-// de frame/card) como filho direto — não assume profundidade fixa, então se adapta sozinha se a
-// estrutura da Meta mudar de novo no futuro.
+// FIX GRID CELL (2026-09 — restaura a heurística determinística do design original): a versão
+// anterior (findFrameCell "adaptativa por contagem de irmãos-já-processados") subia a árvore
+// contando quantos irmãos já possuíam .viva-card-frame OU continham .viva-processed. O problema:
+// no PRIMEIRO ciclo em que vários cards novos aparecem juntos (carregamento inicial da busca,
+// ou clique em "Carregar mais"), a própria função getOrCreateCardFrame() só envolve o card N no
+// momento em que o loop chega em N — ou seja, ao avaliar o card 1, nenhum dos outros cards ainda
+// tinha .viva-card-frame nem .viva-processed (isso só é setado depois, mais adiante no mesmo
+// ciclo). A contagem de "irmãos com frame" ficava sempre em 1, a busca subia até o limite de
+// profundidade (8 níveis) sem nunca encontrar >1, e o fallback aplicava display:grid num
+// ancestral muito acima do esperado — em alguns casos, um container que envolve a página de
+// resultados inteira. É exatamente o sintoma relatado: o layout inteiro colapsava numa única
+// coluna estreita de ~300px, com o resto da viewport em branco.
+// Correção: heurística estrutural simples e 100% determinística, que não depende de estado de
+// processamento de nenhum outro card — sobe UM único nível se o pai imediato do frame tiver
+// exatamente 1 filho (padrão comum da Ad Library: cada slot de anúncio vem embrulhado num
+// wrapper de filho único fornecido pela própria Meta). Isso nunca varia de resultado entre
+// ciclos, então o card 1 e o card 300 sempre resolvem para o mesmo nível de ancestralidade.
 function findFrameCell(frame) {
   let cell = frame;
-  let depth = 0;
-  while (cell.parentElement && depth < 8) {
-    const parent = cell.parentElement;
-    let frameSiblings = 0;
-    for (const child of parent.children) {
-      if (child.classList.contains("viva-card-frame") || child.querySelector(".viva-processed")) {
-        frameSiblings++;
-        if (frameSiblings > 1) break;
-      }
-    }
-    if (frameSiblings > 1) return { cell, parent };
+  let parent = cell.parentElement;
+  if (parent && parent.children.length === 1 && parent.parentElement) {
     cell = parent;
-    depth++;
+    parent = parent.parentElement;
   }
-  return { cell: frame, parent: cell.parentElement };
+  return { cell, parent };
 }
 
 // ─── VIVA Gear Dropdown Portal: posicionamento em viewport ──────────────────────────────────
@@ -1038,10 +1038,9 @@ function processCards() {
       // !important força recálculo de estilo do navegador, então isso era trabalho puro
       // perdido em buscas grandes com milhares de cards já estáveis na tela.
       activeCardData.forEach(item => {
-        // FIX FRAME/GRID (AUDITORIA #12 Fase 2): a "célula" da grade é o .viva-card-frame que
-        // envolve o card, e o container real que precisa virar grid é encontrado subindo a
-        // árvore até achar o nível com MAIS DE UM frame irmão — nunca mais assumindo
-        // profundidade fixa (ver findFrameCell()).
+        // FIX FRAME/GRID: a "célula" da grade é o .viva-card-frame que envolve o card (nunca
+        // mais o card em si), e o container real que precisa virar grid é encontrado subindo
+        // no máximo 1 nível com findFrameCell() — ver comentário de arquitetura na função.
         const frame = getOrCreateCardFrame(item.card);
         const { cell, parent } = findFrameCell(frame);
 
@@ -1050,18 +1049,10 @@ function processCards() {
           cell._vivaReflowState = reflowState;
           if (item.shouldShow) {
             cell.style.setProperty("display", "block", "important");
-            // AUDITORIA #12: só contra-ataca position:absolute se a Meta REALMENTE estiver
-            // posicionando esse card por coordenadas (a técnica de virtualização que esse
-            // override foi escrito pra contornar). Forçar position:relative/top/left
-            // incondicionalmente — mesmo quando a Meta já não usa mais absolute — briga com o
-            // próprio layout dela sem necessidade.
-            const computedPosition = getComputedStyle(cell).position;
-            if (computedPosition === "absolute" || computedPosition === "fixed") {
-              cell.style.setProperty("position", "relative", "important");
-              cell.style.setProperty("top", "auto", "important");
-              cell.style.setProperty("left", "auto", "important");
-              cell.style.setProperty("transform", "none", "important");
-            }
+            cell.style.setProperty("position", "relative", "important");
+            cell.style.setProperty("top", "auto", "important");
+            cell.style.setProperty("left", "auto", "important");
+            cell.style.setProperty("transform", "none", "important");
             cell.style.setProperty("margin", "0", "important");
           } else {
             cell.style.setProperty("display", "none", "important");
@@ -1072,18 +1063,10 @@ function processCards() {
         // colunas sempre, independente da largura do conteúdo interno do card nativo.
         if (item.shouldShow && parent && !_vivaConfiguredFlexParents.has(parent)) {
           _vivaConfiguredFlexParents.add(parent);
-          // AUDITORIA #12: só força grid se o container ainda NÃO estiver organizando os
-          // frames em grade por conta própria. Se a Meta já faz isso nativamente, sobrescrever
-          // por cima é provavelmente o que quebrava a grade quando a estrutura dela mudou —
-          // melhor confiar no layout que já funciona.
-          const parentStyle = getComputedStyle(parent);
-          const alreadyWraps = (parentStyle.display === "flex" || parentStyle.display === "grid") && parentStyle.flexWrap !== "nowrap";
-          if (!alreadyWraps) {
-            parent.style.setProperty("display", "grid", "important");
-            parent.style.setProperty("grid-template-columns", "repeat(auto-fill, 300px)", "important");
-            parent.style.setProperty("justify-content", "center", "important");
-            parent.style.setProperty("gap", "16px", "important");
-          }
+          parent.style.setProperty("display", "grid", "important");
+          parent.style.setProperty("grid-template-columns", "repeat(auto-fill, 300px)", "important");
+          parent.style.setProperty("justify-content", "center", "important");
+          parent.style.setProperty("gap", "16px", "important");
         }
       });
 
@@ -1811,7 +1794,7 @@ function injectSidebar() {
   sidebar.innerHTML = `
     <div class="viva-sidebar-header">
       <div style="display:flex; align-items:center; gap:8px;">
-        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v6-fix</span></h3>
+        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v6.1-fix</span></h3>
         <span class="viva-scale-score viva-score-low" id="viva-sidebar-status">✓ Conectado</span>
       </div>
       <button class="viva-sidebar-minimize-btn" id="viva-btn-minimize" title="Minimizar">_</button>
@@ -2705,7 +2688,7 @@ async function init() {
   }
   _vivaInitialized = true;
 
-  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v4 (2026-07-30)");
+  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v6.1 (2026-09-04) — restaura grid/frame do design original");
   await loadLocalApiUrl();
   fetchMonitoredPages();
 
