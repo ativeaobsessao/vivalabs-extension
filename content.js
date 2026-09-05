@@ -2693,10 +2693,19 @@ function injectMediaPreconnects() {
 }
 
 async function init() {
-  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FRAME-v6 (2026-09-04) — frame architecture + O(1) advertiser counts + XSS escaping + adaptive grid cell finder");
-  // FIX 4.1: loadLocalApiUrl() é só storage local (instantâneo). fetchMonitoredPages() é
-  // deliberadamente NÃO aguardado (fire-and-forget) — roda em paralelo com timeout próprio e
-  // nunca atrasa a sidebar, o observer ou o processamento de cards.
+  // FIX #12: _vivaInitialized existia apenas como declaração morta — nunca era lida nem
+  // setada, então nada impedia init() de rodar mais de uma vez na mesma página (ex: extensão
+  // recarregada pelo Chrome com a aba já aberta, ou qualquer injeção duplicada do content
+  // script). Rodar init() duas vezes duplicaria o MutationObserver principal, o polling de
+  // URL, o scroll handler e os listeners globais de focusin/focusout — cada um passaria a
+  // disparar 2x por evento, silenciosamente, sem erro nenhum no console.
+  if (_vivaInitialized) {
+    console.log("[VIVA] init() ignorado — extensão já inicializada nesta página.");
+    return;
+  }
+  _vivaInitialized = true;
+
+  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v4 (2026-07-30)");
   await loadLocalApiUrl();
   fetchMonitoredPages();
 
