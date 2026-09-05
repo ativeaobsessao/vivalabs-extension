@@ -25,15 +25,29 @@ let autoScrollInterval = 7000;
 let lastUrl = window.location.href;
 let activeCardData = [];
 let globalDropdownListenerAdded = false;
-let cachedContingencyStatus = null;
-let cachedContingencyChecked = false;
 let vivaMonitorMasterEnabled = true;
+// FIX ITEM 12 (2026-08): cachedContingencyStatus/cachedContingencyChecked removidos junto com
+// checkContingencyStatus() (ver nota mais abaixo) — existiam só para essa função nunca chamada.
 
 // FIX DE ESCALA (buscas com dezenas de milhares de resultados): fila de nós recém-adicionados
 // detectados pelo MutationObserver principal. getAdCards() consome esta fila para restringir
 // sua varredura de "botões/links" a apenas o que mudou, em vez de escanear a página inteira
 // a cada ciclo — o gargalo real de performance em buscas grandes com rolagem longa.
 let pendingScanRoots = [];
+
+// FIX PERF (2026-08) — causa raiz da demora ao clicar em "Ações" após rolar bastante: quando
+// pendingScanRoots está vazia (o caso comum de um scroll puro, sem conteúdo novo carregando),
+// getAdCards() caía num fallback que escaneava document.querySelectorAll("[role='button'],
+// button, a") — A PÁGINA INTEIRA — em TODO ciclo de processCards() (todo scroll parado, cada
+// ~300ms de debounce). Em telas com centenas/milhares de ads, isso sozinho já respondia pela
+// maior fatia do tempo de ciclo (103ms+ observados com 630 ads), e como JS é single-thread,
+// se esse ciclo estiver rodando bem na hora do clique em "Ações", a resposta visual do menu
+// fica visivelmente atrasada. O MutationObserver principal já é 100% responsável por alimentar
+// pendingScanRoots com qualquer nó genuinamente novo — não há necessidade de repetir a
+// varredura cara em todo ciclo sem novidade; ela agora roda no máximo 1x a cada
+// FULL_SCAN_MIN_INTERVAL_MS, como rede de segurança, não como caminho comum.
+let lastFullScanTime = 0;
+const FULL_SCAN_MIN_INTERVAL_MS = 15000;
 
 // ─── VIVA Lifecycle Management (Cleanup Architecture) ───────────────────────
 // Cada referência aqui é limpa pelo teardownVivaMonitor() para zero listeners órfãos.
@@ -181,11 +195,32 @@ window.addEventListener("play", (e) => {
 }, true);
 
 // Filtros Globais
-let hideRecent = false;
-let hideNonScaled = false;
+// FIX ITEM 11 (2026-08): hideRecent/hideNonScaled removidos — eram declarados e lidos na
+// lógica de shouldShow, mas nenhum controle de UI (sidebar ou dock) jamais os ligava; sempre
+// false, então as duas condições que os usavam nunca tinham efeito algum. Código morto puro,
+// sem mudança de comportamento ao remover.
 let filterOnlyRecent = false;
 let minPageAds = 0; 
 let minDupAds = 0;
+
+// AUDITORIA #06 (crítico — XSS): nenhuma função de escape de HTML existia nesta arquitetura de
+// card-frame (o backend index.js tem escAttr() para o mesmo propósito, e uma versão anterior
+// desta extensão já havia adotado vivaEscapeHtml() — reintroduzida aqui). Nome do anunciante,
+// nome da página, domínio/slug de destino e link do Instagram são todos extraídos do DOM da
+// própria Meta Ad Library — texto que qualquer anunciante controla ao configurar seu
+// anúncio/página — e vários desses valores são interpolados direto em innerHTML sem nenhuma
+// sanitização, permitindo injeção de markup/atributos arbitrários que executariam no contexto
+// do content script (com acesso a chrome.storage, ao DOM da página e à API do backend). Escapa
+// & < > " ' — seguro tanto em texto quanto dentro de atributos entre aspas (todo uso neste
+// arquivo delimita atributos com aspas duplas ou simples).
+function vivaEscapeHtml(str) {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 // ─── Helper: Extração de Metadados Globais do DOM da Meta ───────────────────
 
@@ -216,6 +251,21 @@ function extractCleanDomain(url) {
   }
 }
 
+// FIX LINK (2026-08): "mesmo link" = hostname (com subdomínio) + primeiro segmento do path
+// (slug), quando existir. Mais preciso que agrupar só por domínio — antes, duas ofertas
+// completamente diferentes no mesmo site (ex: site.com/oferta-a e site.com/oferta-b) caíam
+// no mesmo grupo só por dividirem o hostname. Agora só agrupa quando é literalmente a mesma
+// página de destino.
+function extractDestinationLinkKey(url) {
+  try {
+    const u = new URL(url);
+    const firstSegment = u.pathname.split("/").filter(Boolean)[0] || "";
+    return firstSegment ? `${u.hostname}/${firstSegment}` : u.hostname;
+  } catch (e) {
+    return extractCleanDomain(url);
+  }
+}
+
 function cleanInstagramUrl(url) {
   if (!url) return "";
   try {
@@ -226,24 +276,6 @@ function cleanInstagramUrl(url) {
     }
   } catch (e) {}
   return url;
-}
-
-// AUDITORIA #06 (crítico — XSS): nenhuma função de escape de HTML existia neste arquivo (o
-// backend index.js tem escAttr() para o mesmo propósito, mas a extensão nunca adotou o
-// equivalente). Nome do anunciante, nome da página, domínio de destino e link do Instagram são
-// todos extraídos do DOM da própria Meta Ad Library — texto que qualquer anunciante controla ao
-// configurar seu anúncio/página — e vários desses valores eram interpolados direto em innerHTML
-// sem nenhuma sanitização, permitindo injeção de markup/atributos arbitrários que executariam no
-// contexto do content script (com acesso a chrome.storage, ao DOM da página e à API do backend).
-// Escapa & < > " ' — seguro tanto em texto quanto dentro de atributos entre aspas (todo uso
-// neste arquivo delimita atributos com aspas duplas ou simples).
-function vivaEscapeHtml(str) {
-  return String(str ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 // FIX 4.1 (gargalo de inicialização): esta função só lê chrome.storage.local — é 100% local,
@@ -367,7 +399,16 @@ function getAdCards(scanRoots) {
       }
     });
   } else {
-    document.querySelectorAll("[role='button'], button, a").forEach(el => candidateSet.add(el));
+    // FIX PERF: ver nota de arquitetura junto de lastFullScanTime/FULL_SCAN_MIN_INTERVAL_MS no
+    // topo do arquivo. Sem scanRoots (scroll puro, sem novidade) NÃO significa mais "escaneia a
+    // página inteira agora" — só faz isso se já faz tempo que não confirmamos que nada escapou
+    // do MutationObserver. Na prática, a esmagadora maioria dos ciclos passa direto por aqui
+    // sem tocar em document.querySelectorAll("[role='button'], button, a") nunca mais.
+    const now = Date.now();
+    if (now - lastFullScanTime > FULL_SCAN_MIN_INTERVAL_MS) {
+      lastFullScanTime = now;
+      document.querySelectorAll("[role='button'], button, a").forEach(el => candidateSet.add(el));
+    }
   }
 
   const rawButtons = Array.from(candidateSet).filter(el => {
@@ -414,7 +455,8 @@ const REGEX_META_DATE_EN = /(?:running on|on)\s+([a-z]+)\s+(\d+),\s+(\d+)/i;
 const REGEX_PID_HTML = /(?:view_all_page_id=|page_id=|[?&]id=|"pageID":\s*"|"pageId":\s*"|"advertiserID":\s*")(\d{10,20})/i;
 const REGEX_AD_ARCHIVE_TEXT = /(?:Identifica[cç][aã]o da biblioteca|Library ID|ID)[:\s]+(\d{13,18})/i;
 const REGEX_AD_ARCHIVE_LINK = /[?&]id=(\d{13,18})/i;
-const REGEX_CREATED_DATE = /Página criada em:?\s+(\d+)\s+de\s+([a-zç\.]+)(?:\s+de)?\s+(\d+)/i;
+// FIX ITEM 12: REGEX_CREATED_DATE removida junto com checkContingencyStatus() (única
+// consumidora, nunca chamada em lugar nenhum — ver nota mais abaixo).
 const REGEX_META_AD_COUNT = /(\d+)\s+(?:an[uú]ncios\s+usam|ads\s+use)/i;
 const REGEX_SIMPLE_DOMAIN = /^[a-z0-9\-\.]+\.[a-z]{2,4}(\/.*)?$/i;
 const REGEX_ONLY_DOMAIN = /^[a-z0-9\-\.]+\.[a-z]{2,4}$/i;
@@ -425,6 +467,26 @@ const WP_PATTERNS = [
   "wanalink", "wana.cm", "wanazap", "convertzap", "cvtzap",
   "zaplink", "linkzap", "superzap", "joinzap", "grupozap"
 ];
+
+// FIX REGRA DE FASE (2026-08): fase de veiculação determinada SOMENTE pelo tempo ativo do
+// anúncio — nunca por duplicação. Duplicação/mesmo criativo virou sinal à parte (ver badge
+// "Mesmo Criativo", inalterado), nunca critério de fase, pra nunca existir ambiguidade: um
+// anúncio jovem já duplicado antes não cabia em nenhuma faixa quando duas regras concorriam.
+// Três faixas mutuamente exclusivas, sem sobreposição e sem buraco — única fonte de verdade,
+// reaproveitada em processCards() (badge do card) e em showTopAdvertisersModal() (ranking).
+const STAGE_RANK = { teste: 0, potencial: 1, bruta: 2 };
+const STAGE_INFO = {
+  teste:     { label: "🧪 EM TESTE",         chipClass: "viva-escala-chip-teste" },
+  potencial: { label: "📈 POTENCIAL ESCALA", chipClass: "viva-escala-chip-potencial" },
+  bruta:     { label: "🔥 ESCALA BRUTA",     chipClass: "viva-escala-chip-bruta" }
+};
+
+function resolveStage(adAgeDays) {
+  if (adAgeDays === null) return "teste"; // sem data confiável — trata como ainda não comprovado
+  if (adAgeDays >= 7) return "bruta";
+  if (adAgeDays >= 3) return "potencial";
+  return "teste";
+}
 
 // ─── Single-Pass DOM Collector (Memoized per card instance) ───
 const domElementsCache = new WeakMap();
@@ -455,11 +517,11 @@ function getCardDomElements(card) {
   return cache;
 }
 
-// AUDITORIA #02: getAdCount(advertiserName) foi removida daqui. Fazia activeCardData.filter()
-// completo (O(n)) a cada chamada, e era chamada uma vez por item dentro de outro loop O(n) em
-// processCards() — O(n²) por ciclo. A contagem por anunciante agora é acumulada em O(n) único,
-// no mesmo passe que já monta cardSignatures/mediaSignatures/domainSignatures (ver
-// `advertiserCounts` dentro de processCards()).
+// AUDITORIA #02 (crítico — O(n²) -> O(n)): getAdCount(advertiserName) foi removida. Fazia
+// activeCardData.filter() completo (O(n)) a cada chamada, e era chamada uma vez por item dentro
+// de outro loop O(n) em processCards() — O(n²) por ciclo. A contagem por anunciante agora é
+// acumulada em O(n) único, no mesmo passe que já monta cardSignatures/mediaSignatures/
+// linkSignatures (ver `advertiserCounts` dentro de processCards()).
 
 function extractAdvertiserName(card) {
   const dom = getCardDomElements(card);
@@ -641,20 +703,10 @@ function extractAdArchiveId(card) {
   return null;
 }
 
-function checkContingencyStatus(card) {
-  if (cachedContingencyChecked) return cachedContingencyStatus;
-  cachedContingencyChecked = true;
-  const matchCreated = document.body.textContent.match(REGEX_CREATED_DATE);
-  if (matchCreated) {
-    const createdDate = parseMetaDate(matchCreated[0]);
-    if (createdDate) {
-      const diffDays = Math.ceil(Math.abs(new Date() - createdDate) / (1000 * 60 * 60 * 24));
-      cachedContingencyStatus = diffDays < 45 ? "Contingência" : "Consolidada";
-      return cachedContingencyStatus;
-    }
-  }
-  return null;
-}
+// FIX ITEM 12 (2026-08): checkContingencyStatus() removida — função inteira nunca chamada em
+// lugar nenhum do arquivo (nem sidebar, nem dock, nem badges). Junto dela saíram
+// cachedContingencyStatus/cachedContingencyChecked (só existiam para o cache interno desta
+// função) e REGEX_CREATED_DATE (só usada aqui dentro).
 
 function detectWhatsApp(card, destUrl) {
   const checkUrl = (url) => {
@@ -754,39 +806,91 @@ function extractCardData(card) {
   return data;
 }
 
-// AUDITORIA #12 (Fase 1 — correção do grid quebrado): substitui a heurística antiga do
-// reflow ("sobe 1 nível se o pai imediato tem exatamente 1 filho"), que rodava
-// independentemente para CADA card sem nunca confirmar que todos concordavam sobre qual é
-// o container compartilhado. Se a estrutura da Meta tiver uma camada de wrapper diferente
-// da que existia quando aquela heurística foi escrita — uma a mais, uma a menos, ou um
-// filho irmão extra em algum nível — cada card podia acabar configurando o PRÓPRIO
-// container como flex, virando uma "grade" de 1 item por linha, empilhada verticalmente
-// (exatamente o sintoma relatado: só um card aparece por vez, badges fora de posição,
-// engrenagem do rodapé tampada pelo card seguinte por sobreposição de caixas).
-// findCardCell() sobe a árvore a partir do card e só para quando encontra um nível cujo
-// pai de fato tem MAIS de um card (ou descendente de card) como filho direto — não assume
-// profundidade fixa, então se adapta sozinha se a Meta mudar a estrutura de novo no futuro.
-function findCardCell(card) {
-  let cell = card;
+let isBatching = false;
+let pendingBatchCards = false;
+
+// ─── VIVA Card Frame: caixa externa que envolve o card sem tocar em seus filhos ───
+// FIX ARQUITETURA (loop do ResizeObserver / erro React #185): antes, escalaStrip, badgeContainer
+// e cardFooter eram inseridos como FILHOS DENTRO do próprio card (card.insertBefore/appendChild),
+// aumentando a altura do node que a Meta observa/gerencia via React — isso disparava um loop de
+// resize (Minified React error #185, "maximum update depth exceeded") e empurrava conteúdo nativo
+// (ex: "X dias ativo") pra fora da área visível. Agora o card É EMOLDURADO por um wrapper próprio
+// da VIVA (.viva-card-frame): o card é MOVIDO para dentro do frame (sua referência DOM, listeners
+// e fiber do React continuam intactos — só o parentNode muda, o que o React não observa), e todo
+// o conteúdo da VIVA (faixa de escala + badges acima, rodapé de ações abaixo) é inserido como
+// IRMÃO do card dentro do frame, nunca como filho do card. O card em si permanece 100% intocado.
+function getOrCreateCardFrame(card) {
+  const existingParent = card.parentElement;
+  if (existingParent && existingParent.classList && existingParent.classList.contains("viva-card-frame")) {
+    return existingParent;
+  }
+  const frame = document.createElement("div");
+  frame.className = "viva-card-frame viva-el";
+  const originalParent = card.parentElement;
+  if (originalParent) {
+    originalParent.insertBefore(frame, card);
+  }
+  frame.appendChild(card); // move o card — não cria, não remove e não altera nenhum filho dele
+  return frame;
+}
+
+// AUDITORIA #12 (Fase 2 — correção do grid quebrado sob a arquitetura de frame): a heurística
+// antiga ("sobe 1 nível se o pai imediato tem exatamente 1 filho") assumia profundidade fixa e
+// quebrava sempre que a Meta muda a estrutura por baixo — cada frame podia acabar configurando
+// o PRÓPRIO container como grid, virando "1 item por linha" empilhado verticalmente (exatamente
+// o sintoma relatado: cards não ficam lado a lado). findFrameCell() sobe a árvore a partir do
+// FRAME e só para quando encontra um nível cujo pai de fato tem MAIS de um frame (ou descendente
+// de frame/card) como filho direto — não assume profundidade fixa, então se adapta sozinha se a
+// estrutura da Meta mudar de novo no futuro.
+function findFrameCell(frame) {
+  let cell = frame;
   let depth = 0;
   while (cell.parentElement && depth < 8) {
     const parent = cell.parentElement;
-    let cardSiblings = 0;
+    let frameSiblings = 0;
     for (const child of parent.children) {
-      if (child.classList.contains("viva-processed") || child.querySelector(".viva-processed")) {
-        cardSiblings++;
-        if (cardSiblings > 1) break;
+      if (child.classList.contains("viva-card-frame") || child.querySelector(".viva-processed")) {
+        frameSiblings++;
+        if (frameSiblings > 1) break;
       }
     }
-    if (cardSiblings > 1) return { cell, parent };
+    if (frameSiblings > 1) return { cell, parent };
     cell = parent;
     depth++;
   }
-  return { cell: card, parent: cell.parentElement };
+  return { cell: frame, parent: cell.parentElement };
 }
 
-let isBatching = false;
-let pendingBatchCards = false;
+// ─── VIVA Gear Dropdown Portal: posicionamento em viewport ──────────────────────────────────
+// FIX SOBERANIA (2026-08): calcula left/top em coordenadas de VIEWPORT (não mais relativo ao
+// card) para o dropdown "Ações", que agora vive como filho direto de <body> (position:fixed).
+// Chamada uma única vez por abertura, logo após o appendChild — nunca em loop/scroll, então o
+// custo de getBoundingClientRect() (força 1 reflow) é pago só 1x por clique, irrelevante.
+function positionGearDropdown(dropdown, anchorBtn) {
+  const rect = anchorBtn.getBoundingClientRect();
+  const dropdownWidth = dropdown.offsetWidth || 200;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const margin = 8;
+
+  // Alinha a borda direita do menu com a borda direita do botão (mesma âncora visual de antes,
+  // quando era right:0 relativo ao gearContainer) — com clamp pra nunca vazar a viewport.
+  let left = rect.right - dropdownWidth;
+  if (left < margin) left = margin;
+  if (left + dropdownWidth > viewportWidth - margin) left = viewportWidth - dropdownWidth - margin;
+  dropdown.style.setProperty("left", `${left}px`, "important");
+
+  // Abre para baixo por padrão (comportamento de sempre); se não couber até o fim da viewport
+  // (card perto do rodapé da tela), inverte pra abrir pra CIMA em vez de estourar a tela —
+  // exatamente o cenário relatado (linha perto do fim da rolagem visível).
+  let top = rect.bottom + margin;
+  const dropdownHeight = dropdown.offsetHeight || 0;
+  if (dropdownHeight && top + dropdownHeight > viewportHeight - margin) {
+    const flippedTop = rect.top - dropdownHeight - margin;
+    top = flippedTop >= margin ? flippedTop : margin;
+  }
+  dropdown.style.setProperty("top", `${top}px`, "important");
+}
 
 function processCards() {
   if (!vivaMonitorMasterEnabled) return;
@@ -798,8 +902,17 @@ function processCards() {
 
   // ─── VIVA Orphan Node Sweeper & Garbage Collection Preparation ───
   // Limpeza proativa de nós órfãos desconectados da árvore ou cartões reciclados pelo virtualizador do React
-  document.querySelectorAll(".viva-card-footer, .viva-escala-strip, .viva-card-badge-container, .viva-gear-dropdown").forEach(el => {
-    if (!el.isConnected || (!el.closest(".viva-processed") && !el.closest("[data-viva-id]"))) {
+  // FIX FRAME: estes elementos agora são IRMÃOS do card dentro do .viva-card-frame (nunca mais
+  // filhos do card em si) — a checagem de órfão precisa considerar o frame também.
+  // FIX PORTAL (2026-08): .viva-gear-dropdown SAIU desta varredura de propósito — agora é um
+  // portal anexado direto no <body> (ver gearBtn click handler), então nunca terá
+  // .closest(".viva-card-frame") verdadeiro, e esta checagem o removeria no ciclo seguinte à
+  // abertura (todo scroll/mutação dispara um ciclo), fechando o menu sozinho poucos ms depois
+  // de abrir. O dropdown já é auto-gerenciado por 3 caminhos próprios: clique fora (listener
+  // global), clique num item (remove-se sozinho) e scroll (fecha por segurança, ver abaixo) —
+  // não precisa e não deve mais entrar nesta varredura genérica.
+  document.querySelectorAll(".viva-card-footer, .viva-escala-strip, .viva-card-badge-container").forEach(el => {
+    if (!el.isConnected || (!el.closest(".viva-card-frame") && !el.closest(".viva-processed") && !el.closest("[data-viva-id]"))) {
       el.remove();
     }
   });
@@ -819,27 +932,25 @@ function processCards() {
   });
   cardSignatures = {};
   const mediaSignatures = {};
-  const domainSignatures = {};
+  const linkSignatures = {};
   // AUDITORIA #02 (crítico — O(n²) -> O(n)): contagem de anúncios por anunciante, construída no
-  // MESMO passe único que já monta as 3 contagens acima. Antes vivia numa função separada
-  // (getAdCount), chamada dentro do loop `activeCardData.forEach` logo abaixo — ou seja, um
-  // activeCardData.filter() inteiro (O(n)) rodando para CADA um dos n cards, O(n²) por ciclo de
-  // processCards(). Com ~20 mil cards ativos isso são ~400 milhões de comparações de string por
-  // ciclo, disparado a cada scroll e mutação — a maior fonte de travamento em bibliotecas
-  // grandes. Passa a seguir o mesmo padrão de acumulação O(1)-por-item que as 3 contagens
-  // vizinhas já usavam.
+  // MESMO passe único que já monta as demais contagens abaixo. Antes vivia numa função separada
+  // (getAdCount), chamada dentro do loop de cada item logo abaixo — um activeCardData.filter()
+  // inteiro (O(n)) rodando para CADA um dos n cards, O(n²) por ciclo de processCards(). Com
+  // dezenas de milhares de cards ativos isso vira centenas de milhões de comparações por ciclo,
+  // disparado a cada scroll e mutação — a maior fonte de travamento em bibliotecas grandes.
   const advertiserCounts = {};
   activeCardData = cards.map(card => {
-    // AUDITORIA #01 (crítico): antes era `card._vivaData || extractCardData(card)`. Esse `||`
-    // fazia extractCardData() nunca mais ser chamada para este nó de DOM depois do 1º ciclo —
-    // `card._vivaData` vira truthy na primeira passagem e fica truthy para sempre, então a
-    // invalidação por identitySignal do FIX 4.5 (que mora DENTRO de extractCardData) nunca
-    // chegava a rodar. A Meta recicla nós de DOM da grade virtualizada ao rolar; sem essa
-    // invalidação, um card podia continuar exibindo para sempre os dados do PRIMEIRO anúncio
-    // que ocupou aquele slot, mesmo depois da Meta trocar o conteúdo por baixo. extractCardData()
-    // já faz seu próprio cache barato via cardDataMap (WeakMap O(1)) + identitySignal
-    // (querySelector("video, img") restrito ao card, não à página inteira), então chamá-la
-    // sempre aqui não reintroduz custo — só reabilita a invalidação que já existia e nunca rodava.
+    // AUDITORIA #01 (crítico): usa extractCardData(card) sempre, nunca
+    // `card._vivaData || extractCardData(card)` — esse `||` fazia extractCardData() nunca mais
+    // ser chamada para este nó de DOM depois do 1º ciclo (card._vivaData vira truthy na
+    // primeira passagem e fica truthy para sempre), então a invalidação por identitySignal
+    // (FIX 4.5, que mora DENTRO de extractCardData) nunca chegava a rodar. A Meta recicla nós
+    // de DOM da grade virtualizada ao rolar; sem essa invalidação, um card podia continuar
+    // exibindo para sempre os dados do PRIMEIRO anúncio que ocupou aquele slot, mesmo depois da
+    // Meta trocar o conteúdo por baixo. extractCardData() já faz seu próprio cache barato via
+    // cardDataMap (WeakMap O(1)) + identitySignal, então chamá-la sempre aqui não reintroduz
+    // custo — só reabilita a invalidação que já existia e nunca rodava.
     const data = extractCardData(card);
     // FIX 4.3: registra o card no gate de proximidade assim que descoberto, independente de já
     // ter sido decidido se ele será exibido ou processado neste ciclo — o próprio
@@ -852,12 +963,12 @@ function processCards() {
     if (data.mediaSig && data.mediaSig.length > 3) {
       mediaSignatures[data.mediaSig] = (mediaSignatures[data.mediaSig] || 0) + 1;
     }
-    const rootDom = data.destUrl ? extractCleanDomain(data.destUrl) : null;
-    if (rootDom) {
-      domainSignatures[rootDom] = (domainSignatures[rootDom] || 0) + 1;
+    const linkKey = data.destUrl ? extractDestinationLinkKey(data.destUrl) : null;
+    if (linkKey) {
+      linkSignatures[linkKey] = (linkSignatures[linkKey] || 0) + 1;
     }
     advertiserCounts[data.advertiserName] = (advertiserCounts[data.advertiserName] || 0) + 1;
-    data.rootDom = rootDom;
+    data.linkKey = linkKey;
     return { card, data };
   });
 
@@ -866,22 +977,23 @@ function processCards() {
     const domDupCount = cardSignatures[data.sig] || 1;
     const effectiveDupCount = Math.max(domDupCount, data.metaAdCount || 1);
     const twinCount = (data.mediaSig && mediaSignatures[data.mediaSig]) ? mediaSignatures[data.mediaSig] : 1;
-    const domainCount = data.rootDom ? (domainSignatures[data.rootDom] || 1) : 1;
+    const linkCount = data.linkKey ? (linkSignatures[data.linkKey] || 1) : 1;
     item.effectiveDupCount = effectiveDupCount;
     item.twinCount = twinCount;
-    item.domainCount = domainCount;
+    item.linkCount = linkCount;
 
     // AUDITORIA #02: lookup O(1) no mapa construído no primeiro passe acima, no lugar da antiga
     // getAdCount() (removida) — que recalculava um activeCardData.filter() inteiro (O(n)) para
     // cada um dos n cards deste mesmo loop, o que era o O(n²) por ciclo de processCards().
     const adsCount = advertiserCounts[data.advertiserName] || 1;
-    item.isEscala = (data.adAgeDays !== null && data.adAgeDays >= 3) || effectiveDupCount >= 2;
+    // Fase determinada só pelo tempo — ver comentário FIX REGRA DE FASE junto de resolveStage().
+    item.stage = resolveStage(data.adAgeDays);
     
     let shouldShow = true;
     if (minPageAds > 0 && adsCount < minPageAds) shouldShow = false;
     if (minDupAds > 0 && effectiveDupCount < minDupAds) shouldShow = false;
-    if (hideRecent && data.adAgeDays !== null && data.adAgeDays < 3) shouldShow = false;
-    if (hideNonScaled && !((data.adAgeDays !== null && data.adAgeDays >= 5) || (effectiveDupCount >= 3))) shouldShow = false;
+    // FIX ITEM 11: as duas condições de hideRecent/hideNonScaled saíram daqui — variáveis
+    // removidas (nunca ligadas por nenhum controle de UI, sempre false na prática).
     if (filterOnlyRecent && (data.adAgeDays === null || data.adAgeDays > 3)) shouldShow = false;
     item.shouldShow = shouldShow;
   });
@@ -906,7 +1018,7 @@ function processCards() {
     try {
       // Extermina qualquer engrenagem ou rodapé órfão que esteja flutuando fora de cartões reais
       document.querySelectorAll(".viva-card-footer").forEach(f => {
-        if (!f.closest(".viva-processed") && !f.closest("[data-viva-id]")) f.remove();
+        if (!f.closest(".viva-card-frame") && !f.closest(".viva-processed") && !f.closest("[data-viva-id]")) f.remove();
       });
 
       // FIX DIAGNÓSTICO 1: antes, esse "modo de reflow" só era aplicado quando um filtro
@@ -926,18 +1038,23 @@ function processCards() {
       // !important força recálculo de estilo do navegador, então isso era trabalho puro
       // perdido em buscas grandes com milhares de cards já estáveis na tela.
       activeCardData.forEach(item => {
-        const { cell, parent } = findCardCell(item.card);
+        // FIX FRAME/GRID (AUDITORIA #12 Fase 2): a "célula" da grade é o .viva-card-frame que
+        // envolve o card, e o container real que precisa virar grid é encontrado subindo a
+        // árvore até achar o nível com MAIS DE UM frame irmão — nunca mais assumindo
+        // profundidade fixa (ver findFrameCell()).
+        const frame = getOrCreateCardFrame(item.card);
+        const { cell, parent } = findFrameCell(frame);
 
         const reflowState = item.shouldShow ? "show" : "hide";
         if (cell._vivaReflowState !== reflowState) {
           cell._vivaReflowState = reflowState;
           if (item.shouldShow) {
             cell.style.setProperty("display", "block", "important");
-            // AUDITORIA #12: só contra-ataca position:absolute se a Meta REALMENTE
-            // estiver posicionando esse card por coordenadas (a técnica antiga de
-            // virtualização que esse override foi escrito pra contornar). Forçar
-            // position:relative/top/left incondicionalmente — mesmo quando a Meta já não
-            // usa mais absolute — briga com o próprio layout dela sem necessidade.
+            // AUDITORIA #12: só contra-ataca position:absolute se a Meta REALMENTE estiver
+            // posicionando esse card por coordenadas (a técnica de virtualização que esse
+            // override foi escrito pra contornar). Forçar position:relative/top/left
+            // incondicionalmente — mesmo quando a Meta já não usa mais absolute — briga com o
+            // próprio layout dela sem necessidade.
             const computedPosition = getComputedStyle(cell).position;
             if (computedPosition === "absolute" || computedPosition === "fixed") {
               cell.style.setProperty("position", "relative", "important");
@@ -951,17 +1068,19 @@ function processCards() {
           }
         }
 
+        // FIX GRID HORIZONTAL: CSS Grid com coluna mínima fixa (300px) garante múltiplas
+        // colunas sempre, independente da largura do conteúdo interno do card nativo.
         if (item.shouldShow && parent && !_vivaConfiguredFlexParents.has(parent)) {
           _vivaConfiguredFlexParents.add(parent);
-          // AUDITORIA #12: só força flex-wrap se o container ainda NÃO estiver
-          // organizando os cards em grade por conta própria. Se a Meta já faz isso
-          // nativamente, sobrescrever por cima é provavelmente o que estava quebrando a
-          // grade quando a estrutura dela mudou — melhor confiar no layout que já funciona.
+          // AUDITORIA #12: só força grid se o container ainda NÃO estiver organizando os
+          // frames em grade por conta própria. Se a Meta já faz isso nativamente, sobrescrever
+          // por cima é provavelmente o que quebrava a grade quando a estrutura dela mudou —
+          // melhor confiar no layout que já funciona.
           const parentStyle = getComputedStyle(parent);
           const alreadyWraps = (parentStyle.display === "flex" || parentStyle.display === "grid") && parentStyle.flexWrap !== "nowrap";
           if (!alreadyWraps) {
-            parent.style.setProperty("display", "flex", "important");
-            parent.style.setProperty("flex-wrap", "wrap", "important");
+            parent.style.setProperty("display", "grid", "important");
+            parent.style.setProperty("grid-template-columns", "repeat(auto-fill, 300px)", "important");
             parent.style.setProperty("justify-content", "center", "important");
             parent.style.setProperty("gap", "16px", "important");
           }
@@ -972,13 +1091,14 @@ function processCards() {
       activeCardData.forEach(item => {
         const card = item.card;
         const data = item.data;
+        // FIX FRAME: a moldura de escala precisa envolver a caixa inteira, não mais só o card
+        // nativo por dentro — "toda a card" pedida, não uma faixa espremida no meio do conteúdo.
+        const frame = getOrCreateCardFrame(card);
 
-        card.classList.remove("viva-border-level-1", "viva-border-level-2", "viva-border-level-3", "viva-border-escala");
-        if (item.isEscala) {
-          card.classList.add("viva-border-escala");
-        } else {
-          card.classList.add("viva-border-level-1");
-        }
+        // Única fonte de verdade para a fase (ver STAGE_INFO/resolveStage) — sem sistema
+        // paralelo de "níveis" antigo, pra nunca ter duas regras de escala competindo.
+        frame.classList.remove("viva-stage-teste", "viva-stage-potencial", "viva-stage-bruta");
+        frame.classList.add(`viva-stage-${item.stage}`);
 
         if (!item.shouldShow) return; // Não injeta badges em cards ocultos para poupar RAM
 
@@ -992,15 +1112,17 @@ function processCards() {
 
     // ─── BLINDAGEM ANTI-DUPLICIDADE PADRÃO APPLE (Idempotência DOM) ───
     // Previne que re-renderizações do React Fiber ou cartões DCO/Carrossel dupliquem widgets
-    const allStrips = card.querySelectorAll(".viva-escala-strip");
+    // FIX FRAME: os componentes VIVA agora são IRMÃOS do card dentro do frame, então a checagem
+    // de duplicidade precisa varrer o frame, não mais o card.
+    const allStrips = frame.querySelectorAll(".viva-escala-strip");
     if (allStrips.length > 1) {
       for (let i = 1; i < allStrips.length; i++) allStrips[i].remove();
     }
-    const allContainers = card.querySelectorAll(".viva-card-badge-container");
+    const allContainers = frame.querySelectorAll(".viva-card-badge-container");
     if (allContainers.length > 1) {
       for (let i = 1; i < allContainers.length; i++) allContainers[i].remove();
     }
-    const allFooters = card.querySelectorAll(".viva-card-footer");
+    const allFooters = frame.querySelectorAll(".viva-card-footer");
     if (allFooters.length > 1) {
       for (let i = 1; i < allFooters.length; i++) allFooters[i].remove();
     }
@@ -1010,19 +1132,19 @@ function processCards() {
 
     // C. Injeção de Componentes Apple-style
     const renderSig = `${item.effectiveDupCount}-${item.twinCount}-${data.adAgeDays}-${data.isWhatsApp}-${item.shouldShow}`;
-    if (card.classList.contains("viva-processed") && card._vivaRenderSig === renderSig && card.querySelector(".viva-card-badge-container") && card.querySelector(".viva-card-footer")) {
+    if (card.classList.contains("viva-processed") && card._vivaRenderSig === renderSig && frame.querySelector(".viva-card-badge-container") && frame.querySelector(".viva-card-footer")) {
       return; // Apple Dirty-Checking: 0.00ms DOM touch em cartões já processados e sem alteração de estado
     }
     card._vivaRenderSig = renderSig;
 
-    let badgeContainer = card.querySelector(".viva-card-badge-container");
-    let cardFooter = card.querySelector(".viva-card-footer");
+    let badgeContainer = frame.querySelector(".viva-card-badge-container");
+    let cardFooter = frame.querySelector(".viva-card-footer");
 
     // 1. Atualização/Injeção dos Badges
     if (badgeContainer) {
       let escalaStrip = card.querySelector(".viva-escala-strip");
       if (escalaStrip) {
-        const isEscala = (data.adAgeDays !== null && data.adAgeDays >= 3) || item.effectiveDupCount >= 2;
+        const stageInfo = STAGE_INFO[item.stage];
         const daysText = data.adAgeDays !== null ? `${data.adAgeDays} DIAS ATIVO` : "ATIVO RECENTE";
         const dupText = `${item.effectiveDupCount}x ANÚNCIOS`;
         escalaStrip.innerHTML = `
@@ -1031,9 +1153,7 @@ function processCards() {
               🟢 FUNIL WHATSAPP
             </span>
           ` : ''}
-          <span class="viva-escala-chip ${isEscala ? 'viva-escala-chip-hot' : 'viva-escala-chip-normal'}">
-            ${isEscala ? '🔥 ESCALA POTENCIAL' : '⏳ CAMPANHA NORMAL'}
-          </span>
+          <span class="viva-escala-chip ${stageInfo.chipClass}">${stageInfo.label}</span>
           <span class="viva-escala-chip viva-escala-chip-sub">⚡ ${dupText}</span>
           <span class="viva-escala-chip viva-escala-chip-sub">⏳ ${daysText}</span>
         `;
@@ -1061,17 +1181,13 @@ function processCards() {
       } else if (twinBadge) {
         twinBadge.remove();
       }
-
-      // Extermina qualquer selo legado do WhatsApp na linha 2 caso exista no DOM
-      const legacyWaBadge = badgeContainer.querySelector(".viva-badge-whatsapp");
-      if (legacyWaBadge) legacyWaBadge.remove();
     } else {
       card.classList.add("viva-processed");
       card.classList.add("viva-el");
       mediaPruningObserver.observe(card);
 
-      // 1. Escala Potencial Modular Apple Banner (32px / 13px Bold)
-      const isEscala = (data.adAgeDays !== null && data.adAgeDays >= 3) || item.effectiveDupCount >= 2;
+      // 1. Faixa de Fase Modular Apple Banner — fonte única: STAGE_INFO[item.stage]
+      const stageInfo = STAGE_INFO[item.stage];
       const daysText = data.adAgeDays !== null ? `${data.adAgeDays} DIAS ATIVO` : "ATIVO RECENTE";
       const dupText = `${item.effectiveDupCount}x ANÚNCIOS`;
       const escalaStrip = document.createElement("div");
@@ -1082,48 +1198,44 @@ function processCards() {
             🟢 FUNIL WHATSAPP
           </span>
         ` : ''}
-        <span class="viva-escala-chip ${isEscala ? 'viva-escala-chip-hot' : 'viva-escala-chip-normal'}">
-          ${isEscala ? '🔥 ESCALA POTENCIAL' : '⏳ CAMPANHA NORMAL'}
-        </span>
+        <span class="viva-escala-chip ${stageInfo.chipClass}">${stageInfo.label}</span>
         <span class="viva-escala-chip viva-escala-chip-sub">⚡ ${dupText}</span>
         <span class="viva-escala-chip viva-escala-chip-sub">⏳ ${daysText}</span>
       `;
-      if (card.children.length > 1) {
-        card.insertBefore(escalaStrip, card.children[1]);
-      } else {
-        card.appendChild(escalaStrip);
-      }
+      // FIX FRAME: a faixa de escala entra como PRIMEIRO FILHO do frame, ANTES do card — nunca
+      // mais dentro do card. O card nativo não ganha nenhum filho novo, então o React/Meta nunca
+      // vê o tamanho dele mudar.
+      frame.insertBefore(escalaStrip, card);
 
       // 2. Linha 2 do Painel Modular In-Flow (Domínio & Gêmeos) - ZERO flutuante no topo
       badgeContainer = document.createElement("div");
       badgeContainer.className = "viva-card-badge-container viva-el";
 
-      if (data.destUrl) {
-        const rootDom = extractCleanDomain(data.destUrl);
-        if (rootDom) {
-          const domBadge = document.createElement("span");
-          domBadge.className = "viva-badge viva-badge-gray viva-domain-badge";
-          domBadge.title = "Clique para acender/apagar todos os cards com este domínio na tela";
-          domBadge.innerHTML = `
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="2" y1="12" x2="22" y2="12"></line>
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-            </svg>
-            ${vivaEscapeHtml(rootDom)} (${item.domainCount}x)
-          `;
-          domBadge.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const isLocked = domBadge.classList.toggle("viva-badge-active-blue");
-            document.querySelectorAll(".viva-processed").forEach(c => {
-              if (c._vivaData && c._vivaData.rootDom && c._vivaData.rootDom === rootDom) {
-                if (isLocked) c.classList.add("viva-domain-locked");
-                else c.classList.remove("viva-domain-locked");
-              }
-            });
+      // FIX LINK: agrupa por hostname+slug (extractDestinationLinkKey), não mais só domínio —
+      // duas ofertas diferentes no mesmo site não acendem mais juntas por engano.
+      if (data.linkKey) {
+        const domBadge = document.createElement("span");
+        domBadge.className = "viva-badge viva-badge-gray viva-domain-badge";
+        domBadge.title = "Clique para acender/apagar todos os cards com o mesmo link de destino (domínio/subdomínio + slug) na tela";
+        domBadge.innerHTML = `
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          ${vivaEscapeHtml(data.linkKey)} (${item.linkCount}x)
+        `;
+        domBadge.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const isLocked = domBadge.classList.toggle("viva-badge-active-blue");
+          document.querySelectorAll(".viva-processed").forEach(c => {
+            if (c._vivaData && c._vivaData.linkKey && c._vivaData.linkKey === data.linkKey) {
+              if (isLocked) c.classList.add("viva-domain-locked");
+              else c.classList.remove("viva-domain-locked");
+            }
           });
-          badgeContainer.appendChild(domBadge);
-        }
+        });
+        badgeContainer.appendChild(domBadge);
       }
 
       if (item.twinCount >= 2) {
@@ -1144,11 +1256,9 @@ function processCards() {
         badgeContainer.appendChild(twinBadge);
       }
 
-      if (escalaStrip.nextSibling) {
-        card.insertBefore(badgeContainer, escalaStrip.nextSibling);
-      } else {
-        card.appendChild(badgeContainer);
-      }
+      // FIX FRAME: o badgeContainer entra logo depois da escalaStrip, sempre ANTES do card
+      // (nunca como filho dele) — ordem final dentro do frame: escalaStrip, badgeContainer, card.
+      frame.insertBefore(badgeContainer, card);
     }
 
     // 2. Injeção do novo rodapé (URL Input + Engrenagem de Ações)
@@ -1209,15 +1319,27 @@ function processCards() {
         e.preventDefault();
         e.stopPropagation();
 
-        // Fecha todos os outros dropdowns abertos globalmente
+        // FIX SOBERANIA/PORTAL (2026-08): o dropdown "Ações" deixou de ser filho do card
+        // (position:absolute dentro de .viva-card-frame) e virou um PORTAL — anexado direto
+        // em <body>, position:fixed, z-index máximo (ver content.css). Isso resolve de vez a
+        // sobreposição visual com o card da linha de baixo depois de muito scroll: antes, cada
+        // .viva-card-frame tinha seu próprio stacking context (contain:layout), então o
+        // dropdown de um card disputava camadas com o card vizinho e podia perder essa disputa
+        // dependendo da posição na grade. Como portal, ele nunca mais é descendente de NENHUM
+        // card — não tem mais com quem disputar z-index.
+        //
+        // Checagem de "toggle" (clicar de novo fecha) agora usa uma tag de propriedade
+        // (_vivaOwnerBtn) em vez de gearContainer.querySelector(...), já que o dropdown não
+        // mora mais dentro do gearContainer.
+        const existingDropdown = document.querySelector(".viva-gear-dropdown");
+        const wasThisButtonsDropdown = existingDropdown && existingDropdown._vivaOwnerBtn === gearBtn;
         document.querySelectorAll(".viva-gear-dropdown").forEach(d => d.remove());
-
-        // Se já existia neste botão, apenas fechou e liberou a RAM
-        if (gearContainer.querySelector(".viva-gear-dropdown")) return;
+        if (wasThisButtonsDropdown) return; // este clique era pra FECHAR — já fechamos acima.
 
         // Constrói o menu sob demanda na memória RAM (Lazy Rendering - 0ms overhead)
         const dropdown = document.createElement("div");
         dropdown.className = "viva-gear-dropdown viva-el viva-active";
+        dropdown._vivaOwnerBtn = gearBtn;
         dropdown.addEventListener("click", (evt) => evt.stopPropagation());
 
         // 1. Ver Anúncios da Página
@@ -1310,7 +1432,21 @@ function processCards() {
           dropdown.appendChild(itemDL);
         }
 
-        gearContainer.appendChild(dropdown);
+        // FIX PORTAL: anexa em <body> (não mais em gearContainer) e posiciona via JS logo em
+        // seguida — precisa estar no DOM primeiro para offsetWidth/offsetHeight ficarem
+        // mensuráveis dentro de positionGearDropdown().
+        document.body.appendChild(dropdown);
+        positionGearDropdown(dropdown, gearBtn);
+
+        // FIX PORTAL: como o dropdown agora é position:fixed (relativo à viewport, não mais ao
+        // botão que o abriu), rolar a página o deixaria "flutuando" longe do gear que o abriu.
+        // Fecha automaticamente no primeiro scroll — padrão de UX comum em menus/popovers, e
+        // mais seguro/barato do que reposicionar a cada frame de scroll.
+        const closeOnScroll = () => {
+          dropdown.remove();
+          window.removeEventListener("scroll", closeOnScroll, true);
+        };
+        window.addEventListener("scroll", closeOnScroll, { capture: true, passive: true });
       });
 
       if (!globalDropdownListenerAdded) {
@@ -1323,7 +1459,9 @@ function processCards() {
       gearContainer.appendChild(gearBtn);
       cardFooter.appendChild(gearContainer);
 
-      card.appendChild(cardFooter);
+      // FIX FRAME: o rodapé entra DEPOIS do card dentro do frame (irmão, nunca filho) — o card
+      // nativo continua com exatamente os mesmos filhos que a Meta renderizou originalmente.
+      frame.appendChild(cardFooter);
     }
   });
 
@@ -1673,56 +1811,19 @@ function injectSidebar() {
   sidebar.innerHTML = `
     <div class="viva-sidebar-header">
       <div style="display:flex; align-items:center; gap:8px;">
-        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v3-fix</span></h3>
+        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v6-fix</span></h3>
         <span class="viva-scale-score viva-score-low" id="viva-sidebar-status">✓ Conectado</span>
       </div>
       <button class="viva-sidebar-minimize-btn" id="viva-btn-minimize" title="Minimizar">_</button>
     </div>
     <div class="viva-sidebar-content">
       
-      <!-- Seção 1: Controle & Filtros (Topo) -->
+      <!-- Seção 1: Rastreador — fixo, sem acordeão. Controle & Filtros vive no dock fixo no
+           rodapé (injectDock), sempre visível independente de scroll. -->
       <div class="viva-panel-section" style="box-sizing: border-box;">
-        <h4 class="viva-section-title">Controle & Filtros</h4>
-        
-        <div class="viva-form-group" style="margin-bottom:8px">
-          <label class="viva-label" title="Quantidade total de anúncios que o anunciante está rodando (indica volume).">Mínimo de Ads Ativos na Página</label>
-          <input type="number" id="viva-filter-min-page" class="viva-input" value="0" min="0" placeholder="Ex: 50" style="width:100%; box-sizing: border-box;">
-        </div>
-        
-        <div class="viva-form-group" style="margin-bottom:12px">
-          <label class="viva-label" title="Quantidade de vezes que o MESMO criativo se repete (indica agressividade na escala).">Mínimo de Ads Duplicados</label>
-          <input type="number" id="viva-filter-min-dup" class="viva-input" value="0" min="0" placeholder="Ex: 3" style="width:100%; box-sizing: border-box;">
-        </div>
+        <h4 class="viva-section-title">Rastrear Competidor</h4>
 
-        <button class="viva-btn viva-btn-primary" id="viva-btn-apply-filter" style="width:100%; margin-bottom:12px; font-weight: bold; box-sizing: border-box;">Aplicar Filtros</button>
-
-        <div class="viva-switch-row" style="margin-bottom: 10px;">
-          <span title="Mostra somente anúncios recentes com até 3 dias de veiculação">Anúncios Recentes (≤ 3 dias)</span>
-          <label class="viva-switch">
-            <input type="checkbox" id="viva-toggle-recentes">
-            <span class="viva-slider"></span>
-          </label>
-        </div>
-
-        <div class="viva-switch-row">
-          <span title="Rola a página sozinho até o fim da biblioteca para carregar tudo">Auto-Scroll</span>
-          <label class="viva-switch">
-            <input type="checkbox" id="viva-toggle-scroll">
-            <span class="viva-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <div class="viva-divider"></div>
-
-      <!-- Seção 2: Rastreador (Acordeon) -->
-      <div class="viva-panel-section" style="box-sizing: border-box;">
-        <h4 class="viva-section-title" id="viva-tracker-accordion-btn" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
-          Rastrear Competidor
-          <span id="viva-tracker-icon" style="font-size: 10px;">▼</span>
-        </h4>
-        
-        <div id="viva-tracker-content" style="display: none; margin-top: 10px;">
+        <div id="viva-tracker-content" style="margin-top: 10px;">
           <!-- Apple Segmented Control -->
           <div class="viva-segmented-control">
             <button id="viva-tab-page" class="viva-segmented-btn active">🏢 Por Página</button>
@@ -1808,22 +1909,6 @@ function setupSidebarInteractions() {
     minimizeBtn.addEventListener("click", () => {
       const sidebar = document.getElementById("viva-sidebar");
       if (sidebar) sidebar.classList.toggle("viva-minimized");
-    });
-  }
-
-  // Accordion Logic
-  const accBtn = document.getElementById("viva-tracker-accordion-btn");
-  const accContent = document.getElementById("viva-tracker-content");
-  const accIcon = document.getElementById("viva-tracker-icon");
-  if (accBtn && accContent) {
-    accBtn.addEventListener("click", () => {
-      if (accContent.style.display === "none") {
-        accContent.style.display = "block";
-        accIcon.textContent = "▲";
-      } else {
-        accContent.style.display = "none";
-        accIcon.textContent = "▼";
-      }
     });
   }
 
@@ -1921,53 +2006,8 @@ function setupSidebarInteractions() {
     }
   }, 2000);
 
-  // 4. Dual Filters & Auto-Scroll
-  const minPageInput = document.getElementById("viva-filter-min-page");
-  const minDupInput = document.getElementById("viva-filter-min-dup");
-  const applyBtn = document.getElementById("viva-btn-apply-filter");
-  const scrollToggle = document.getElementById("viva-toggle-scroll");
-
-  if (applyBtn) {
-    applyBtn.addEventListener("click", () => {
-      minPageAds = parseInt(minPageInput.value, 10) || 0;
-      minDupAds = parseInt(minDupInput.value, 10) || 0;
-      
-      // Stop auto-scroll when applying filters
-      isAutoScrollRunning = false; 
-      if (scrollToggle) scrollToggle.checked = false;
-      stopAutoScroll();
-      
-      processCards();
-      
-      applyBtn.textContent = "Aplicado ✓";
-      applyBtn.style.backgroundColor = "var(--viva-success)";
-      setTimeout(() => {
-        applyBtn.textContent = "Aplicar";
-        applyBtn.style.backgroundColor = "var(--viva-accent)";
-      }, 1500);
-    });
-  }
-
-  const recentesToggle = document.getElementById("viva-toggle-recentes");
-  if (recentesToggle) {
-    recentesToggle.addEventListener("change", (e) => {
-      filterOnlyRecent = e.target.checked;
-      processCards();
-    });
-  }
-
-  if (scrollToggle) {
-    scrollToggle.addEventListener("change", (e) => {
-      isAutoScrollRunning = e.target.checked;
-      if (isAutoScrollRunning) {
-        document.querySelectorAll('.viva-flex-override').forEach(el => el.classList.remove('viva-flex-override'));
-        startAutoScroll();
-      } else {
-        stopAutoScroll();
-        processCards(); 
-      }
-    });
-  }
+  // Filtros (Mín. Ads Ativos/Duplicados, Recentes, Auto-Scroll) agora moram no dock fixo do
+  // rodapé — ver injectDock()/setupDockInteractions(). Nada de lógica de filtro aqui na sidebar.
 
   // 5. Save/Monitor Competitor Page (Apple Pro Confirmation + Success Flow)
   const saveBtn = document.getElementById("viva-side-save");
@@ -2110,11 +2150,11 @@ function setupSidebarInteractions() {
           </div>
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">Tipo do Cadastro:</span>
-            <span class="viva-confirm-value">${info.tipo}</span>
+            <span class="viva-confirm-value">${vivaEscapeHtml(info.tipo)}</span>
           </div>
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">GEO • Nicho:</span>
-            <span class="viva-confirm-value">${info.geo} • ${info.nicho}</span>
+            <span class="viva-confirm-value">${vivaEscapeHtml(info.geo)} • ${vivaEscapeHtml(info.nicho)}</span>
           </div>
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">Instagram:</span>
@@ -2166,7 +2206,7 @@ function setupSidebarInteractions() {
           <div class="viva-success-icon-wrap">✓</div>
           <div>
             <div class="viva-confirm-title" style="font-size: 17px; color: #1D1D1F;">Monitoramento Ativado!</div>
-            <div class="viva-confirm-sub">${info.tipo} "<strong>${vivaEscapeHtml(info.nome)}</strong>" foi salvo com sucesso no ecossistema VIVA.</div>
+            <div class="viva-confirm-sub">${vivaEscapeHtml(info.tipo)} "<strong>${vivaEscapeHtml(info.nome)}</strong>" foi salvo com sucesso no ecossistema VIVA.</div>
           </div>
         </div>
         <div class="viva-confirm-actions" style="margin-top: 14px;">
@@ -2197,13 +2237,13 @@ function setupSidebarInteractions() {
       return searchInput.value.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
     }
     if (activeCardData && activeCardData.length > 0) {
-      for (const card of activeCardData) {
-        if (card.destUrl && card.destUrl !== "URL não detectada") {
+      for (const item of activeCardData) {
+        if (item.data && item.data.destUrl && item.data.destUrl !== "URL não detectada") {
           try {
-            const u = new URL(card.destUrl.startsWith("http") ? card.destUrl : "https://" + card.destUrl);
+            const u = new URL(item.data.destUrl.startsWith("http") ? item.data.destUrl : "https://" + item.data.destUrl);
             return u.hostname.replace(/^www\./i, "");
           } catch (e) {
-            return card.destUrl;
+            return item.data.destUrl;
           }
         }
       }
@@ -2233,7 +2273,7 @@ function showTopAdvertisersModal() {
         count: 0,
         maxDup: item.effectiveDupCount || 1,
         maxAge: item.data.adAgeDays || 0,
-        hasEscala: false,
+        maxStage: item.stage,
         pageId: item.card.getAttribute("data-viva-page-id") || item.data.pageId || extractPageId(item.card) || null,
         adArchiveId: extractAdArchiveId(item.card) || null
       };
@@ -2248,8 +2288,9 @@ function showTopAdvertisersModal() {
     advMap[name].count += 1;
     if (item.effectiveDupCount > advMap[name].maxDup) advMap[name].maxDup = item.effectiveDupCount;
     if (item.data.adAgeDays > advMap[name].maxAge) advMap[name].maxAge = item.data.adAgeDays;
-    if ((item.data.adAgeDays !== null && item.data.adAgeDays >= 3) || item.effectiveDupCount >= 2) {
-      advMap[name].hasEscala = true;
+    // Ranking mostra a fase MAIS ALTA entre os anúncios do anunciante (bruta > potencial > teste).
+    if (STAGE_RANK[item.stage] > STAGE_RANK[advMap[name].maxStage]) {
+      advMap[name].maxStage = item.stage;
     }
   });
 
@@ -2274,10 +2315,11 @@ function showTopAdvertisersModal() {
       }
 
       const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `#${index + 1}`;
-      const badgeClass = adv.hasEscala ? "viva-escala-chip-hot" : "viva-escala-chip-normal";
-      const badgeText = adv.hasEscala ? "🔥 EM ESCALA" : "⏳ NORMAL";
+      const rankStageInfo = STAGE_INFO[adv.maxStage];
+      const badgeClass = rankStageInfo.chipClass;
+      const badgeText = rankStageInfo.label;
       listHtml += `
-        <div class="viva-ranking-item" title="Clique para abrir a Biblioteca deste anunciante em nova aba" onclick="window.open('${targetUrl.replace(/'/g, "\\'")}', '_blank');" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--viva-border); border-radius: 10px; margin-bottom: 6px; background: rgba(255,255,255,0.6); transition: all 0.2s;">
+        <div class="viva-ranking-item" title="Clique para abrir a Biblioteca deste anunciante em nova aba" data-target-url="${vivaEscapeHtml(targetUrl)}" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--viva-border); border-radius: 10px; margin-bottom: 6px; background: rgba(255,255,255,0.6); transition: all 0.2s;">
           <div style="display: flex; align-items: center; gap: 12px; max-width: 65%;">
             <span style="font-size: 16px; font-weight: 700; width: 28px; text-align: center; color: var(--viva-text);">${medal}</span>
             <div style="display: flex; flex-direction: column; overflow: hidden;">
@@ -2318,6 +2360,16 @@ function showTopAdvertisersModal() {
 
   document.body.appendChild(overlay);
   requestAnimationFrame(() => overlay.classList.add("viva-visible"));
+
+  // AUDITORIA #06: usa data-target-url + listener delegado, não mais onclick="window.open(...)"
+  // inline com URL interpolada crua no atributo — evita quebrar o HTML/injetar markup caso a
+  // URL alguma vez contenha aspas simples não previstas pelo .replace() manual anterior.
+  overlay.querySelectorAll(".viva-ranking-item[data-target-url]").forEach(el => {
+    el.addEventListener("click", () => {
+      const url = el.getAttribute("data-target-url");
+      if (url) window.open(url, "_blank");
+    });
+  });
 
   const closeOverlay = () => {
     overlay.classList.remove("viva-visible");
@@ -2386,6 +2438,113 @@ function checkMonitoredStatus(pageName) {
 }
 
 
+
+// ─── VIVA Dock: barra fixa no rodapé com os filtros de tela ─────────────────────────────────
+// Extraído da sidebar (Controle & Filtros) para ficar sempre visível, independente de scroll,
+// e pra deixar claro visualmente que os filtros são cumulativos: Mínimo de Ads Ativos e
+// Recentes, por exemplo, podem estar ativos ao mesmo tempo — nenhum exclui o outro. A lógica
+// de combinação em processCards() já era assim (ifs sequenciais que só desligam shouldShow,
+// nunca resetam); aqui só reorganiza ONDE os controles vivem, o comportamento é idêntico.
+function injectDock() {
+  if (document.getElementById("viva-dock")) return;
+
+  const dock = document.createElement("div");
+  dock.id = "viva-dock";
+  dock.className = "viva-dock viva-el";
+
+  dock.innerHTML = `
+    <div class="viva-dock-group">
+      <label class="viva-dock-label" for="viva-dock-min-page" title="Quantidade total de anúncios que o anunciante está rodando (indica volume).">Mín. Ads Ativos</label>
+      <input type="number" id="viva-dock-min-page" class="viva-dock-input" min="0" placeholder="0">
+    </div>
+
+    <div class="viva-dock-group">
+      <label class="viva-dock-label" for="viva-dock-min-dup" title="Quantidade de vezes que o MESMO criativo se repete (indica agressividade na escala).">Mín. Duplicados</label>
+      <input type="number" id="viva-dock-min-dup" class="viva-dock-input" min="0" placeholder="0">
+    </div>
+
+    <button class="viva-btn viva-btn-primary viva-dock-apply-btn" id="viva-dock-apply" type="button">Aplicar</button>
+
+    <div class="viva-dock-divider"></div>
+
+    <div class="viva-dock-toggle-group" title="Mostra somente anúncios com até 3 dias de veiculação ativa">
+      <label class="viva-switch viva-switch-sm">
+        <input type="checkbox" id="viva-dock-recentes">
+        <span class="viva-slider"></span>
+      </label>
+      <span class="viva-dock-toggle-label">Recentes (≤ 3 dias)</span>
+    </div>
+
+    <div class="viva-dock-toggle-group" title="Rola a página sozinho até o fim da biblioteca para carregar tudo">
+      <label class="viva-switch viva-switch-sm">
+        <input type="checkbox" id="viva-dock-autoscroll">
+        <span class="viva-slider"></span>
+      </label>
+      <span class="viva-dock-toggle-label">Auto-Scroll</span>
+    </div>
+  `;
+
+  document.body.appendChild(dock);
+  setupDockInteractions();
+}
+
+function setupDockInteractions() {
+  const minPageInput = document.getElementById("viva-dock-min-page");
+  const minDupInput = document.getElementById("viva-dock-min-dup");
+  const applyBtn = document.getElementById("viva-dock-apply");
+  const recentesToggle = document.getElementById("viva-dock-recentes");
+  const scrollToggle = document.getElementById("viva-dock-autoscroll");
+
+  // FIX SINCRONIA: ao recriar o dock (ex.: navegação SPA dentro da Ad Library), os campos
+  // nascem refletindo o estado JS atual — nunca zerados — para deixar visualmente óbvio que
+  // os filtros continuam ativos e são cumulativos, não um substituindo o outro.
+  if (minPageInput) minPageInput.value = minPageAds > 0 ? minPageAds : "";
+  if (minDupInput) minDupInput.value = minDupAds > 0 ? minDupAds : "";
+  if (recentesToggle) recentesToggle.checked = filterOnlyRecent;
+  if (scrollToggle) scrollToggle.checked = isAutoScrollRunning;
+
+  if (applyBtn) {
+    applyBtn.addEventListener("click", () => {
+      minPageAds = parseInt(minPageInput.value, 10) || 0;
+      minDupAds = parseInt(minDupInput.value, 10) || 0;
+
+      // Mesmo efeito colateral de antes: aplicar filtro manual para o auto-scroll.
+      isAutoScrollRunning = false;
+      if (scrollToggle) scrollToggle.checked = false;
+      stopAutoScroll();
+
+      processCards();
+
+      applyBtn.textContent = "Aplicado ✓";
+      applyBtn.style.backgroundColor = "var(--viva-success)";
+      setTimeout(() => {
+        applyBtn.textContent = "Aplicar";
+        applyBtn.style.backgroundColor = "var(--viva-accent)";
+      }, 1500);
+    });
+  }
+
+  // Recentes e Auto-Scroll aplicam direto no "change" — sem precisar clicar em Aplicar, e sem
+  // desligar nenhum outro filtro. São cumulativos com Mín. Ads Ativos/Duplicados.
+  if (recentesToggle) {
+    recentesToggle.addEventListener("change", (e) => {
+      filterOnlyRecent = e.target.checked;
+      processCards();
+    });
+  }
+
+  if (scrollToggle) {
+    scrollToggle.addEventListener("change", (e) => {
+      isAutoScrollRunning = e.target.checked;
+      if (isAutoScrollRunning) {
+        startAutoScroll();
+      } else {
+        stopAutoScroll();
+        processCards();
+      }
+    });
+  }
+}
 
 function injectScrollTopBtn() {
   if (document.getElementById("viva-scroll-btn")) return;
@@ -2474,6 +2633,26 @@ function teardownVivaMonitor(fullTeardown = false) {
   if (confirmModal) confirmModal.remove();
   const topBtn = document.getElementById("viva-scroll-btn");
   if (topBtn) topBtn.remove();
+  const dock = document.getElementById("viva-dock");
+  if (dock) dock.remove();
+
+  // FIX FRAME (CRÍTICO): o .viva-card-frame TAMBÉM tem a classe .viva-el e seria removido pela
+  // varredura genérica abaixo — mas o card NATIVO (nó real do React da Meta) está DENTRO dele.
+  // Remover o frame sem tirar o card de dentro primeiro arrancaria o card do DOM junto,
+  // quebrando a página da Meta. Por isso, desembrulha (devolve o card ao pai original) antes.
+  document.querySelectorAll(".viva-card-frame").forEach(frame => {
+    let cardToRestore = null;
+    for (const child of frame.children) {
+      if (!child.classList.contains("viva-el")) {
+        cardToRestore = child;
+        break;
+      }
+    }
+    if (cardToRestore && frame.parentElement) {
+      frame.parentElement.insertBefore(cardToRestore, frame);
+    }
+    frame.remove();
+  });
 
   // Remove injected footers, strips, dropdowns and badges from all cards
   document.querySelectorAll(".viva-card-footer, .viva-scale-badge, .viva-el, .viva-escala-strip, .viva-card-badge-container, .viva-gear-dropdown").forEach(el => el.remove());
@@ -2481,7 +2660,10 @@ function teardownVivaMonitor(fullTeardown = false) {
     el.removeAttribute("data-viva-processed");
     el.removeAttribute("data-viva-id");
     try { mediaPruningObserver.unobserve(el); } catch(e) {}
-    el.classList.remove("viva-processed", "viva-border-level-1", "viva-border-level-2", "viva-border-level-3", "viva-border-escala");
+    // FAXINA: as classes de fase (viva-stage-*) vivem no FRAME, não no card — e o frame
+    // inteiro já é destruído/desembrulhado antes deste ponto (ver bloco FIX FRAME acima), então
+    // não há nada de fase pra limpar aqui, só o carimbo de processado do card em si.
+    el.classList.remove("viva-processed");
   });
   activeCardData = [];
   cardSignatures = {};
@@ -2511,7 +2693,7 @@ function injectMediaPreconnects() {
 }
 
 async function init() {
-  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v4 (2026-07-30)");
+  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FRAME-v6 (2026-09-04) — frame architecture + O(1) advertiser counts + XSS escaping + adaptive grid cell finder");
   // FIX 4.1: loadLocalApiUrl() é só storage local (instantâneo). fetchMonitoredPages() é
   // deliberadamente NÃO aguardado (fire-and-forget) — roda em paralelo com timeout próprio e
   // nunca atrasa a sidebar, o observer ou o processamento de cards.
@@ -2533,6 +2715,7 @@ async function init() {
     setTimeout(() => {
       injectSidebar();
       injectScrollTopBtn();
+      injectDock();
       processCards();
     }, 1500);
   });
@@ -2552,6 +2735,8 @@ async function init() {
         injectMediaPreconnects();
         injectSidebar();
         injectScrollTopBtn();
+        injectDock();
+        lastFullScanTime = 0; // religou o toggle — força 1 varredura completa antes de confiar só no observer
         processCards();
       }
     }
@@ -2700,12 +2885,12 @@ function checkUrlChangeTick() {
     // Library não pode desconectar o observer/interval/scroll, senão a extensão para de
     // detectar novas trocas de URL depois da primeira e "morre" pelo resto da sessão.
     teardownVivaMonitor();
-    cachedContingencyChecked = false;
-    cachedContingencyStatus = null;
+    lastFullScanTime = 0; // força uma varredura completa de descoberta logo após a navegação SPA
 
     setTimeout(() => {
       injectSidebar();
       injectScrollTopBtn();
+      injectDock();
       const pageTitle = getPageNameFromHeader();
       const nameInput = document.getElementById("viva-side-name");
       if (nameInput) nameInput.value = pageTitle;
