@@ -823,6 +823,19 @@ function extractCardData(card) {
 let isBatching = false;
 let pendingBatchCards = false;
 
+// FIX CAUSA RAIZ (2026-09) — trava de concorrência: resetCardFramesAndState() desembrulha todos
+// os .viva-card-frame antes do clique automatizado na aba "Sobre" (ver autoDiscoverInstagramViaSobreTab),
+// mas durante a janela de transição (~2s: clique em "Sobre" + espera + clique de volta em
+// "Anúncios") a própria grade de anúncios sendo desmontada/remontada pelo React da Meta dispara
+// mutações que o MutationObserver principal detecta, chamando processCards() via debounce. Sem
+// esta trava, processCards() re-envolveria os cards em .viva-card-frame NO MEIO da transição de
+// aba, reintroduzindo exatamente o mesmo erro de removeChild que a correção pretende eliminar.
+// Enquanto true, processCards() sai imediatamente sem processar nem re-envolver nada; o próprio
+// autoDiscoverInstagramViaSobreTab() libera a trava e força um processCards() explícito assim
+// que a aba "Anúncios" termina de remontar.
+let _vivaSobreTabDiscoveryInProgress = false;
+let _vivaSobreTabWatchdogTimeout = null; // rede de segurança contra a trava acima ficar presa
+
 // ─── VIVA Card Frame: caixa externa que envolve o card sem tocar em seus filhos ───
 // FIX ARQUITETURA (loop do ResizeObserver / erro React #185): antes, escalaStrip, badgeContainer
 // e cardFooter eram inseridos como FILHOS DENTRO do próprio card (card.insertBefore/appendChild),
@@ -908,6 +921,12 @@ function positionGearDropdown(dropdown, anchorBtn) {
 
 function processCards() {
   if (!vivaMonitorMasterEnabled) return;
+  // FIX CAUSA RAIZ (2026-09): ver nota de arquitetura junto de _vivaSobreTabDiscoveryInProgress,
+  // no topo do arquivo. Sai sem fazer nada enquanto a automação da aba "Sobre" está em
+  // andamento — evita re-envolver cards em .viva-card-frame no meio da desmontagem/remontagem
+  // da grade pelo React da Meta, que é exatamente o que causava o "removeChild... not a child
+  // of this node" e corrompia a extração do Instagram de forma silenciosa e persistente.
+  if (_vivaSobreTabDiscoveryInProgress) return;
   if (isBatching) {
     pendingBatchCards = true;
     return;
@@ -1849,7 +1868,7 @@ function injectSidebar() {
   sidebar.innerHTML = `
     <div class="viva-sidebar-header">
       <div style="display:flex; align-items:center; gap:8px;">
-        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v6.8-fix</span></h3>
+        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v7.2-fix</span></h3>
         <span class="viva-scale-score viva-score-low" id="viva-sidebar-status">✓ Conectado</span>
       </div>
       <button class="viva-sidebar-minimize-btn" id="viva-btn-minimize" title="Minimizar">_</button>
@@ -2013,8 +2032,13 @@ function setupSidebarInteractions() {
       }
     }
 
-    // Poll Instagram (Agnóstico, não depende mais de view_all_page_id)
-    if (igInput && !hasFoundIg) {
+    // FIX INSTAGRAM AUTO-DETECT (2026-09): a varredura de Instagram no DOM só faz sentido — e só
+    // deve rodar, por performance — quando estamos genuinamente na biblioteca de UM anunciante
+    // único (ver isSingleAdvertiserLibraryView() e a nota de arquitetura junto dela, mais abaixo
+    // no arquivo). Em buscas multi-anunciante (várias páginas diferentes na mesma tela) não existe
+    // "o Instagram da busca" — escanear ali é trabalho desperdiçado a cada 2s, sem nunca poder
+    // achar nada de útil.
+    if (igInput && !hasFoundIg && isSingleAdvertiserLibraryView()) {
       const igUrl = getInstagramUrlFromHeader();
       if (igUrl && igUrl !== cachedIgUrl) {
         cachedIgUrl = igUrl;
@@ -2058,15 +2082,18 @@ function setupSidebarInteractions() {
       autoAttachInstagramIfMonitored(cachedIgUrl);
     }
 
-    // AUDITORIA (correção 2026-09): se ainda não achamos o Instagram por nenhum caminho E
-    // estamos numa página de anunciante, tenta a descoberta forçada via aba "Sobre" (ver
-    // autoDiscoverInstagramViaSobreTab). Sem isso, o Instagram nunca é encontrado enquanto o
-    // operador não clicar manualmente na aba "Sobre" — a Meta só renderiza esse link no DOM
-    // depois desse clique, então getInstagramUrlFromHeader() sozinho nunca teria o que achar
-    // na aba "Anúncios". A função tem guard próprio por pageId, então é seguro chamar a cada
-    // tick — ela mesma decide se já tentou ou se já achou.
-    if (!cachedIgUrl) {
-      const pid = new URLSearchParams(window.location.search).get("view_all_page_id");
+    // FIX INSTAGRAM AUTO-DETECT (2026-09): antes este gate exigia view_all_page_id= na própria
+    // URL — o que nunca acontece quando o operador chega numa biblioteca de anunciante único via
+    // BUSCA POR PALAVRA-CHAVE (ex.: ?q=mars%20man&search_type=keyword_unordered), mesmo quando a
+    // Meta claramente está mostrando só aquele anunciante (com a aba "Sobre" disponível no
+    // cabeçalho). Isso fazia autoDiscoverInstagramViaSobreTab() nunca ser chamada nesse cenário —
+    // o exemplo relatado. Agora o gate usa isSingleAdvertiserLibraryView() (existência real da
+    // aba "Sobre"/"About" no DOM), que cobre os dois formatos de URL com uma única checagem, e
+    // getCurrentPageIdentityKey() para dar à função uma chave de identidade estável mesmo sem
+    // view_all_page_id na URL (usa o pageId lido do React Fiber pelos cards já processados, com
+    // fallback para o nome normalizado da página).
+    if (!cachedIgUrl && isSingleAdvertiserLibraryView()) {
+      const pid = getCurrentPageIdentityKey();
       if (pid) autoDiscoverInstagramViaSobreTab(pid);
     }
   }, 2000);
@@ -2502,6 +2529,44 @@ function checkMonitoredStatus(pageName) {
   }
 }
 
+// FIX INSTAGRAM AUTO-DETECT (2026-09): sinal correto e definitivo de "estamos na biblioteca de
+// UM anunciante único" — a Meta só renderiza a aba "Sobre"/"About" no cabeçalho quando a tela
+// mostra as informações de uma única página (seja por view_all_page_id= na URL, seja por uma
+// busca por palavra-chave que a própria Meta resolveu para um único resultado, como no exemplo
+// reportado: ?q=mars%20man&search_type=keyword_unordered). Checar apenas a presença de
+// view_all_page_id= na URL — como o código fazia antes em todos os pontos de disparo da
+// descoberta de Instagram — é cego para esse segundo caso, que é exatamente o cenário relatado.
+// Usar a existência real da aba como gate cobre os dois formatos de URL com uma única checagem
+// e, por construção, nunca dispara em buscas multi-anunciante (onde a aba simplesmente não
+// existe) — que é o requisito de performance/segurança pedido: a varredura da aba "Sobre" (e o
+// polling de Instagram em geral) só deve rodar quando genuinamente estamos na biblioteca de uma
+// página, nunca numa lista de múltiplos anunciantes diferentes.
+function isSingleAdvertiserLibraryView() {
+  return !!findMetaTabButton(["Sobre", "About"]);
+}
+
+// Identidade estável da página atualmente exibida, usada como chave nos guards de "já tentei"/
+// "já vinculei" (_vivaSobreTabAttempts / _vivaInstagramAutoAttachInFlight). Usa
+// view_all_page_id= quando presente na URL (entrada direta pela Ad Library); na ausência dele
+// (resultado de busca por palavra-chave resolvido para um único anunciante), cai para o pageId
+// já lido do React Fiber pelo react_sniffer.js em qualquer card já processado na tela
+// (data-viva-page-id/item.data.pageId — funciona também em resultados de busca por palavra-
+// chave, que carregam o mesmo atributo); e, como último recurso, usa o nome normalizado da
+// página lido do cabeçalho. Sempre retorna uma chave estável enquanto a página não mudar, ou
+// null se nada disso estiver disponível ainda.
+function getCurrentPageIdentityKey() {
+  const pid = new URLSearchParams(window.location.search).get("view_all_page_id");
+  if (pid) return pid;
+  if (Array.isArray(activeCardData)) {
+    for (const item of activeCardData) {
+      const cardPid = (item.card && item.card.getAttribute("data-viva-page-id")) || (item.data && item.data.pageId);
+      if (cardPid) return cardPid;
+    }
+  }
+  const name = getPageNameFromHeader();
+  return name ? `name:${toSlug(name)}` : null;
+}
+
 // AUDITORIA #16 (Instagram automático): quando a extensão detecta o link do Instagram
 // vinculado à página do anunciante (getInstagramUrlFromHeader) e essa página JÁ está cadastrada
 // no VIVA Labs Monitor mas ainda não tem instagram_url salvo — por exemplo, cadastrada antes de
@@ -2511,26 +2576,39 @@ function checkMonitoredStatus(pageName) {
 // manualmente em "Monitorar no VIVA Labs" de novo.
 //
 // Regras de segurança do auto-attach:
-//  1. Só roda em páginas de anunciante (view_all_page_id na URL) — nunca em buscas por
-//     domínio/palavra-chave, onde não existe uma "página" única para vincular.
+//  1. Só roda em uma biblioteca de anunciante único (ver isSingleAdvertiserLibraryView) — nunca
+//     em buscas com múltiplos anunciantes diferentes, onde não existe uma "página" única para
+//     vincular. FIX (2026-09): antes exigia view_all_page_id= na URL; agora cobre também
+//     resultados de busca por palavra-chave resolvidos para um único anunciante.
 //  2. NUNCA cria um registro novo sozinho — só complementa um que já existe em monitoredPages
-//     (ou seja, o operador já clicou "Monitorar" alguma vez antes).
+//     (ou seja, o operador já clicou "Monitorar" alguma vez antes). FIX (2026-09): o registro é
+//     localizado por pageId (quando a URL tem view_all_page_id=) OU por nome do anunciante
+//     (funciona também quando a URL é uma busca por palavra-chave, sem pageId nenhum) — mesmo
+//     padrão de correspondência já usado em openFunnelModal() para o mesmo problema.
 //  3. NUNCA sobrescreve um instagram_url já salvo — só preenche o que estava vazio.
-//  4. Guarda de "em andamento" por pageId evita disparo duplicado enquanto o polling de 2s
-//     roda e a requisição anterior ainda não respondeu.
+//  4. Guarda de "em andamento" por identidade de página evita disparo duplicado enquanto o
+//     polling de 2s roda e a requisição anterior ainda não respondeu.
 const _vivaInstagramAutoAttachInFlight = new Set();
 async function autoAttachInstagramIfMonitored(igUrl) {
   if (!igUrl) return;
-  if (!window.location.href.includes("view_all_page_id=")) return;
+  if (!Array.isArray(monitoredPages) || monitoredPages.length === 0) return;
+  if (!isSingleAdvertiserLibraryView()) return;
 
   const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
-  if (!pageId || !Array.isArray(monitoredPages)) return;
+  const pageName = getPageNameFromHeader();
+  const identityKey = getCurrentPageIdentityKey();
+  if (!identityKey) return;
 
-  const record = monitoredPages.find(p => p && p.url && p.url.includes(pageId));
+  const record = monitoredPages.find(p => {
+    if (!p) return false;
+    if (pageId && p.url && p.url.includes(pageId)) return true;
+    if (pageName && p.nome && p.nome.toLowerCase().trim() === pageName.toLowerCase().trim()) return true;
+    return false;
+  });
   if (!record || record.instagram_url) return; // não monitorada ainda, ou já tem Instagram salvo
 
-  if (_vivaInstagramAutoAttachInFlight.has(pageId)) return;
-  _vivaInstagramAutoAttachInFlight.add(pageId);
+  if (_vivaInstagramAutoAttachInFlight.has(identityKey)) return;
+  _vivaInstagramAutoAttachInFlight.add(identityKey);
 
   try {
     const res = await fetch(`${API_URL}/api/salvar`, {
@@ -2554,7 +2632,7 @@ async function autoAttachInstagramIfMonitored(igUrl) {
   } catch (e) {
     console.warn("[VIVA] Falha ao auto-vincular Instagram:", e.message);
   } finally {
-    _vivaInstagramAutoAttachInFlight.delete(pageId);
+    _vivaInstagramAutoAttachInFlight.delete(identityKey);
   }
 }
 
@@ -2572,26 +2650,148 @@ async function autoAttachInstagramIfMonitored(igUrl) {
 // "Sobre", clica nele, aguarda o React renderizar o conteúdo (que inclui o link do Instagram,
 // quando a página tem um), escaneia e aplica o resultado, e então clica de volta na aba
 // "Anúncios" para devolver a tela ao estado em que o operador estava — tudo transparente, sem
-// exigir nenhuma ação manual. Roda no máximo 1x por pageId (guard _vivaSobreTabAttempted) para
-// nunca ficar clicando repetidamente nas abas a cada ciclo de polling da sidebar.
-const _vivaSobreTabAttempted = new Set();
+// exigir nenhuma ação manual. Roda no máximo VIVA_SOBRE_TAB_MAX_ATTEMPTS vezes por identidade de
+// página (guard _vivaSobreTabAttempts, ver getCurrentPageIdentityKey) para nunca ficar clicando
+// indefinidamente nas abas a cada ciclo de polling da sidebar.
+//
+// FIX CAUSA RAIZ (2026-09) — bug persistente reportado após a fusão da arquitetura de
+// .viva-card-frame: clicar na aba "Sobre" faz o React da Meta DESMONTAR a grade de anúncios
+// inteira (para montar o painel de transparência no lugar dela) — e desmontar, internamente,
+// significa chamar `parentNode.removeChild(cardNode)` para cada card, usando o parentNode que a
+// fiber tree do React registrou como correto. Como processCards() já reparentou fisicamente
+// todo card visível para dentro de um <div class="viva-card-frame"> antes deste ponto (ver
+// getOrCreateCardFrame), o parentNode real do card não é mais aquele que o React espera — e a
+// chamada nativa `removeChild` lança "The node to be removed is not a child of this node."
+// (confirmado no console: "caught error in module g [from AdLibraryV3AdsCard.react]"). Esse
+// erro é engolido pelo error boundary da própria Meta (não é lançado para o try/catch abaixo),
+// então a extensão nunca soube que a tentativa tinha falhado — mas a transição de aba fica
+// corrompida e o painel "Sobre" não termina de montar direito, então getInstagramUrlFromHeader()
+// não encontra nada 1400ms depois, mesmo a página tendo Instagram vinculado. Como o guard
+// registrava a tentativa como "já tentei" ANTES de saber se ela teria sucesso, essa falha virava
+// permanente pelo resto da sessão — daí o caráter persistente do bug.
+// A correção real está em resetCardFramesAndState() (chamada logo abaixo, antes do clique):
+// desembrulha todo .viva-card-frame de volta ao parentNode original que o React reconhece,
+// devolvendo os cards ao estado em que o React pode desmontá-los sem erro. Depois do round-trip
+// pela aba "Sobre", processCards() é chamado de novo para re-envolver os cards e reinjetar
+// badges/rodapé — o card nativo em si nunca é tocado, só o wrapper da VIVA ao redor dele.
+const _vivaSobreTabAttempts = new Map(); // identityKey -> nº de tentativas já feitas
+const VIVA_SOBRE_TAB_MAX_ATTEMPTS = 2;
 
+// FIX BUSCA DA ABA (2026-09): a versão anterior buscava só "[role='tab'], a[role='link']" com
+// texto exatamente igual ao rótulo. Em algumas variações de layout da Meta (confirmado num
+// relato com URL direta de view_all_page_id=, aba "Sobre" visivelmente presente na tela), a
+// sub-navegação "Anúncios / Sobre" é renderizada sem esses roles específicos — e como essa
+// busca falhando não deixava rastro nenhum no console, a falha era indistinguível de "a página
+// realmente não tem essa aba". Agora a busca roda em duas passadas: a role-based original
+// primeiro (mais barata, cobre a maioria dos layouts), e só se ela não achar nada, um fallback
+// estrutural mais amplo (a, button, div/span com role='button') restrito a elementos "folha"
+// (no máx. 1 filho, sem entrar em cards de anúncio) — o mesmo tipo de heurística já usada em
+// getAdCards() para achar botões de "Ver detalhes" sem depender de classes/roles ofuscados.
 function findMetaTabButton(labelVariants) {
-  const candidates = document.querySelectorAll("[role='tab'], a[role='link']");
-  for (const el of candidates) {
+  const roleCandidates = document.querySelectorAll("[role='tab'], a[role='link']");
+  for (const el of roleCandidates) {
     const t = (el.textContent || "").trim();
     if (labelVariants.includes(t) && el.offsetParent !== null) return el;
   }
+
+  const genericCandidates = document.querySelectorAll("a, button, div[role='button'], span[role='button']");
+  for (const el of genericCandidates) {
+    if (el.children.length > 1) continue;
+    if (el.closest && el.closest(".viva-processed")) continue; // nunca casa texto dentro de um card de anúncio
+    const t = (el.textContent || "").trim();
+    if (labelVariants.includes(t) && el.offsetParent !== null) return el;
+  }
+
   return null;
 }
 
-async function autoDiscoverInstagramViaSobreTab(pageId) {
-  if (!pageId || _vivaSobreTabAttempted.has(pageId)) return;
-  if (getInstagramUrlFromHeader()) return; // já visível no DOM — não precisa forçar a aba
-  _vivaSobreTabAttempted.add(pageId);
+// FIX CAUSA RAIZ (2026-09): desembrulha todo .viva-card-frame antes de deixar o React da Meta
+// desmontar a grade de anúncios (troca para a aba "Sobre") — ver nota de arquitetura acima, em
+// autoDiscoverInstagramViaSobreTab. Devolve cada card nativo para seu parentNode original (o
+// mesmo container que o React da Meta reconhece), remove o frame (que leva junto a faixa de
+// escala/badges/rodapé injetados, todos filhos apenas do frame, nunca do card) e limpa o estado
+// de "processado" para que processCards() re-envolva tudo de forma limpa no próximo ciclo.
+// Deliberadamente NÃO usa o seletor genérico ".viva-el" (como teardownVivaMonitor faz) porque
+// esta função roda com a sidebar/dock/modal ainda de pé — um seletor tão amplo os removeria
+// junto. Escopada apenas aos elementos por-card que a arquitetura de frame injeta.
+function resetCardFramesAndState() {
+  let unwrappedCount = 0;
+  document.querySelectorAll(".viva-card-frame").forEach(frame => {
+    let cardToRestore = null;
+    for (const child of frame.children) {
+      if (!child.classList.contains("viva-el")) {
+        cardToRestore = child;
+        break;
+      }
+    }
+    if (cardToRestore && frame.parentElement) {
+      frame.parentElement.insertBefore(cardToRestore, frame);
+      unwrappedCount++;
+    }
+    frame.remove(); // leva junto escalaStrip/badgeContainer/cardFooter (filhos restantes do frame)
+  });
+  document.querySelectorAll(".viva-gear-dropdown").forEach(el => el.remove());
+  document.querySelectorAll("[data-viva-processed], [data-viva-id], .viva-processed").forEach(el => {
+    el.removeAttribute("data-viva-processed");
+    el.removeAttribute("data-viva-id");
+    try { mediaPruningObserver.unobserve(el); } catch (e) {}
+    try { viewportProximityObserver.unobserve(el); } catch (e) {}
+    el.classList.remove("viva-processed");
+  });
+  activeCardData = [];
+  cardSignatures = {};
+  return unwrappedCount;
+}
 
+async function autoDiscoverInstagramViaSobreTab(pageId) {
+  if (!pageId) return;
+  const attemptsSoFar = _vivaSobreTabAttempts.get(pageId) || 0;
+  if (attemptsSoFar >= VIVA_SOBRE_TAB_MAX_ATTEMPTS) return;
+  if (getInstagramUrlFromHeader()) return; // já visível no DOM — não precisa forçar a aba
+
+  // FIX DIAGNÓSTICO (2026-09): a versão anterior desistia em silêncio absoluto quando a aba não
+  // era encontrada — indistinguível, olhando o console, de "a página realmente não tem essa
+  // aba" vs. "o seletor não bateu com o layout real". Um console.warn aqui é o que faltava para
+  // diferenciar as duas causas num próximo relato, sem precisar inspecionar o DOM ao vivo.
   const sobreBtn = findMetaTabButton(["Sobre", "About"]);
-  if (!sobreBtn) return; // layout sem essa aba nesta variação — desiste silenciosamente
+  if (!sobreBtn) {
+    console.warn(`[VIVA] Auto-descoberta de Instagram: aba 'Sobre'/'About' não encontrada no DOM para pageId=${pageId} — nenhuma automação será feita (verifique se o layout desta página realmente expõe essa aba).`);
+    return; // layout sem essa aba nesta variação — desiste (também cobre implicitamente o caso
+    // de busca multi-anunciante, onde essa aba nunca existe)
+  }
+
+  console.log(`[VIVA] Auto-descoberta de Instagram: aba 'Sobre' encontrada para pageId=${pageId} — tentativa ${attemptsSoFar + 1}/${VIVA_SOBRE_TAB_MAX_ATTEMPTS}.`);
+  _vivaSobreTabAttempts.set(pageId, attemptsSoFar + 1);
+
+  // FIX CAUSA RAIZ (2026-09): trava processCards() ANTES de mexer no DOM — fecha a janela de
+  // corrida em que uma mutação disparada pela própria transição de aba (ou por qualquer scroll/
+  // mutação concorrente) chamaria processCards() e re-envolveria cards em .viva-card-frame no
+  // meio da desmontagem da grade pelo React da Meta. Só é liberada no "finally" abaixo, depois
+  // que a aba "Anúncios" termina de remontar.
+  _vivaSobreTabDiscoveryInProgress = true;
+  // Watchdog de resiliência (mesmo padrão de batchingWatchdogTimeout usado em processCards()):
+  // o clique de volta para "Anúncios" e a liberação da trava vivem dentro de setTimeouts fora
+  // do try/catch principal desta função — se algo inesperado impedir esses timeouts de rodar
+  // (ex.: backBtn.click() lançando por um layout inesperado da Meta), a trava ficaria presa em
+  // true para sempre, travando processCards() (e a extensão inteira) de forma permanente e
+  // silenciosa. Este watchdog garante que, no pior caso, a trava é liberada em até 6s.
+  clearTimeout(_vivaSobreTabWatchdogTimeout);
+  _vivaSobreTabWatchdogTimeout = setTimeout(() => {
+    if (_vivaSobreTabDiscoveryInProgress) {
+      console.warn("[VIVA] Watchdog: destravando processCards() após timeout da automação da aba 'Sobre'.");
+      _vivaSobreTabDiscoveryInProgress = false;
+      lastFullScanTime = 0;
+      if (vivaMonitorMasterEnabled) processCards();
+    }
+  }, 6000);
+
+  // FIX CAUSA RAIZ (2026-09): desembrulha os cards de .viva-card-frame ANTES de deixar o React
+  // da Meta desmontar a grade (o clique abaixo) — ver nota de arquitetura junto de
+  // resetCardFramesAndState() e da declaração de _vivaSobreTabAttempts, mais acima. Sem isso, a
+  // desmontagem da grade falha com "removeChild... not a child of this node" dentro do próprio
+  // React da Meta, corrompendo a transição para a aba "Sobre" e fazendo a extração do Instagram
+  // falhar silenciosamente mesmo quando a página tem o link vinculado.
+  resetCardFramesAndState();
 
   try {
     sobreBtn.click();
@@ -2601,6 +2801,15 @@ async function autoDiscoverInstagramViaSobreTab(pageId) {
     await new Promise(resolve => setTimeout(resolve, 1400));
 
     const igUrl = getInstagramUrlFromHeader();
+    if (igUrl) {
+      console.log(`[VIVA] Auto-descoberta de Instagram: link encontrado após abrir a aba 'Sobre': ${igUrl}`);
+    } else {
+      // FIX DIAGNÓSTICO (2026-09): distingue "a aba Sobre não existe" (log acima) de "a aba
+      // Sobre foi aberta com sucesso mas não trouxe nenhum link de Instagram" — este segundo
+      // caso pode indicar que a página genuinamente não tem Instagram vinculado, ou que o
+      // clique não completou a troca de aba a tempo dos 1400ms de espera.
+      console.warn(`[VIVA] Auto-descoberta de Instagram: aba 'Sobre' foi aberta para pageId=${pageId}, mas nenhum link de Instagram foi encontrado no DOM após a espera (a página pode genuinamente não ter Instagram vinculado, ou a troca de aba não completou a tempo).`);
+    }
     if (igUrl) {
       const igInput = document.getElementById("viva-side-instagram");
       const igHelper = document.getElementById("viva-ig-helper");
@@ -2642,7 +2851,28 @@ async function autoDiscoverInstagramViaSobreTab(pageId) {
     // os nós da barra de abas ao trocar para "Sobre".
     setTimeout(() => {
       const backBtn = findMetaTabButton(["Anúncios", "Ads"]);
-      if (backBtn) backBtn.click();
+      if (backBtn) {
+        backBtn.click();
+      } else {
+        console.warn("[VIVA] Auto-descoberta de Instagram: não foi possível localizar a aba 'Anúncios' para voltar — a tela pode ter ficado presa na aba 'Sobre'.");
+      }
+      // FIX CAUSA RAIZ (2026-09): os cards foram desembrulhados de .viva-card-frame por
+      // resetCardFramesAndState() antes do round-trip pela aba "Sobre" — sem reprocessar agora,
+      // eles voltariam "nus" (sem faixa de escala, badges ou rodapé) até o próximo scroll ou
+      // mutação disparar processCards() naturalmente. 300ms dá tempo do clique de volta para
+      // "Anúncios" terminar de remontar a grade antes de tentar re-envolver os cards.
+      setTimeout(() => {
+        // FIX CAUSA RAIZ (2026-09): libera a trava só agora — depois que a aba "Anúncios" já
+        // teve tempo de remontar a grade — e força o próximo processCards() explicitamente, em
+        // vez de esperar o próximo scroll/mutação natural. Enquanto a trava esteve ativa,
+        // qualquer mutação concorrente que teria chamado processCards() saiu cedo (ver early-
+        // return no topo da função), então este é o primeiro ciclo real desde o início da
+        // automação — garante que os cards nunca fiquem "nus" por mais tempo que o necessário.
+        clearTimeout(_vivaSobreTabWatchdogTimeout); // fluxo normal concluiu — watchdog não é mais necessário
+        _vivaSobreTabDiscoveryInProgress = false;
+        lastFullScanTime = 0; // força varredura completa: a grade inteira acabou de ser remontada
+        if (vivaMonitorMasterEnabled) processCards();
+      }, 300);
     }, 350);
   }
 }
@@ -2939,7 +3169,7 @@ async function init() {
   }
   _vivaInitialized = true;
 
-  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v6.8 (2026-09) — corrige detecção automática de Instagram (via aba 'Sobre') e remove seção de Exportação");
+  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v7.2 (2026-09) — torna a busca da aba 'Sobre' resiliente a layouts sem role='tab'/role='link' (fallback estrutural) e adiciona logs de diagnóstico em cada etapa da automação de descoberta de Instagram, para não haver mais falhas silenciosas");
   await loadLocalApiUrl();
   fetchMonitoredPages();
 
@@ -2962,9 +3192,12 @@ async function init() {
       processCards();
       // AUDITORIA (correção 2026-09): dispara a descoberta forçada de Instagram já na carga
       // inicial da página, sem esperar o primeiro tick do polling da sidebar (2s) — o operador
-      // pode estar numa página de anunciante já monitorada desde o primeiro segundo.
-      const initialPid = new URLSearchParams(window.location.search).get("view_all_page_id");
-      if (initialPid) autoDiscoverInstagramViaSobreTab(initialPid);
+      // pode estar numa biblioteca de anunciante único já monitorada desde o primeiro segundo,
+      // com ou sem view_all_page_id= na URL (ver isSingleAdvertiserLibraryView).
+      if (isSingleAdvertiserLibraryView()) {
+        const initialPid = getCurrentPageIdentityKey();
+        if (initialPid) autoDiscoverInstagramViaSobreTab(initialPid);
+      }
     }, 1500);
   });
 
@@ -3150,7 +3383,13 @@ function checkUrlChangeTick() {
       checkMonitoredStatus(pageTitle);
 
       // Atualiza dinamicamente a exibição do campo do Instagram no painel lateral
-      const isPage = window.location.href.includes("view_all_page_id=");
+      // FIX INSTAGRAM AUTO-DETECT (2026-09): antes este bloco só considerava "página de
+      // anunciante" quando a URL tinha view_all_page_id= — escondendo o campo inteiro de
+      // Instagram e nunca disparando a descoberta via aba "Sobre" em resultados de busca por
+      // palavra-chave resolvidos para um único anunciante (o cenário relatado). Agora usa
+      // isSingleAdvertiserLibraryView(), que cobre os dois formatos de URL através da presença
+      // real da aba "Sobre"/"About" no cabeçalho.
+      const isPage = window.location.href.includes("view_all_page_id=") || isSingleAdvertiserLibraryView();
       const igGroup = document.getElementById("viva-group-instagram");
       const igInput = document.getElementById("viva-side-instagram");
       if (igGroup) {
@@ -3173,8 +3412,10 @@ function checkUrlChangeTick() {
               // AUDITORIA (correção 2026-09): não achou o Instagram na aba "Anúncios" (o
               // esperado — a Meta só renderiza esse dado na aba "Sobre") — dispara a
               // descoberta forçada em vez de deixar o campo preso em "não detectado" para
-              // sempre, mesma lógica do polling da sidebar.
-              const pidNav = new URLSearchParams(window.location.search).get("view_all_page_id");
+              // sempre, mesma lógica do polling da sidebar. Usa getCurrentPageIdentityKey()
+              // em vez do parâmetro de URL cru, para também funcionar em buscas por
+              // palavra-chave resolvidas para um único anunciante.
+              const pidNav = getCurrentPageIdentityKey();
               if (pidNav) autoDiscoverInstagramViaSobreTab(pidNav);
             }
           }
