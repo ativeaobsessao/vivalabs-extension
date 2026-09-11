@@ -56,10 +56,16 @@ let _vivaSidebarIntervalId = null; // setInterval de polling de nome/Instagram
 let _vivaUrlIntervalId = null;     // setInterval de detecção de mudança de URL
 let _vivaScrollHandler = null;     // Handler de scroll (processCards debounced)
 let _vivaScrollTopHandler = null;  // Handler de scroll do botão "ir ao topo"
+let _vivaFastScrollHandler = null; // Handler de scroll do detector de velocidade (Fast-Scroll Bypass)
 let _vivaInitialized = false;      // Guard contra múltiplas inicializações
 
-// ─── VIVA O(1) DOM Index WeakSets (escopo de módulo para acesso no teardown) ─
-const VIVA_SEARCH_ROOTS = new WeakSet(); // Containers de busca e sugestões da Meta
+// AUDITORIA #13: a antiga declaração de módulo `const VIVA_SEARCH_ROOTS = new WeakSet();` foi
+// removida daqui. Ela nunca era lida nem escrita em lugar nenhum do arquivo — a variável de
+// mesmo nome declarada dentro de init() (ver mais abaixo) sombreava (shadow) esta a cada
+// execução, e é aquela versão local que indexSearchContainers() e o MutationObserver principal
+// de fato usam. O comentário original dizia "escopo de módulo para acesso no teardown", mas
+// nenhum código de teardown jamais a referenciou — código morto puro, sem efeito no
+// comportamento real da extensão. Mantida apenas a declaração local dentro de init().
 
 // ─── VIVA Eco-RAM Shield: Cache WeakMap & Virtualizador de Mídia ───
 const cardDataMap = new WeakMap();
@@ -77,7 +83,14 @@ let lastScrollTime = Date.now();
 let batchingWatchdogTimeout = null;
 let lastCycleDurationMs = 0;
 
-window.addEventListener("scroll", () => {
+// AUDITORIA #08: antes este listener era uma função anônima passada direto para
+// addEventListener — sem nenhuma referência salva em variável, era estruturalmente impossível
+// removê-lo via removeEventListener (não existe forma de "desregistrar uma função que você
+// nunca guardou"). Nomeada e guardada em _vivaFastScrollHandler, no mesmo padrão de lifecycle
+// já usado para _vivaScrollHandler/_vivaScrollTopHandler — agora pode ser removido em
+// teardownVivaMonitor(true) (desligamento real via toggle) e reconectado em
+// ensureVivaBackgroundServicesRunning() ao religar.
+_vivaFastScrollHandler = () => {
   const currentScrollY = window.scrollY || 0;
   const now = Date.now();
   const timeDelta = Math.max(1, now - lastScrollTime);
@@ -95,7 +108,8 @@ window.addEventListener("scroll", () => {
       processCards();
     }, 180);
   }
-}, { passive: true });
+};
+window.addEventListener("scroll", _vivaFastScrollHandler, { passive: true });
 
 // ─── VIVA Interaction Bypass: Zero-Lag nos filtros nativos da Meta (GEO/Tipo/Palavra-chave) ───
 // Problema original: os menus de GEO, Tipo de Anúncio e a caixa de busca por palavra-chave da
@@ -519,8 +533,8 @@ function getCardDomElements(card) {
 
 // AUDITORIA #02 (crítico — O(n²) -> O(n)): getAdCount(advertiserName) foi removida. Fazia
 // activeCardData.filter() completo (O(n)) a cada chamada, e era chamada uma vez por item dentro
-// de outro loop O(n) em processCards() — O(n²) por ciclo. A contagem por anunciante agora é
-// acumulada em O(n) único, no mesmo passe que já monta cardSignatures/mediaSignatures/
+// de outro loop O(n) em processCards() — O(n²) por ciclo de processCards(). A contagem por anunciante
+// agora é acumulada em O(n) único, no mesmo passe que já monta cardSignatures/mediaSignatures/
 // linkSignatures (ver `advertiserCounts` dentro de processCards()).
 
 function extractAdvertiserName(card) {
@@ -1140,6 +1154,47 @@ function processCards() {
           <span class="viva-escala-chip viva-escala-chip-sub">⚡ ${dupText}</span>
           <span class="viva-escala-chip viva-escala-chip-sub">⏳ ${daysText}</span>
         `;
+      }
+
+      // AUDITORIA #05: badge de domínio/link (.viva-domain-badge) — antes era criado APENAS
+      // uma vez, no branch de primeira injeção (ver bloco `else` mais abaixo), e nunca era
+      // tocado aqui no branch de atualização. Resultado: o contador "(${item.linkCount}x)"
+      // ficava CONGELADO no valor do primeiro ciclo em que o card foi processado, mesmo com
+      // mais cards do mesmo link de destino entrando na tela conforme o usuário rolava a
+      // página — o cenário normal de uso. Corrigido no mesmo padrão já usado para twinBadge
+      // logo abaixo: cria se ainda não existir (caso o link só tenha sido detectado depois da
+      // 1ª renderização), atualiza o texto sempre, e remove se o card deixou de ter linkKey
+      // (ex.: destUrl mudou de tipo após reciclagem do nó pela Meta).
+      let domBadge = badgeContainer.querySelector(".viva-domain-badge");
+      if (data.linkKey) {
+        if (!domBadge) {
+          domBadge = document.createElement("span");
+          domBadge.className = "viva-badge viva-badge-gray viva-domain-badge";
+          domBadge.title = "Clique para acender/apagar todos os cards com o mesmo link de destino (domínio/subdomínio + slug) na tela";
+          domBadge.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const isLocked = domBadge.classList.toggle("viva-badge-active-blue");
+            document.querySelectorAll(".viva-processed").forEach(c => {
+              if (c._vivaData && c._vivaData.linkKey && c._vivaData.linkKey === data.linkKey) {
+                if (isLocked) c.classList.add("viva-domain-locked");
+                else c.classList.remove("viva-domain-locked");
+              }
+            });
+          });
+          // Insere como primeiro badge do container, mesma posição de quando é criado na
+          // primeira injeção (antes do twinBadge, se houver).
+          badgeContainer.insertBefore(domBadge, badgeContainer.firstChild);
+        }
+        domBadge.innerHTML = `
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          ${vivaEscapeHtml(data.linkKey)} (${item.linkCount}x)
+        `;
+      } else if (domBadge) {
+        domBadge.remove();
       }
 
       let twinBadge = badgeContainer.querySelector(".viva-twin-badge");
@@ -1794,7 +1849,7 @@ function injectSidebar() {
   sidebar.innerHTML = `
     <div class="viva-sidebar-header">
       <div style="display:flex; align-items:center; gap:8px;">
-        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v6.1-fix</span></h3>
+        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v6.8-fix</span></h3>
         <span class="viva-scale-score viva-score-low" id="viva-sidebar-status">✓ Conectado</span>
       </div>
       <button class="viva-sidebar-minimize-btn" id="viva-btn-minimize" title="Minimizar">_</button>
@@ -1831,8 +1886,8 @@ function injectSidebar() {
             </div>
 
             <div class="viva-form-group" id="viva-group-instagram" style="display:flex; flex-direction:column; margin-bottom: 4px;">
-              <label class="viva-label">Instagram Link <span style="font-weight:400; color:#86868b">(opcional)</span></label>
-              <input type="text" id="viva-side-instagram" class="viva-input" placeholder="Aguardando aba 'Sobre' ou cole link..." style="width:100%; box-sizing: border-box;">
+              <label class="viva-label">Instagram Link <span style="font-weight:400; color:#86868b">(detectado automaticamente)</span></label>
+              <input type="text" id="viva-side-instagram" class="viva-input" placeholder="Aguardando detecção automática..." style="width:100%; box-sizing: border-box;">
               <span id="viva-ig-helper" style="display:none; color: #25D366; font-size: 10px; font-weight: bold; margin-top: 4px; padding-left: 2px;"></span>
             </div>
 
@@ -1868,7 +1923,12 @@ function injectSidebar() {
 
       <div class="viva-divider"></div>
 
-      <!-- Seção 3: Ranking e Inteligência de Escala -->
+      <!-- AUDITORIA (2026-09): Seção "Exportação (Cards Visíveis)" removida por completo a
+           pedido — causava bugs recorrentes e o operador não quer mais essa funcionalidade
+           na extensão. Ver exportVisibleCardsToCsv()/exportVisibleCardsMedia() removidas
+           logo abaixo de setupSidebarInteractions() também. -->
+
+      <!-- Seção 2: Ranking e Inteligência de Escala -->
       <div class="viva-panel-section">
         <button class="viva-btn viva-btn-red-pro" id="viva-btn-show-ranking" title="Exibe o ranking em tempo real dos maiores anunciantes na tela">
           🏆 Ver Top Anunciantes
@@ -1986,6 +2046,28 @@ function setupSidebarInteractions() {
           window.open(igUrl, "_blank");
         });
       }
+    }
+
+    // AUDITORIA #16 (Instagram automático): a cada tick, se já temos um Instagram detectado
+    // (cachedIgUrl), tenta vincular automaticamente a uma página já monitorada que ainda não
+    // tenha instagram_url salvo — cobre tanto o caso "acabou de detectar agora" quanto o caso
+    // "monitoredPages ainda não tinha carregado do backend quando o Instagram foi detectado".
+    // A função é idempotente e barata: retorna cedo se o registro já tem Instagram salvo ou se
+    // já existe uma chamada em andamento para esta mesma página.
+    if (cachedIgUrl) {
+      autoAttachInstagramIfMonitored(cachedIgUrl);
+    }
+
+    // AUDITORIA (correção 2026-09): se ainda não achamos o Instagram por nenhum caminho E
+    // estamos numa página de anunciante, tenta a descoberta forçada via aba "Sobre" (ver
+    // autoDiscoverInstagramViaSobreTab). Sem isso, o Instagram nunca é encontrado enquanto o
+    // operador não clicar manualmente na aba "Sobre" — a Meta só renderiza esse link no DOM
+    // depois desse clique, então getInstagramUrlFromHeader() sozinho nunca teria o que achar
+    // na aba "Anúncios". A função tem guard próprio por pageId, então é seguro chamar a cada
+    // tick — ela mesma decide se já tentou ou se já achou.
+    if (!cachedIgUrl) {
+      const pid = new URLSearchParams(window.location.search).get("view_all_page_id");
+      if (pid) autoDiscoverInstagramViaSobreTab(pid);
     }
   }, 2000);
 
@@ -2420,6 +2502,151 @@ function checkMonitoredStatus(pageName) {
   }
 }
 
+// AUDITORIA #16 (Instagram automático): quando a extensão detecta o link do Instagram
+// vinculado à página do anunciante (getInstagramUrlFromHeader) e essa página JÁ está cadastrada
+// no VIVA Labs Monitor mas ainda não tem instagram_url salvo — por exemplo, cadastrada antes de
+// o Instagram aparecer na tela (a Meta às vezes só o revela depois de a aba "Sobre" terminar de
+// carregar), ou cadastrada antes desta funcionalidade existir — vincula o Instagram
+// automaticamente ao registro existente via /api/salvar, sem exigir que o operador clique
+// manualmente em "Monitorar no VIVA Labs" de novo.
+//
+// Regras de segurança do auto-attach:
+//  1. Só roda em páginas de anunciante (view_all_page_id na URL) — nunca em buscas por
+//     domínio/palavra-chave, onde não existe uma "página" única para vincular.
+//  2. NUNCA cria um registro novo sozinho — só complementa um que já existe em monitoredPages
+//     (ou seja, o operador já clicou "Monitorar" alguma vez antes).
+//  3. NUNCA sobrescreve um instagram_url já salvo — só preenche o que estava vazio.
+//  4. Guarda de "em andamento" por pageId evita disparo duplicado enquanto o polling de 2s
+//     roda e a requisição anterior ainda não respondeu.
+const _vivaInstagramAutoAttachInFlight = new Set();
+async function autoAttachInstagramIfMonitored(igUrl) {
+  if (!igUrl) return;
+  if (!window.location.href.includes("view_all_page_id=")) return;
+
+  const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
+  if (!pageId || !Array.isArray(monitoredPages)) return;
+
+  const record = monitoredPages.find(p => p && p.url && p.url.includes(pageId));
+  if (!record || record.instagram_url) return; // não monitorada ainda, ou já tem Instagram salvo
+
+  if (_vivaInstagramAutoAttachInFlight.has(pageId)) return;
+  _vivaInstagramAutoAttachInFlight.add(pageId);
+
+  try {
+    const res = await fetch(`${API_URL}/api/salvar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: record.nome,
+        url: record.url,
+        tipo: record.tipo || "pagina",
+        geo: record.geo || "BR",
+        nicho: record.nicho || "Geral",
+        instagram_url: igUrl
+      })
+    });
+    if (res.ok) {
+      record.instagram_url = igUrl; // atualiza o cache local para não tentar de novo neste ciclo
+      console.log(`[VIVA] Instagram vinculado automaticamente a "${record.nome}".`);
+      const igHelper = document.getElementById("viva-ig-helper");
+      if (igHelper) igHelper.textContent = "✓ Detectado e salvo automaticamente na página monitorada";
+    }
+  } catch (e) {
+    console.warn("[VIVA] Falha ao auto-vincular Instagram:", e.message);
+  } finally {
+    _vivaInstagramAutoAttachInFlight.delete(pageId);
+  }
+}
+
+// ─── AUDITORIA (correção 2026-09) — Descoberta forçada do Instagram via aba "Sobre" ──────────
+// CAUSA RAIZ do Instagram nunca ser detectado automaticamente: getInstagramUrlFromHeader() só
+// encontra o link do Instagram quando ele JÁ ESTÁ no DOM — mas a Meta Ad Library é uma SPA, e
+// o conteúdo da aba "Sobre" da página (onde o link do Instagram efetivamente aparece) nem é
+// criado no DOM até o operador clicar manualmente nessa aba. Na aba "Anúncios" (a aba padrão,
+// onde o operador normalmente está), esse link simplesmente não existe em lugar nenhum da
+// árvore — não é um problema de seletor, é ausência real do dado. Por isso o placeholder
+// "Aguardando aba 'Sobre'..." nunca resolvia sozinho, e autoAttachInstagramIfMonitored() nunca
+// tinha uma URL de Instagram para vincular, mesmo em páginas já monitoradas.
+//
+// Esta função resolve isso automatizando o próprio gesto que faltava: localiza o botão da aba
+// "Sobre", clica nele, aguarda o React renderizar o conteúdo (que inclui o link do Instagram,
+// quando a página tem um), escaneia e aplica o resultado, e então clica de volta na aba
+// "Anúncios" para devolver a tela ao estado em que o operador estava — tudo transparente, sem
+// exigir nenhuma ação manual. Roda no máximo 1x por pageId (guard _vivaSobreTabAttempted) para
+// nunca ficar clicando repetidamente nas abas a cada ciclo de polling da sidebar.
+const _vivaSobreTabAttempted = new Set();
+
+function findMetaTabButton(labelVariants) {
+  const candidates = document.querySelectorAll("[role='tab'], a[role='link']");
+  for (const el of candidates) {
+    const t = (el.textContent || "").trim();
+    if (labelVariants.includes(t) && el.offsetParent !== null) return el;
+  }
+  return null;
+}
+
+async function autoDiscoverInstagramViaSobreTab(pageId) {
+  if (!pageId || _vivaSobreTabAttempted.has(pageId)) return;
+  if (getInstagramUrlFromHeader()) return; // já visível no DOM — não precisa forçar a aba
+  _vivaSobreTabAttempted.add(pageId);
+
+  const sobreBtn = findMetaTabButton(["Sobre", "About"]);
+  if (!sobreBtn) return; // layout sem essa aba nesta variação — desiste silenciosamente
+
+  try {
+    sobreBtn.click();
+    // Aguarda o React da Meta buscar e renderizar os dados da aba "Sobre" (chamada GraphQL
+    // interna + re-render). 1400ms é generoso o suficiente para conexões normais sem deixar a
+    // troca de aba perceptível como travamento.
+    await new Promise(resolve => setTimeout(resolve, 1400));
+
+    const igUrl = getInstagramUrlFromHeader();
+    if (igUrl) {
+      const igInput = document.getElementById("viva-side-instagram");
+      const igHelper = document.getElementById("viva-ig-helper");
+      if (igInput) {
+        igInput.value = igUrl;
+        igInput.title = igUrl;
+        igInput.style.cursor = "pointer";
+        igInput.style.opacity = "1";
+        // Liga o clique-para-copiar diretamente aqui (a versão detectada pelo polling normal
+        // da sidebar cuida disso no caminho dela; este caminho alternativo precisa do próprio,
+        // guardado por dataset para nunca duplicar o listener em re-execuções).
+        if (!igInput.dataset.vivaClickBound) {
+          igInput.dataset.vivaClickBound = "true";
+          igInput.addEventListener("click", (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(igInput.value).then(() => {
+              igInput.classList.add("viva-url-input-copied");
+              if (igHelper) igHelper.textContent = "✓ Copiado!";
+              setTimeout(() => {
+                igInput.classList.remove("viva-url-input-copied");
+                if (igHelper) igHelper.textContent = "✓ Detectado automaticamente via aba 'Sobre'";
+              }, 1200);
+            });
+            window.open(igInput.value, "_blank");
+          });
+        }
+      }
+      if (igHelper) {
+        igHelper.textContent = "✓ Detectado automaticamente via aba 'Sobre'";
+        igHelper.style.display = "block";
+      }
+      await autoAttachInstagramIfMonitored(igUrl);
+    }
+  } catch (e) {
+    console.warn("[VIVA] Falha ao auto-descobrir Instagram via aba 'Sobre':", e.message);
+  } finally {
+    // Devolve a tela para a aba "Anúncios", de onde o operador provavelmente partiu. Busca o
+    // botão de novo (não reaproveita uma referência antiga) porque o React pode ter recriado
+    // os nós da barra de abas ao trocar para "Sobre".
+    setTimeout(() => {
+      const backBtn = findMetaTabButton(["Anúncios", "Ads"]);
+      if (backBtn) backBtn.click();
+    }, 350);
+  }
+}
+
 
 
 // ─── VIVA Dock: barra fixa no rodapé com os filtros de tela ─────────────────────────────────
@@ -2607,10 +2834,22 @@ function teardownVivaMonitor(fullTeardown = false) {
     if (_vivaScrollHandler) {
       window.removeEventListener("scroll", _vivaScrollHandler);
     }
+    // AUDITORIA #08: o listener do detector de velocidade de scroll (Fast-Scroll Bypass) agora
+    // é nomeado e guardado em _vivaFastScrollHandler (ver declaração no topo do arquivo) —
+    // removido aqui junto com os demais listeners de scroll no desligamento real via toggle.
+    // Antes era estruturalmente impossível removê-lo (função anônima sem referência salva).
+    if (_vivaFastScrollHandler) {
+      window.removeEventListener("scroll", _vivaFastScrollHandler);
+    }
   }
   const panel = document.getElementById("viva-sidebar");
   if (panel) panel.remove();
-  const modal = document.getElementById("viva-funnel-modal-overlay");
+  // AUDITORIA #03: o overlay do modal do funil é criado em openFunnelModal() com
+  // id="viva-funnel-modal-container" (ver função acima) — "viva-funnel-modal-overlay" nunca foi
+  // atribuído a nenhum elemento em todo o arquivo (provavelmente um rename de "-overlay" para
+  // "-container" que não se propagou para cá). Corrigido para o ID real, garantindo remoção
+  // explícita e não dependente de uma rede de segurança incidental.
+  const modal = document.getElementById("viva-funnel-modal-container");
   if (modal) modal.remove();
   const confirmModal = document.getElementById("viva-funnel-confirm-overlay");
   if (confirmModal) confirmModal.remove();
@@ -2639,10 +2878,22 @@ function teardownVivaMonitor(fullTeardown = false) {
 
   // Remove injected footers, strips, dropdowns and badges from all cards
   document.querySelectorAll(".viva-card-footer, .viva-scale-badge, .viva-el, .viva-escala-strip, .viva-card-badge-container, .viva-gear-dropdown").forEach(el => el.remove());
+  // AUDITORIA #09: antes, este loop só desconectava mediaPruningObserver de cada card
+  // processado — viewportProximityObserver (o gate de proximidade de viewport usado pra
+  // adiar a injeção pesada de badges/rodapé, ver FIX 4.3) nunca era desconectado aqui.
+  // Ele só se desregistrava sozinho dentro do próprio callback do IntersectionObserver
+  // (quando detecta que o card não está mais isConnected) ou no filtro de descoberta em
+  // processCards() — nenhum dos dois roda automaticamente durante um teardown. Resultado:
+  // cards que perdiam o carimbo "processado" (classList/atributos removidos logo abaixo)
+  // durante um teardown continuavam registrados no observer de proximidade, mesmo que o
+  // nó em si permanecesse no DOM da Meta (fullTeardown=false, reset leve de navegação SPA)
+  // ou fosse removido depois (fullTeardown=true). Corrigido para desconectar ambos os
+  // observers no mesmo loop, no mesmo padrão.
   document.querySelectorAll("[data-viva-processed], [data-viva-id], .viva-processed").forEach(el => {
     el.removeAttribute("data-viva-processed");
     el.removeAttribute("data-viva-id");
     try { mediaPruningObserver.unobserve(el); } catch(e) {}
+    try { viewportProximityObserver.unobserve(el); } catch(e) {}
     // FAXINA: as classes de fase (viva-stage-*) vivem no FRAME, não no card — e o frame
     // inteiro já é destruído/desembrulhado antes deste ponto (ver bloco FIX FRAME acima), então
     // não há nada de fase pra limpar aqui, só o carimbo de processado do card em si.
@@ -2688,7 +2939,7 @@ async function init() {
   }
   _vivaInitialized = true;
 
-  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v6.1 (2026-09-04) — restaura grid/frame do design original");
+  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v6.8 (2026-09) — corrige detecção automática de Instagram (via aba 'Sobre') e remove seção de Exportação");
   await loadLocalApiUrl();
   fetchMonitoredPages();
 
@@ -2709,6 +2960,11 @@ async function init() {
       injectScrollTopBtn();
       injectDock();
       processCards();
+      // AUDITORIA (correção 2026-09): dispara a descoberta forçada de Instagram já na carga
+      // inicial da página, sem esperar o primeiro tick do polling da sidebar (2s) — o operador
+      // pode estar numa página de anunciante já monitorada desde o primeiro segundo.
+      const initialPid = new URLSearchParams(window.location.search).get("view_all_page_id");
+      if (initialPid) autoDiscoverInstagramViaSobreTab(initialPid);
     }, 1500);
   });
 
@@ -2742,6 +2998,11 @@ async function init() {
   window.addEventListener("scroll", _vivaScrollHandler);
 
   // ─── Indexação única dos containers de busca da Meta (O(1) Memory Set) ──────────────────────
+  // AUDITORIA #13: esta é a ÚNICA declaração de VIVA_SEARCH_ROOTS no arquivo agora — a antiga
+  // declaração de escopo de módulo (que nunca era lida) foi removida do topo do arquivo. Esta
+  // variável local vive pelo tempo de vida de init() (nunca recriada, já que init() só roda uma
+  // vez por página graças ao guard _vivaInitialized acima) e é a que de fato alimenta
+  // indexSearchContainers() e o MutationObserver principal logo abaixo.
   const VIVA_SEARCH_ROOTS = new WeakSet();
 
   function indexSearchContainers() {
@@ -2901,9 +3162,20 @@ function checkUrlChangeTick() {
             if (detectedIg) {
               igInput.style.opacity = "1";
               igInput.style.cursor = "pointer";
+              // AUDITORIA #16 (Instagram automático): também tenta o auto-vínculo aqui, no
+              // momento da navegação SPA para uma nova página de anunciante — cobre o caso de
+              // o operador navegar direto para uma página já monitorada sem esperar o próximo
+              // tick do polling da sidebar.
+              autoAttachInstagramIfMonitored(detectedIg);
             } else {
               igInput.style.opacity = "0.5";
               igInput.style.cursor = "not-allowed";
+              // AUDITORIA (correção 2026-09): não achou o Instagram na aba "Anúncios" (o
+              // esperado — a Meta só renderiza esse dado na aba "Sobre") — dispara a
+              // descoberta forçada em vez de deixar o campo preso em "não detectado" para
+              // sempre, mesma lógica do polling da sidebar.
+              const pidNav = new URLSearchParams(window.location.search).get("view_all_page_id");
+              if (pidNav) autoDiscoverInstagramViaSobreTab(pidNav);
             }
           }
         } else {
@@ -2940,6 +3212,12 @@ function ensureVivaBackgroundServicesRunning() {
   if (_vivaScrollHandler) {
     // addEventListener com a mesma referência de função é idempotente — nunca duplica o listener.
     window.addEventListener("scroll", _vivaScrollHandler);
+  }
+  // AUDITORIA #08: reconecta o listener de fast-scroll ao religar a extensão após um
+  // fullTeardown real — mesmo padrão idempotente do _vivaScrollHandler acima
+  // (addEventListener com a mesma referência de função nunca duplica o listener).
+  if (_vivaFastScrollHandler) {
+    window.addEventListener("scroll", _vivaFastScrollHandler, { passive: true });
   }
 }
 

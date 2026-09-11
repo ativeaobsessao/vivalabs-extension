@@ -56,9 +56,8 @@
     return null;
   }
 
-  // FIX PERF/ITEM 6 (2026-08): stampa um único card — usada tanto pelo evento sob demanda
-  // quanto pelo MutationObserver/safety-net abaixo. Isolada aqui para não duplicar a lógica
-  // de leitura do fiber em três lugares diferentes.
+  // FIX PERF/ITEM 6 (2026-08): stampa um único card — usada pelo MutationObserver/safety-net
+  // abaixo. Isolada aqui para não duplicar a lógica de leitura do fiber em mais de um lugar.
   function stampCardIfPossible(card) {
     if (!card || card.hasAttribute("data-viva-page-id")) return;
     const fiber = getReactFiber(card);
@@ -69,23 +68,14 @@
     }
   }
 
-  // 1. Escuta requisição sob demanda da extensão
-  window.addEventListener("vivaGetPageId", (e) => {
-    const cardId = e.detail && e.detail.cardId;
-    if (!cardId) return;
-    const card = document.querySelector(`[data-viva-id="${cardId}"]`);
-    if (!card) return;
-
-    const fiber = getReactFiber(card);
-    const pageId = fiber ? findPageIdInFiber(fiber) : null;
-    if (pageId) {
-      card.setAttribute("data-viva-page-id", pageId);
-    }
-
-    window.dispatchEvent(new CustomEvent("vivaPageIdResponse", {
-      detail: { cardId, pageId }
-    }));
-  });
+  // AUDITORIA #15: a ponte de evento sob demanda "vivaGetPageId" / "vivaPageIdResponse" foi
+  // removida. O content.js (mundo ISOLATED) nunca chegou a disparar o CustomEvent
+  // "vivaGetPageId" em nenhum ponto do arquivo — ele depende inteiramente do mecanismo
+  // contínuo abaixo (MutationObserver reagindo a mudanças de classe + safetyNetScan) para
+  // obter data-viva-page-id, o que já cobre 100% dos casos de uso reais. Manter um listener e
+  // um dispatchEvent sem nenhum consumidor é código morto puro — não muda comportamento
+  // algum remover, e evita a confusão de uma segunda via de acesso "sob demanda" que nunca é
+  // usada na prática.
 
   // FIX PERF/ITEM 6 — CAUSA RAIZ DA LENTIDÃO REPORTADA (2026-08):
   // A versão anterior rodava, para SEMPRE, a cada 2.5s:
