@@ -3,6 +3,148 @@
  * Padrão Ouro do CC SPY: Lê as propriedades em memória do React Fiber.
  */
 (function() {
+  // ─── Interceptor Global de Rede (Captura silenciosa de GraphQL / XHR / Fetch) ───
+  function formatInstagramUrl(val) {
+    if (!val || typeof val !== 'string') return null;
+    let s = val.trim();
+    if (!s) return null;
+    if (s.includes("instagram.com/")) {
+      const match = s.match(/(?:https?:\/\/)?(?:www\.)?instagram\.com\/([a-zA-Z0-9_.]+)/i);
+      if (match && match[1] && !["p", "reel", "stories", "explore", "about", "developer", "accounts", "direct"].includes(match[1].toLowerCase())) {
+        return `https://www.instagram.com/${match[1]}`;
+      }
+      return s.startsWith("http") ? s : `https://${s}`;
+    }
+    s = s.replace(/^@/, '');
+    if (/^[a-zA-Z0-9_.]{2,40}$/.test(s) && !["null", "undefined", "true", "false", "facebook", "meta", "instagram"].includes(s.toLowerCase())) {
+      return `https://www.instagram.com/${s}`;
+    }
+    return null;
+  }
+
+  function deepFindInstagram(obj, seen = new WeakSet(), depth = 0) {
+    if (!obj || typeof obj !== 'object' || depth > 12) return null;
+    if (seen.has(obj)) return null;
+    seen.add(obj);
+
+    const candidates = [
+      obj.instagram_url,
+      obj.instagram_profile,
+      obj.instagram_handle,
+      obj.instagram_username,
+      obj.ig_username,
+      obj.ig_handle,
+      obj.instagram_account,
+      obj.instagramProfile,
+      obj.instagramUrl,
+      obj.instagramUsername,
+      obj.instagram_profile_url,
+      obj.instagram_name,
+      obj.ig_url,
+      obj.instagram_actor_name,
+      obj.page_instagram_handle,
+      obj.page_instagram_name,
+      obj.page_instagram_url,
+      obj.instagram_user,
+      obj.social_links,
+      obj.social_profiles
+    ];
+
+    for (const c of candidates) {
+      if (c && typeof c === 'string') {
+        const formatted = formatInstagramUrl(c);
+        if (formatted) return formatted;
+      } else if (c && typeof c === 'object') {
+        const nested = deepFindInstagram(c, seen, depth + 1);
+        if (nested) return nested;
+      }
+    }
+
+    for (let key in obj) {
+      if (key === 'children' || key === '_owner' || key === 'style') continue;
+      try {
+        const val = obj[key];
+        if (typeof val === 'string') {
+          if (val.includes("instagram.com/")) {
+            const formatted = formatInstagramUrl(val);
+            if (formatted) return formatted;
+          }
+          const lowerKey = key.toLowerCase();
+          if ((lowerKey.includes("instagram") || lowerKey.includes("ig_handle") || lowerKey.includes("ig_user")) && val.length > 1 && val.length < 50) {
+            const formatted = formatInstagramUrl(val);
+            if (formatted) return formatted;
+          }
+        } else if (typeof val === 'object' && val !== null) {
+          const res = deepFindInstagram(val, seen, depth + 1);
+          if (res) return res;
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  function tryExtractInstagramFromJson(text) {
+    if (!text || typeof text !== 'string') return null;
+    if (!text.includes("instagram") && !text.includes("ig_")) return null;
+
+    try {
+      const urlMatch = text.match(/https?:\/\/(?:www\.)?instagram\.com\/([a-zA-Z0-9_.]+)/i);
+      if (urlMatch && urlMatch[1] && !["p", "reel", "stories", "explore", "about", "developer", "accounts", "direct"].includes(urlMatch[1].toLowerCase())) {
+        return `https://www.instagram.com/${urlMatch[1]}`;
+      }
+
+      const cleanText = text.replace(/^for\s*\(\s*;\s*;\s*\)\s*;\s*/, '');
+      const json = JSON.parse(cleanText);
+      const found = deepFindInstagram(json);
+      if (found) return found;
+    } catch (e) {
+      const handleMatch = text.match(/"(?:instagram_handle|instagram_username|ig_username|instagram_profile_url|instagram_name)":\s*"([^"]+)"/i);
+      if (handleMatch && handleMatch[1]) {
+        return formatInstagramUrl(handleMatch[1]);
+      }
+    }
+    return null;
+  }
+
+  try {
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+      const response = await originalFetch.apply(this, args);
+      try {
+        const clone = response.clone();
+        clone.text().then(text => {
+          const ig = tryExtractInstagramFromJson(text);
+          if (ig && !document.documentElement.dataset.vivaDetectedInstagram) {
+            document.documentElement.dataset.vivaDetectedInstagram = ig;
+            window.dispatchEvent(new CustomEvent("vivaInstagramDetected", { detail: { instagram: ig } }));
+          }
+        }).catch(() => {});
+      } catch (e) {}
+      return response;
+    };
+
+    const originalXhrOpen = XMLHttpRequest.prototype.open;
+    const originalXhrSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+      this._url = url;
+      return originalXhrOpen.call(this, method, url, ...rest);
+    };
+    XMLHttpRequest.prototype.send = function(...args) {
+      this.addEventListener("load", function() {
+        try {
+          const ig = tryExtractInstagramFromJson(this.responseText);
+          if (ig && !document.documentElement.dataset.vivaDetectedInstagram) {
+            document.documentElement.dataset.vivaDetectedInstagram = ig;
+            window.dispatchEvent(new CustomEvent("vivaInstagramDetected", { detail: { instagram: ig } }));
+          }
+        } catch (e) {}
+      });
+      return originalXhrSend.apply(this, args);
+    };
+  } catch (err) {
+    console.warn("[VIVA-SNIFFER] Network hooks bypass:", err);
+  }
+
   function getReactFiber(dom) {
     if (!dom) return null;
     const key = Object.keys(dom).find(k => k.startsWith("__reactFiber$") || k.startsWith("__reactProps$"));
@@ -108,11 +250,6 @@
   }
 
   const classObserver = new MutationObserver(handleClassMutations);
-  classObserver.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["class"],
-    subtree: true
-  });
 
   // Safety-net: cobre o caso raro de um card ganhar a classe antes deste script terminar de
   // registrar o observer (corrida no boot), ou qualquer mutação perdida. Seletor de classe
@@ -127,7 +264,80 @@
     batch.forEach(stampCardIfPossible);
   }
 
-  // Frequência bem menor que o polling original (2.5s → 8s) porque agora é só uma rede de
-  // segurança, não o mecanismo principal — o MutationObserver acima cobre o caso comum.
-  setInterval(safetyNetScan, 8000);
+  // ─── FIX ITEM 10 (2026-09) — teardown real do MutationObserver e do setInterval ────────────
+  // ANTES: o classObserver.observe(...) era chamado uma única vez, incondicionalmente, e o
+  // setInterval(safetyNetScan, 8000) também — nenhum dos dois tinha uma referência guardada em
+  // variável nem forma de ser desligado. A checagem `dataset.vivaEnabled === "false"` dentro de
+  // handleClassMutations()/safetyNetScan() só impedia o TRABALHO PESADO de rodar quando a
+  // extensão estava desligada — mas o observer continuava recebendo (e descartando) toda
+  // mutação de classe da página, e o setInterval continuava disparando pra sempre a cada 8s,
+  // fazendo uma leitura de atributo e voltando a dormir. Como este script roda no mundo MAIN
+  // (isolado das variáveis internas de content.js por design — é assim que ele consegue ler o
+  // React Fiber da própria Meta), content.js nunca teve uma referência direta a esse observer/
+  // timer para poder chamar disconnect()/clearInterval() neles a partir de fora.
+  //
+  // CORREÇÃO: document.dispatchEvent(CustomEvent) é a ponte real entre os dois mundos — um
+  // evento disparado no documento compartilhado é visível por listeners de QUALQUER um dos dois
+  // mundos, mesmo que as variáveis JS de cada lado continuem 100% isoladas entre si. content.js
+  // agora dispara "viva:mainWorldToggle" (ver notifyMainWorldToggle() em content.js) sempre que
+  // o toggle muda de estado; este arquivo escuta esse evento e efetivamente desconecta o
+  // observer e limpa o interval quando desligado — e os recria quando religado — em vez de
+  // deixá-los girando indefinidamente em modo "quase parado".
+  //
+  // Guardas idempotentes (vivaClassObserverActive / safetyNetIntervalId) evitam tanto observar
+  // duas vezes o mesmo MutationObserver quanto empilhar mais de um setInterval, caso o evento de
+  // "ligado" chegue mais de uma vez seguida (ex.: toggle clicado rapidamente).
+  let vivaClassObserverActive = false;
+  function startClassObserver() {
+    if (vivaClassObserverActive) return;
+    classObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+      subtree: true
+    });
+    vivaClassObserverActive = true;
+  }
+  function stopClassObserver() {
+    if (!vivaClassObserverActive) return;
+    classObserver.disconnect();
+    vivaClassObserverActive = false;
+  }
+
+  let safetyNetIntervalId = null;
+  function startSafetyNet() {
+    if (safetyNetIntervalId) return;
+    // Frequência bem menor que o polling original (2.5s → 8s) porque agora é só uma rede de
+    // segurança, não o mecanismo principal — o MutationObserver acima cobre o caso comum.
+    safetyNetIntervalId = setInterval(safetyNetScan, 8000);
+  }
+  function stopSafetyNet() {
+    if (safetyNetIntervalId) {
+      clearInterval(safetyNetIntervalId);
+      safetyNetIntervalId = null;
+    }
+  }
+
+  // Escuta a ponte de content.js: liga/desliga observer + timer de verdade a cada mudança de
+  // estado do toggle, em vez de só confiar na checagem estática dentro das próprias funções.
+  document.addEventListener("viva:mainWorldToggle", (e) => {
+    const enabled = !!(e.detail && e.detail.enabled);
+    if (enabled) {
+      startClassObserver();
+      startSafetyNet();
+    } else {
+      stopClassObserver();
+      stopSafetyNet();
+    }
+  });
+
+  // Estado inicial: honra o atributo já presente no <html> no exato momento em que este script
+  // roda — cobre a corrida em que a extensão já foi desligada ANTES deste script terminar de
+  // carregar (nesse caso o evento "viva:mainWorldToggle" pode já ter disparado antes do listener
+  // acima existir, e este script não pode depender só dele para decidir seu estado inicial). Se
+  // o atributo ainda não existir (primeira carga da página, chrome.storage.local.get de
+  // content.js ainda não respondeu), o padrão é "ligado" — mesmo comportamento de sempre.
+  if (document.documentElement.dataset.vivaEnabled !== "false") {
+    startClassObserver();
+    startSafetyNet();
+  }
 })();

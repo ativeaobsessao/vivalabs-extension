@@ -3,9 +3,15 @@
 // Auto-Clean de URL para Ver Anúncios da Página (Remove o Modal do Anúncio e abre direto na página)
 function checkAndCleanAdModalUrl() {
   try {
+    console.log("[VIVA-DEBUG] checkAndCleanAdModalUrl rodou. href atual:", window.location.href);
     if (!window.location.search.includes("search_type=page") || !window.location.search.includes("view_all_page_id=")) return;
+    if (window.location.hash.includes("viva_pin=1")) {
+      console.log("[VIVA-DEBUG] viva_pin detectado no hash — saindo sem limpar o id=.");
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     if (params.get("search_type") === "page" && params.has("id") && params.has("view_all_page_id")) {
+      console.log("[VIVA-DEBUG] APAGANDO id= agora! hash no momento da decisão:", window.location.hash);
       params.delete("id");
       const cleanUrl = window.location.pathname + "?" + params.toString();
       window.location.replace(cleanUrl);
@@ -283,13 +289,30 @@ function extractDestinationLinkKey(url) {
 function cleanInstagramUrl(url) {
   if (!url) return "";
   try {
-    if (url.includes("l.facebook.com/l.php")) {
-      const urlObj = new URL(url);
+    let clean = url.trim();
+    // Desencapsula redirecionadores do Facebook (l.facebook.com, lm.facebook.com, facebook.com/l.php)
+    if (clean.includes("facebook.com/l.php") || clean.includes("l.facebook.com") || clean.includes("lm.facebook.com")) {
+      const urlObj = new URL(clean.startsWith("http") ? clean : `https://${clean}`);
       const target = urlObj.searchParams.get("u");
-      if (target) return decodeURIComponent(target);
+      if (target) {
+        clean = decodeURIComponent(target);
+      }
     }
-  } catch (e) {}
-  return url;
+
+    if (/^@[a-zA-Z0-9_.]+$/.test(clean)) {
+      return `https://www.instagram.com/${clean.substring(1)}`;
+    }
+    if (clean.startsWith("instagram.com") || clean.startsWith("www.instagram.com")) {
+      clean = `https://${clean}`;
+    }
+    if (clean.includes("instagram.com")) {
+      const uObj = new URL(clean.startsWith("http") ? clean : `https://${clean}`);
+      return `${uObj.origin}${uObj.pathname}`.replace(/\/+$/, "");
+    }
+    return clean;
+  } catch (e) {
+    return url;
+  }
 }
 
 // FIX 4.1 (gargalo de inicialização): esta função só lê chrome.storage.local — é 100% local,
@@ -355,22 +378,52 @@ function getPageNameFromHeader() {
 }
 
 function getInstagramUrlFromHeader() {
-  // Busca direta O(1): apenas links explícitos do Instagram. NUNCA varre spans/divs.
-  // Varrer todos os spans/divs consome 5.000-20.000 nós DOM por chamada — causa de travamento.
-  const igLinks = document.querySelectorAll("a[href*='instagram.com']");
+  // 1. Prioridade: detecção via React Fiber ou Network Interceptor (MAIN world)
+  if (document.documentElement.dataset && document.documentElement.dataset.vivaDetectedInstagram) {
+    return cleanInstagramUrl(document.documentElement.dataset.vivaDetectedInstagram);
+  }
+
+  // 2. Busca direta O(1) em links do DOM com desencapsulamento de l.facebook.com
+  const igLinks = document.querySelectorAll("a[href*='instagram.com'], a[href*='l.facebook.com/l.php?u=']");
   for (const a of igLinks) {
-    if (a.href && !a.href.includes("facebook.com")) {
-      return cleanInstagramUrl(a.href);
+    const rawHref = a.getAttribute("href") || a.href || "";
+    const lynx = a.getAttribute("data-lynx-uri") || "";
+    const cleaned = cleanInstagramUrl(rawHref) || cleanInstagramUrl(lynx);
+    if (cleaned && cleaned.includes("instagram.com") && !cleaned.includes("facebook.com/ads/library")) {
+      return cleaned;
     }
   }
-  // Fallback: handles via atributo aria-label ou title (sem querySelectorAll genérico)
-  const igHandle = document.querySelector("[aria-label*='Instagram'], [title*='instagram']");
-  if (igHandle) {
-    const text = (igHandle.textContent || igHandle.getAttribute("aria-label") || "").trim();
-    if (/^@[a-zA-Z0-9_.]+$/.test(text)) {
-      return `https://www.instagram.com/${text.substring(1)}`;
+
+  // 3. Fallback: botões e links com aria-label ou title
+  const igElements = document.querySelectorAll("[aria-label*='Instagram' i], [aria-label*='instagram' i], [title*='Instagram' i], [title*='instagram' i]");
+  for (const el of igElements) {
+    const href = el.getAttribute("href") || el.getAttribute("data-href") || "";
+    if (href) {
+      const cleaned = cleanInstagramUrl(href);
+      if (cleaned && cleaned.includes("instagram.com")) return cleaned;
+    }
+    const text = (el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent || "").trim();
+    const handleMatch = text.match(/@([a-zA-Z0-9_.]+)/);
+    if (handleMatch && handleMatch[1]) {
+      return `https://www.instagram.com/${handleMatch[1]}`;
     }
   }
+
+  // 4. Fallback no container de transparência da página / diálogo "Sobre esta Página"
+  const dialogs = document.querySelectorAll("[role='dialog'], [aria-label*='Sobre' i], [aria-label*='About' i], [role='tabpanel']");
+  for (const dialog of dialogs) {
+    const link = dialog.querySelector("a[href*='instagram.com'], a[href*='facebook.com/l.php']");
+    if (link) {
+      const cleaned = cleanInstagramUrl(link.getAttribute("href") || link.href);
+      if (cleaned && cleaned.includes("instagram.com")) return cleaned;
+    }
+    const text = dialog.textContent || "";
+    const match = text.match(/(?:instagram\.com\/|@)([a-zA-Z0-9_.]+)/i);
+    if (match && match[1] && !["facebook", "meta", "about", "ads", "instagram"].includes(match[1].toLowerCase())) {
+      return `https://www.instagram.com/${match[1]}`;
+    }
+  }
+
   return "";
 }
 
@@ -717,6 +770,40 @@ function extractAdArchiveId(card) {
   return null;
 }
 
+// Constrói o link permanente do anúncio na Meta Ad Library, no MESMO formato completo que o
+// "..." nativo (Copiar link do anúncio) gera — id + view_all_page_id + search_type=page juntos
+// desde o primeiro carregamento. Só entregar um ?id= sozinho (formato antigo) faz a própria
+// Meta reconstruir a URL client-side pra completar os parâmetros que faltam, e nessa
+// reconstrução ela descarta qualquer parâmetro que não reconheça (inclusive um marcador nosso
+// na query string) — entregando já completo, a gente nunca depende dessa reconstrução.
+//
+// O marcador viva_pin=1 vai no FRAGMENTO da URL (#viva_pin=1), nunca na query string: o
+// fragmento nunca é enviado ao servidor nem reescrito por navegação client-side, então é o
+// único canal estável pra sinalizar a checkAndCleanAdModalUrl() que este id=... foi aberto de
+// propósito — e não é sobra de uma navegação de saída de modal (ver essa função no topo do
+// arquivo, que sem esse sinal apagaria de volta o id= que é o motivo de abrir este link).
+function buildAdLibraryPermalink(card) {
+  const adArchiveId = extractAdArchiveId(card);
+  if (!adArchiveId) return null;
+  const pageId = card.getAttribute("data-viva-page-id") || extractPageId(card);
+  if (!pageId) {
+    // Sem pageId não dá pra montar a URL completa no formato que a Meta preserva — cai pro
+    // formato simples (ainda funciona em contexto sem a extensão, ex: aba anônima).
+    return `https://www.facebook.com/ads/library/?id=${encodeURIComponent(adArchiveId)}#viva_pin=1`;
+  }
+  const params = new URLSearchParams({
+    active_status: "active",
+    ad_type: "all",
+    country: "ALL",
+    id: adArchiveId,
+    is_targeted_country: "false",
+    media_type: "all",
+    search_type: "page",
+    view_all_page_id: pageId
+  });
+  return `https://www.facebook.com/ads/library/?${params.toString()}#viva_pin=1`;
+}
+
 // FIX ITEM 12 (2026-08): checkContingencyStatus() removida — função inteira nunca chamada em
 // lugar nenhum do arquivo (nem sidebar, nem dock, nem badges). Junto dela saíram
 // cachedContingencyStatus/cachedContingencyChecked (só existiam para o cache interno desta
@@ -917,6 +1004,169 @@ function positionGearDropdown(dropdown, anchorBtn) {
     top = flippedTop >= margin ? flippedTop : margin;
   }
   dropdown.style.setProperty("top", `${top}px`, "important");
+}
+
+// Constrói e exibe o menu "Ações" — extraído do clique da engrenagem dos cards da grade pra
+// poder ser reaproveitado também pelo botão injetado no modal "Link para o anúncio" da Meta
+// (ver injectActionsIntoAdModal). Recebe o card nativo, os dados já extraídos dele (data) e o
+// botão que serve de âncora visual/posicional para o dropdown.
+function showActionsDropdown(card, data, anchorBtn) {
+  const existingDropdown = document.querySelector(".viva-gear-dropdown");
+  const wasThisButtonsDropdown = existingDropdown && existingDropdown._vivaOwnerBtn === anchorBtn;
+  document.querySelectorAll(".viva-gear-dropdown").forEach(d => d.remove());
+  if (wasThisButtonsDropdown) return; // este clique era pra FECHAR — já fechamos acima.
+
+  const dropdown = document.createElement("div");
+  dropdown.className = "viva-gear-dropdown viva-el viva-active";
+  dropdown._vivaOwnerBtn = anchorBtn;
+  dropdown.addEventListener("click", (evt) => evt.stopPropagation());
+
+  // 1. Ver Anúncios da Página
+  const itemVerAds = document.createElement("button");
+  itemVerAds.className = "viva-dropdown-item";
+  itemVerAds.innerHTML = `👁️ Ver Anúncios da Página`;
+  itemVerAds.addEventListener("click", (evt) => {
+    evt.preventDefault();
+    evt.stopPropagation();
+    dropdown.remove();
+    let resolvedPageId = card.getAttribute("data-viva-page-id") || data.pageId || extractPageId(card);
+    let adArchiveId = extractAdArchiveId(card);
+    let targetUrl;
+
+    if (resolvedPageId) {
+      targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=${encodeURIComponent(resolvedPageId)}`;
+    } else if (adArchiveId) {
+      targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&id=${encodeURIComponent(adArchiveId)}&is_targeted_country=false&media_type=all&search_type=page`;
+    } else if (data.advertiserName) {
+      targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&q=${encodeURIComponent('"' + data.advertiserName + '"')}&search_type=keyword_exact_phrase`;
+    } else {
+      targetUrl = window.location.href;
+    }
+    window.open(targetUrl, "_blank");
+  });
+  dropdown.appendChild(itemVerAds);
+
+  // 2. Salvar no Funil
+  const itemFunnel = document.createElement("button");
+  itemFunnel.className = "viva-dropdown-item";
+  itemFunnel.innerHTML = `🔀 Salvar no Funil`;
+  itemFunnel.addEventListener("click", (evt) => {
+    evt.preventDefault();
+    evt.stopPropagation();
+    dropdown.remove();
+    openFunnelModal(data.destUrl || "", data.advertiserName);
+  });
+  dropdown.appendChild(itemFunnel);
+
+  // 3. Salvar Anúncio (ADS) — 1 clique, sem modal. Só funciona se a biblioteca já
+  // estiver registrada; o rótulo (ads01, ads02...) é gerado pelo backend.
+  const itemSalvarAds = document.createElement("button");
+  itemSalvarAds.className = "viva-dropdown-item";
+  itemSalvarAds.innerHTML = `📢 Salvar Anúncio`;
+  itemSalvarAds.addEventListener("click", async (evt) => {
+    evt.preventDefault();
+    evt.stopPropagation();
+    dropdown.remove();
+
+    const record = findMonitoredPageRecord();
+    if (!record) {
+      showLibraryNotRegisteredModal();
+      return;
+    }
+
+    const adUrl = buildAdLibraryPermalink(card);
+    if (!adUrl) {
+      showAdSaveErrorModal("Não foi possível identificar o ID deste anúncio na tela.");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_URL}/api/funis/salvar-node`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slug: record.slug,
+          tipo: "ads",
+          url: adUrl
+        })
+      });
+      if (res.ok) {
+        const json = await res.json();
+        showAdSavedSuccessModal(json.rotulo || "ads", record.nome);
+      } else {
+        showAdSaveErrorModal("O servidor recusou o salvamento. Tente novamente em instantes.");
+      }
+    } catch (err) {
+      showAdSaveErrorModal("Erro de comunicação com o servidor.");
+    }
+  });
+  dropdown.appendChild(itemSalvarAds);
+
+  if (data.destUrl) {
+    const itemMobile = document.createElement("button");
+    itemMobile.className = "viva-dropdown-item";
+    itemMobile.innerHTML = `📱 Visualizar Mobile`;
+    itemMobile.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      dropdown.remove();
+      chrome.runtime.sendMessage({ action: "open_mobile_tab", url: data.destUrl });
+    });
+    dropdown.appendChild(itemMobile);
+
+    const itemProxy = document.createElement("button");
+    itemProxy.className = "viva-dropdown-item";
+    itemProxy.innerHTML = `🇺🇸 Abrir Proxy EUA`;
+    itemProxy.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      dropdown.remove();
+      window.open(`https://www.proxysite.com/?viva_url=${encodeURIComponent(data.destUrl)}`, "_blank");
+    });
+    dropdown.appendChild(itemProxy);
+  }
+
+  const itemCopy = document.createElement("button");
+  itemCopy.className = "viva-dropdown-item";
+  itemCopy.innerHTML = `📋 Copiar Copies`;
+  itemCopy.addEventListener("click", (evt) => {
+    evt.stopPropagation();
+    dropdown.remove();
+    let blocks = [];
+    if (data.primaryText) blocks.push(`TEXTO PRINCIPAL\n${data.primaryText}`);
+    if (data.title) blocks.push(`TÍTULO/HEADLINE\n${data.title}`);
+    if (data.description) blocks.push(`DESCRIÇÃO\n${data.description}`);
+    const copyText = blocks.length > 0 ? blocks.join("\n\n") : "Nenhum texto detectado neste anúncio";
+    navigator.clipboard.writeText(copyText).then(() => alert("Copies copiadas com sucesso!"));
+  });
+  dropdown.appendChild(itemCopy);
+
+  if (data.mediaUrl) {
+    const itemDL = document.createElement("button");
+    itemDL.className = "viva-dropdown-item";
+    itemDL.innerHTML = `📥 Baixar Mídia`;
+    itemDL.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      dropdown.remove();
+      const isVideo = data.mediaUrl.includes(".mp4") || card.querySelector("video");
+      const ext = isVideo ? "mp4" : "jpg";
+      const filename = `viva_${data.advertiserName.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}.${ext}`;
+      chrome.runtime.sendMessage({ action: "download", url: data.mediaUrl, filename: filename });
+    });
+    dropdown.appendChild(itemDL);
+  }
+
+  // FIX PORTAL: anexa em <body> e posiciona via JS logo em seguida — precisa estar no DOM
+  // primeiro para offsetWidth/offsetHeight ficarem mensuráveis dentro de positionGearDropdown().
+  document.body.appendChild(dropdown);
+  positionGearDropdown(dropdown, anchorBtn);
+
+  // FIX PORTAL: como o dropdown é position:fixed (relativo à viewport), rolar a página o
+  // deixaria "flutuando" longe do botão que o abriu. Fecha automaticamente no primeiro scroll.
+  const closeOnScroll = () => {
+    dropdown.remove();
+    window.removeEventListener("scroll", closeOnScroll, true);
+  };
+  window.addEventListener("scroll", closeOnScroll, { capture: true, passive: true });
 }
 
 function processCards() {
@@ -1375,135 +1625,7 @@ function processCards() {
       gearBtn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-
-        // FIX SOBERANIA/PORTAL (2026-08): o dropdown "Ações" deixou de ser filho do card
-        // (position:absolute dentro de .viva-card-frame) e virou um PORTAL — anexado direto
-        // em <body>, position:fixed, z-index máximo (ver content.css). Isso resolve de vez a
-        // sobreposição visual com o card da linha de baixo depois de muito scroll: antes, cada
-        // .viva-card-frame tinha seu próprio stacking context (contain:layout), então o
-        // dropdown de um card disputava camadas com o card vizinho e podia perder essa disputa
-        // dependendo da posição na grade. Como portal, ele nunca mais é descendente de NENHUM
-        // card — não tem mais com quem disputar z-index.
-        //
-        // Checagem de "toggle" (clicar de novo fecha) agora usa uma tag de propriedade
-        // (_vivaOwnerBtn) em vez de gearContainer.querySelector(...), já que o dropdown não
-        // mora mais dentro do gearContainer.
-        const existingDropdown = document.querySelector(".viva-gear-dropdown");
-        const wasThisButtonsDropdown = existingDropdown && existingDropdown._vivaOwnerBtn === gearBtn;
-        document.querySelectorAll(".viva-gear-dropdown").forEach(d => d.remove());
-        if (wasThisButtonsDropdown) return; // este clique era pra FECHAR — já fechamos acima.
-
-        // Constrói o menu sob demanda na memória RAM (Lazy Rendering - 0ms overhead)
-        const dropdown = document.createElement("div");
-        dropdown.className = "viva-gear-dropdown viva-el viva-active";
-        dropdown._vivaOwnerBtn = gearBtn;
-        dropdown.addEventListener("click", (evt) => evt.stopPropagation());
-
-        // 1. Ver Anúncios da Página
-        const itemVerAds = document.createElement("button");
-        itemVerAds.className = "viva-dropdown-item";
-        itemVerAds.innerHTML = `👁️ Ver Anúncios da Página`;
-        itemVerAds.addEventListener("click", (evt) => {
-          evt.preventDefault();
-          evt.stopPropagation();
-          dropdown.remove();
-          let resolvedPageId = card.getAttribute("data-viva-page-id") || data.pageId || extractPageId(card);
-          let adArchiveId = extractAdArchiveId(card);
-          let targetUrl;
-
-          if (resolvedPageId) {
-            targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=${encodeURIComponent(resolvedPageId)}`;
-          } else if (adArchiveId) {
-            targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&id=${encodeURIComponent(adArchiveId)}&is_targeted_country=false&media_type=all&search_type=page`;
-          } else if (data.advertiserName) {
-            targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&q=${encodeURIComponent('"' + data.advertiserName + '"')}&search_type=keyword_exact_phrase`;
-          } else {
-            targetUrl = window.location.href;
-          }
-          window.open(targetUrl, "_blank");
-        });
-        dropdown.appendChild(itemVerAds);
-
-        // 2. Salvar no Funil
-        const itemFunnel = document.createElement("button");
-        itemFunnel.className = "viva-dropdown-item";
-        itemFunnel.innerHTML = `🔀 Salvar no Funil`;
-        itemFunnel.addEventListener("click", (evt) => {
-          evt.preventDefault();
-          evt.stopPropagation();
-          dropdown.remove();
-          openFunnelModal(data.destUrl || "", data.advertiserName);
-        });
-        dropdown.appendChild(itemFunnel);
-
-        if (data.destUrl) {
-          const itemMobile = document.createElement("button");
-          itemMobile.className = "viva-dropdown-item";
-          itemMobile.innerHTML = `📱 Visualizar Mobile`;
-          itemMobile.addEventListener("click", (evt) => {
-            evt.preventDefault();
-            evt.stopPropagation();
-            dropdown.remove();
-            chrome.runtime.sendMessage({ action: "open_mobile_tab", url: data.destUrl });
-          });
-          dropdown.appendChild(itemMobile);
-
-          const itemProxy = document.createElement("button");
-          itemProxy.className = "viva-dropdown-item";
-          itemProxy.innerHTML = `🇺🇸 Abrir Proxy EUA`;
-          itemProxy.addEventListener("click", (evt) => {
-            evt.stopPropagation();
-            dropdown.remove();
-            window.open(`https://www.proxysite.com/?viva_url=${encodeURIComponent(data.destUrl)}`, "_blank");
-          });
-          dropdown.appendChild(itemProxy);
-        }
-
-        const itemCopy = document.createElement("button");
-        itemCopy.className = "viva-dropdown-item";
-        itemCopy.innerHTML = `📋 Copiar Copies`;
-        itemCopy.addEventListener("click", (evt) => {
-          evt.stopPropagation();
-          dropdown.remove();
-          let blocks = [];
-          if (data.primaryText) blocks.push(`TEXTO PRINCIPAL\n${data.primaryText}`);
-          if (data.title) blocks.push(`TÍTULO/HEADLINE\n${data.title}`);
-          if (data.description) blocks.push(`DESCRIÇÃO\n${data.description}`);
-          const copyText = blocks.length > 0 ? blocks.join("\n\n") : "Nenhum texto detectado neste anúncio";
-          navigator.clipboard.writeText(copyText).then(() => alert("Copies copiadas com sucesso!"));
-        });
-        dropdown.appendChild(itemCopy);
-
-        if (data.mediaUrl) {
-          const itemDL = document.createElement("button");
-          itemDL.className = "viva-dropdown-item";
-          itemDL.innerHTML = `📥 Baixar Mídia`;
-          itemDL.addEventListener("click", (evt) => {
-            evt.stopPropagation();
-            dropdown.remove();
-            const isVideo = data.mediaUrl.includes(".mp4") || card.querySelector("video");
-            const ext = isVideo ? "mp4" : "jpg";
-            const filename = `viva_${data.advertiserName.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}.${ext}`;
-            chrome.runtime.sendMessage({ action: "download", url: data.mediaUrl, filename: filename });
-          });
-          dropdown.appendChild(itemDL);
-        }
-
-        // FIX PORTAL: anexa em <body> (não mais em gearContainer) e posiciona via JS logo em
-        // seguida — precisa estar no DOM primeiro para offsetWidth/offsetHeight ficarem
-        // mensuráveis dentro de positionGearDropdown().
-        document.body.appendChild(dropdown);
-        positionGearDropdown(dropdown, gearBtn);
-
-        // FIX PORTAL: como o dropdown agora é position:fixed (relativo à viewport, não mais ao
-        // botão que o abriu), rolar a página o deixaria "flutuando" longe do gear que o abriu.
-        // Fecha automaticamente no primeiro scroll — padrão de UX comum em menus/popovers, e
-        // mais seguro/barato do que reposicionar a cada frame de scroll.
-        const closeOnScroll = () => {
-          dropdown.remove();
-          window.removeEventListener("scroll", closeOnScroll, true);
-        };
-        window.addEventListener("scroll", closeOnScroll, { capture: true, passive: true });
+        showActionsDropdown(card, data, gearBtn);
       });
 
       if (!globalDropdownListenerAdded) {
@@ -1851,10 +1973,128 @@ function showFunnelConfirmAppleModal(info, onConfirm) {
     setTimeout(() => overlay.remove(), 250);
   });
 
-  const confirmBtn = overlay.querySelector("#viva-fmodal-confirm");
+    const confirmBtn = overlay.querySelector("#viva-fmodal-confirm");
   confirmBtn.addEventListener("click", () => {
     onConfirm(confirmBtn);
   });
+}
+
+// ─── Pop-ups Apple do botão "📢 Salvar Anúncio" (dropdown Ações de cada card) ───────────────
+
+function showAdSavedSuccessModal(rotulo, nomePage) {
+  let overlay = document.getElementById("viva-ad-saved-overlay");
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement("div");
+  overlay.id = "viva-ad-saved-overlay";
+  overlay.className = "viva-confirm-overlay viva-el";
+
+  overlay.innerHTML = `
+    <div class="viva-confirm-card" onclick="event.stopPropagation()">
+      <div class="viva-confirm-header" style="justify-content: center; text-align: center; flex-direction: column; gap: 6px;">
+        <div class="viva-success-icon-wrap">✓</div>
+        <div>
+          <div class="viva-confirm-title" style="font-size: 17px; color: #1D1D1F;">Anúncio Salvo!</div>
+          <div class="viva-confirm-sub">Salvo como <strong>${vivaEscapeHtml(rotulo)}</strong> em "${vivaEscapeHtml(nomePage)}" no Mapeamento ADS.</div>
+        </div>
+      </div>
+      <div class="viva-confirm-actions" style="margin-top: 14px;">
+        <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-ad-saved-btn" style="width: 100%;">Continuar</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("viva-visible"));
+
+  const closeOverlay = () => {
+    overlay.classList.remove("viva-visible");
+    setTimeout(() => overlay.remove(), 250);
+  };
+
+  overlay.addEventListener("click", closeOverlay);
+  const btn = overlay.querySelector("#viva-ad-saved-btn");
+  if (btn) btn.addEventListener("click", closeOverlay);
+  setTimeout(() => {
+    if (document.getElementById("viva-ad-saved-overlay")) closeOverlay();
+  }, 3500);
+}
+
+function showLibraryNotRegisteredModal() {
+  let overlay = document.getElementById("viva-lib-nao-registrada-overlay");
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement("div");
+  overlay.id = "viva-lib-nao-registrada-overlay";
+  overlay.className = "viva-confirm-overlay viva-el";
+
+  overlay.innerHTML = `
+    <div class="viva-confirm-card" onclick="event.stopPropagation()">
+      <div class="viva-confirm-header">
+        <div class="viva-confirm-icon" style="background: linear-gradient(135deg, #FF9500, #C93400) !important;">⚠️</div>
+        <div>
+          <div class="viva-confirm-title">Biblioteca não registrada</div>
+          <div class="viva-confirm-sub">Registre esta biblioteca antes de salvar anúncios dela.</div>
+        </div>
+      </div>
+      <div class="viva-confirm-body">
+        <div style="font-size: 12px; color: var(--viva-muted); line-height: 1.5;">
+          Use o campo "Rastrear Competidor" no painel lateral e clique em "Monitorar" — depois disso o botão "Salvar Anúncio" passa a funcionar normalmente nesta biblioteca.
+        </div>
+      </div>
+      <div class="viva-confirm-actions">
+        <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-lib-nao-reg-btn" style="width: 100%; background: #FF9500;">Entendi</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("viva-visible"));
+
+  const closeOverlay = () => {
+    overlay.classList.remove("viva-visible");
+    setTimeout(() => overlay.remove(), 250);
+  };
+
+  overlay.addEventListener("click", closeOverlay);
+  const btn = overlay.querySelector("#viva-lib-nao-reg-btn");
+  if (btn) btn.addEventListener("click", closeOverlay);
+}
+
+function showAdSaveErrorModal(mensagem) {
+  let overlay = document.getElementById("viva-ad-erro-overlay");
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement("div");
+  overlay.id = "viva-ad-erro-overlay";
+  overlay.className = "viva-confirm-overlay viva-el";
+
+  overlay.innerHTML = `
+    <div class="viva-confirm-card" onclick="event.stopPropagation()">
+      <div class="viva-confirm-header">
+        <div class="viva-confirm-icon" style="background: linear-gradient(135deg, #FF3B30, #D70015) !important;">✕</div>
+        <div>
+          <div class="viva-confirm-title">Não foi possível salvar</div>
+          <div class="viva-confirm-sub">${vivaEscapeHtml(mensagem)}</div>
+        </div>
+      </div>
+      <div class="viva-confirm-actions">
+        <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-ad-erro-btn" style="width: 100%;">Fechar</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("viva-visible"));
+
+  const closeOverlay = () => {
+    overlay.classList.remove("viva-visible");
+    setTimeout(() => overlay.remove(), 250);
+  };
+
+  overlay.addEventListener("click", closeOverlay);
+  const btn = overlay.querySelector("#viva-ad-erro-btn");
+  if (btn) btn.addEventListener("click", closeOverlay);
 }
 
 
@@ -1868,7 +2108,7 @@ function injectSidebar() {
   sidebar.innerHTML = `
     <div class="viva-sidebar-header">
       <div style="display:flex; align-items:center; gap:8px;">
-        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v7.2-fix</span></h3>
+        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v7.4-modal-pin</span></h3>
         <span class="viva-scale-score viva-score-low" id="viva-sidebar-status">✓ Conectado</span>
       </div>
       <button class="viva-sidebar-minimize-btn" id="viva-btn-minimize" title="Minimizar">_</button>
@@ -2097,6 +2337,26 @@ function setupSidebarInteractions() {
       if (pid) autoDiscoverInstagramViaSobreTab(pid);
     }
   }, 2000);
+
+  // Listener reativo imediato para quando o react_sniffer encontrar o Instagram no React Fiber ou GraphQL
+  window.addEventListener("vivaInstagramDetected", (e) => {
+    if (igInput && !hasFoundIg && e.detail && e.detail.instagram) {
+      const igUrl = cleanInstagramUrl(e.detail.instagram);
+      if (igUrl && igUrl !== cachedIgUrl) {
+        cachedIgUrl = igUrl;
+        hasFoundIg = true;
+        igInput.value = igUrl;
+        igInput.title = igUrl;
+        igInput.style.cursor = "pointer";
+        igInput.style.opacity = "1";
+        if (igHelper) {
+          igHelper.textContent = "✓ Detectado (clique para copiar e abrir)";
+          igHelper.style.display = "block";
+        }
+        autoAttachInstagramIfMonitored(igUrl);
+      }
+    }
+  });
 
   // Filtros (Mín. Ads Ativos/Duplicados, Recentes, Auto-Scroll) agora moram no dock fixo do
   // rodapé — ver injectDock()/setupDockInteractions(). Nada de lógica de filtro aqui na sidebar.
@@ -2527,6 +2787,132 @@ function checkMonitoredStatus(pageName) {
     saveBtn.style.color = "#fff";
     saveBtn.disabled = false;
   }
+}
+
+// Mesma lógica de checkMonitoredStatus() acima, mas devolvendo o REGISTRO encontrado (com
+// o slug) em vez de só true/false — usado pelo botão "📢 Salvar Anúncio" do dropdown "Ações"
+// para saber se pode salvar e, se puder, com qual slug.
+function findMonitoredPageRecord() {
+  if (!Array.isArray(monitoredPages) || monitoredPages.length === 0) return null;
+  const currentUrl = window.location.href;
+  const isDomain = !currentUrl.includes("view_all_page_id=");
+
+  if (isDomain) {
+    const rootDom = getRootDomain(currentUrl);
+    if (!rootDom) return null;
+    return monitoredPages.find(p => p.tipo === "dominio" && p.url.toLowerCase().includes(rootDom.toLowerCase())) || null;
+  } else {
+    const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
+    if (!pageId) return null;
+    return monitoredPages.find(p => p.url.includes(pageId)) || null;
+  }
+}
+
+
+// ─── VIVA Ações no modal "Link para o anúncio" da Meta ──────────────────────────────────────
+// A Meta abre esse diálogo quando o operador clica no "..." de um card e escolhe "Copiar link
+// do anúncio" (ou navega direto por um link ?id=...). É uma estrutura separada dos cards da
+// grade (um role="dialog" que a Meta monta por cima da página), então getAdCards() nunca o
+// enxerga — ele exclui explicitamente qualquer coisa dentro de [role='dialog'] pra não
+// confundir outros diálogos nativos (seletor de GEO, confirmações) com anúncios de verdade.
+//
+// Diferente da arquitetura de .viva-card-frame usada na grade, aqui NUNCA movemos nenhum nó de
+// lugar (nada de getOrCreateCardFrame) — só ACRESCENTAMOS um botão nativo como irmão do "Saiba
+// mais" já existente. Reparentar algo dentro de um modal que a Meta abre/fecha com frequência é
+// exatamente o tipo de cenário que já causou o erro "removeChild... not a child of this node"
+// na automação da aba "Sobre" (ver autoDiscoverInstagramViaSobreTab) — aqui evitamos o mesmo
+// problema simplesmente não tocando na árvore existente.
+
+// Localiza o card de anúncio dentro do diálogo, com a mesma heurística estrutural usada em
+// getAdCards() (botão "Ver detalhes.../Ver resumo" + container com mídia e exatamente 1
+// ocorrência de "Patrocinado"/"Sponsored"), mas escopada só ao conteúdo do modal.
+function findAdCardInsideModal(dialogEl) {
+  const buttons = Array.from(dialogEl.querySelectorAll("[role='button'], button, a")).filter(el => {
+    const text = el.textContent || "";
+    if (text.length > 45 || text.length < 10) return false;
+    return /^(Ver detalhes do anúncio|View ad details|Ver resumo|View summary|Ver detalhes|View details)$/i.test(text.trim());
+  });
+  for (const btn of buttons) {
+    let parent = btn;
+    for (let i = 0; i < 10; i++) {
+      if (!parent.parentElement || parent === dialogEl) break;
+      parent = parent.parentElement;
+      if (parent.querySelector("img, video") && (parent.textContent.includes("Patrocinado") || parent.textContent.includes("Sponsored"))) {
+        const sponsoredMatches = (parent.textContent.match(/Patrocinado|Sponsored/g) || []).length;
+        if (sponsoredMatches === 1) return parent;
+      }
+    }
+  }
+  return null;
+}
+
+// Injeta o botão "Ações" dentro do modal, ancorado ao lado do "Saiba mais" nativo — mesmo botão
+// e mesmo menu (showActionsDropdown) usados nos cards da grade, sem duplicar nenhuma lógica.
+function injectActionsIntoAdModal(dialogEl) {
+  if (dialogEl.querySelector(".viva-modal-actions-btn")) return; // já injetado neste modal
+
+  const card = findAdCardInsideModal(dialogEl);
+  if (!card) return;
+
+  const data = extractCardData(card);
+
+  const learnMoreBtn = Array.from(dialogEl.querySelectorAll("[role='button'], button, a")).find(el => {
+    const t = (el.textContent || "").trim();
+    return /^(Saiba mais|Learn more)$/i.test(t);
+  });
+
+  const actionsBtn = document.createElement("button");
+  actionsBtn.className = "viva-actions-btn viva-modal-actions-btn viva-el";
+  actionsBtn.type = "button";
+  actionsBtn.title = "Ações e Ferramentas do Anúncio";
+  actionsBtn.innerHTML = `
+    <span>Ações</span>
+    <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" width="15" height="15">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06-.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+    </svg>
+  `;
+  actionsBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showActionsDropdown(card, data, actionsBtn);
+  });
+
+  if (learnMoreBtn && learnMoreBtn.parentElement) {
+    actionsBtn.style.marginLeft = "8px";
+    learnMoreBtn.parentElement.appendChild(actionsBtn);
+  } else {
+    // Fallback: caso esta variação do modal não tenha o botão "Saiba mais", injeta logo
+    // abaixo do card — mesma ideia do rodapé da grade, só que sem reparentar nada.
+    actionsBtn.style.margin = "10px 0 0 0";
+    card.insertAdjacentElement("afterend", actionsBtn);
+  }
+}
+
+// Observer leve, dedicado só a detectar a abertura desse modal específico. Escopado a
+// childList em document.body SEM subtree — os diálogos/portais da Meta entram como filhos
+// diretos de <body>, então isso dispara raramente (só quando um modal abre/fecha), bem mais
+// barato que o observer principal (que por isso é escopado a div[role='main'], não a body).
+let _vivaAdModalObserver = null;
+function setupAdModalObserver() {
+  if (_vivaAdModalObserver) return; // já registrado nesta sessão da página
+  _vivaAdModalObserver = new MutationObserver((mutations) => {
+    if (!vivaMonitorMasterEnabled) return;
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        const dialog = (node.matches && node.matches("[role='dialog']"))
+          ? node
+          : (node.querySelector ? node.querySelector("[role='dialog']") : null);
+        if (dialog) {
+          // Pequeno atraso pra dar tempo do React da Meta terminar de montar o conteúdo
+          // interno do modal (card, texto, botão "Saiba mais") antes de procurar por eles.
+          setTimeout(() => injectActionsIntoAdModal(dialog), 300);
+        }
+      }
+    }
+  });
+  _vivaAdModalObserver.observe(document.body, { childList: true, subtree: false });
 }
 
 // FIX INSTAGRAM AUTO-DETECT (2026-09): sinal correto e definitivo de "estamos na biblioteca de
@@ -3169,7 +3555,7 @@ async function init() {
   }
   _vivaInitialized = true;
 
-  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v7.2 (2026-09) — torna a busca da aba 'Sobre' resiliente a layouts sem role='tab'/role='link' (fallback estrutural) e adiciona logs de diagnóstico em cada etapa da automação de descoberta de Instagram, para não haver mais falhas silenciosas");
+  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v7.4 (2026-09) — corrige o link ADS sendo trocado por view_all_page_id= ao abrir com a extensão ativa (marcador viva_pin=1), e injeta o botão 'Ações' também dentro do modal 'Link para o anúncio' da Meta, ancorado ao lado do 'Saiba mais', sem reparentar nenhum nó nativo");
   await loadLocalApiUrl();
   fetchMonitoredPages();
 
@@ -3185,6 +3571,7 @@ async function init() {
       return;
     }
     injectMediaPreconnects();
+    setupAdModalObserver();
     setTimeout(() => {
       injectSidebar();
       injectScrollTopBtn();
