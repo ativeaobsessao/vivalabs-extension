@@ -1658,6 +1658,9 @@ function processCards() {
         pendingBatchCards = false;
         processCards();
       }
+      if (activeCardData.length > 0) {
+        tryTriggerAutoDiscoverInstagram();
+      }
     }
   });
 }
@@ -3181,20 +3184,20 @@ async function autoDiscoverInstagramViaSobreTab(pageId) {
 
   try {
     sobreBtn.click();
-    // Aguarda o React da Meta buscar e renderizar os dados da aba "Sobre" (chamada GraphQL
-    // interna + re-render). 1400ms é generoso o suficiente para conexões normais sem deixar a
-    // troca de aba perceptível como travamento.
-    await new Promise(resolve => setTimeout(resolve, 1400));
+    // Aguarda reativamente o GraphQL da Meta ou o DOM renderizar os dados da aba "Sobre".
+    // Checa a cada 50ms — com o interceptor de rede no MAIN world, o dado chega em ~100-200ms.
+    // Assim que detectado, encerra a espera imediatamente para voltar à aba "Anúncios" sem delay.
+    let igUrl = "";
+    for (let i = 0; i < 20; i++) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      igUrl = getInstagramUrlFromHeader();
+      if (igUrl) break;
+    }
 
-    const igUrl = getInstagramUrlFromHeader();
     if (igUrl) {
       console.log(`[VIVA] Auto-descoberta de Instagram: link encontrado após abrir a aba 'Sobre': ${igUrl}`);
     } else {
-      // FIX DIAGNÓSTICO (2026-09): distingue "a aba Sobre não existe" (log acima) de "a aba
-      // Sobre foi aberta com sucesso mas não trouxe nenhum link de Instagram" — este segundo
-      // caso pode indicar que a página genuinamente não tem Instagram vinculado, ou que o
-      // clique não completou a troca de aba a tempo dos 1400ms de espera.
-      console.warn(`[VIVA] Auto-descoberta de Instagram: aba 'Sobre' foi aberta para pageId=${pageId}, mas nenhum link de Instagram foi encontrado no DOM após a espera (a página pode genuinamente não ter Instagram vinculado, ou a troca de aba não completou a tempo).`);
+      console.warn(`[VIVA] Auto-descoberta de Instagram: aba 'Sobre' foi aberta para pageId=${pageId}, mas nenhum link de Instagram foi encontrado no DOM após a espera (a página pode genuinamente não ter Instagram vinculado).`);
     }
     if (igUrl) {
       const igInput = document.getElementById("viva-side-instagram");
@@ -3260,6 +3263,15 @@ async function autoDiscoverInstagramViaSobreTab(pageId) {
         if (vivaMonitorMasterEnabled) processCards();
       }, 300);
     }, 350);
+  }
+}
+
+function tryTriggerAutoDiscoverInstagram() {
+  if (cachedIgUrl || (document.documentElement.dataset && document.documentElement.dataset.vivaDetectedInstagram)) return;
+  if (!isSingleAdvertiserLibraryView()) return;
+  const pid = getCurrentPageIdentityKey();
+  if (pid) {
+    autoDiscoverInstagramViaSobreTab(pid);
   }
 }
 
@@ -3577,14 +3589,10 @@ async function init() {
       injectScrollTopBtn();
       injectDock();
       processCards();
-      // AUDITORIA (correção 2026-09): dispara a descoberta forçada de Instagram já na carga
-      // inicial da página, sem esperar o primeiro tick do polling da sidebar (2s) — o operador
-      // pode estar numa biblioteca de anunciante único já monitorada desde o primeiro segundo,
-      // com ou sem view_all_page_id= na URL (ver isSingleAdvertiserLibraryView).
-      if (isSingleAdvertiserLibraryView()) {
-        const initialPid = getCurrentPageIdentityKey();
-        if (initialPid) autoDiscoverInstagramViaSobreTab(initialPid);
-      }
+      setTimeout(tryTriggerAutoDiscoverInstagram, 300);
+      setTimeout(tryTriggerAutoDiscoverInstagram, 800);
+      setTimeout(tryTriggerAutoDiscoverInstagram, 1500);
+      setTimeout(tryTriggerAutoDiscoverInstagram, 2500);
     }, 1500);
   });
 
