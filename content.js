@@ -2448,7 +2448,6 @@ function setupSidebarInteractions() {
       }
 
       const totalMetaAds = getOfficialMetaTotalResults();
-      const cardsRendered = activeCardData.length || 0;
 
       showAppleConfirmModal({
         nome,
@@ -2456,8 +2455,7 @@ function setupSidebarInteractions() {
         geo: geo || "BR",
         nicho: nicho || "Geral",
         instagram: igUrlToSend || "Não vinculado",
-        totalMetaAds: totalMetaAds,
-        cardsRendered: cardsRendered
+        totalMetaAds: totalMetaAds
       }, async () => {
         saveBtn.textContent = "Salvando...";
         saveBtn.disabled = true;
@@ -2509,7 +2507,6 @@ function setupSidebarInteractions() {
       }
 
       const totalMetaAds = getOfficialMetaTotalResults();
-      const cardsRendered = activeCardData.length || 0;
 
       showAppleConfirmModal({
         nome: dominio,
@@ -2517,8 +2514,7 @@ function setupSidebarInteractions() {
         geo: geo || "ALL",
         nicho: nicho || "Funil Web",
         instagram: ig || "Não vinculado",
-        totalMetaAds: totalMetaAds,
-        cardsRendered: cardsRendered
+        totalMetaAds: totalMetaAds
       }, async () => {
         saveDomainBtn.textContent = "Salvando...";
         saveDomainBtn.disabled = true;
@@ -2585,10 +2581,6 @@ function setupSidebarInteractions() {
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">Total Oficial (Meta):</span>
             <span class="viva-confirm-value" style="color:#007AFF;">${info.totalMetaAds} anúncios ativos</span>
-          </div>
-          <div class="viva-confirm-row">
-            <span class="viva-confirm-label">Cards Carregados:</span>
-            <span class="viva-confirm-value" style="font-weight:500; color:var(--viva-muted);">${info.cardsRendered} cards na tela</span>
           </div>
         </div>
         <div class="viva-confirm-actions">
