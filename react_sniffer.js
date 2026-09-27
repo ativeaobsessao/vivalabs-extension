@@ -106,6 +106,61 @@
     return null;
   }
 
+  function deepFindTotalCount(obj, seen = new WeakSet(), depth = 0) {
+    if (!obj || typeof obj !== 'object' || depth > 10) return null;
+    if (seen.has(obj)) return null;
+    seen.add(obj);
+
+    const candidates = [
+      obj.total_count,
+      obj.results_count,
+      obj.total_results,
+      obj.ad_count,
+      obj.ad_archive_count,
+      obj.total_ads,
+      obj.exact_count,
+      obj.approximate_count
+    ];
+
+    for (const c of candidates) {
+      if (typeof c === 'number' && c > 0) return c;
+      if (typeof c === 'string' && /^\d+$/.test(c)) {
+        const n = parseInt(c, 10);
+        if (n > 0) return n;
+      }
+    }
+
+    for (let key in obj) {
+      if (key === 'children' || key === '_owner' || key === 'style') continue;
+      try {
+        const val = obj[key];
+        if (typeof val === 'object' && val !== null) {
+          const res = deepFindTotalCount(val, seen, depth + 1);
+          if (res) return res;
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  function tryExtractTotalCountFromJson(text) {
+    if (!text || typeof text !== 'string') return null;
+    if (!text.includes("count") && !text.includes("total") && !text.includes("result") && !text.includes("ad_archive")) return null;
+    try {
+      const cleanText = text.replace(/^for\s*\(\s*;\s*;\s*\)\s*;\s*/, '');
+      const json = JSON.parse(cleanText);
+      const found = deepFindTotalCount(json);
+      if (found) return found;
+    } catch (e) {
+      const match = text.match(/"(?:total_count|results_count|total_results|ad_count|ad_archive_count)":\s*(\d+)/i);
+      if (match && match[1]) {
+        const n = parseInt(match[1], 10);
+        if (n > 0) return n;
+      }
+    }
+    return null;
+  }
+
   try {
     const originalFetch = window.fetch;
     window.fetch = async function(...args) {
@@ -117,6 +172,10 @@
           if (ig && !document.documentElement.dataset.vivaDetectedInstagram) {
             document.documentElement.dataset.vivaDetectedInstagram = ig;
             window.dispatchEvent(new CustomEvent("vivaInstagramDetected", { detail: { instagram: ig } }));
+          }
+          const totalCount = tryExtractTotalCountFromJson(text);
+          if (totalCount && totalCount > 0) {
+            document.documentElement.dataset.vivaMetaTotalCount = String(totalCount);
           }
         }).catch(() => {});
       } catch (e) {}
@@ -136,6 +195,10 @@
           if (ig && !document.documentElement.dataset.vivaDetectedInstagram) {
             document.documentElement.dataset.vivaDetectedInstagram = ig;
             window.dispatchEvent(new CustomEvent("vivaInstagramDetected", { detail: { instagram: ig } }));
+          }
+          const totalCount = tryExtractTotalCountFromJson(this.responseText);
+          if (totalCount && totalCount > 0) {
+            document.documentElement.dataset.vivaMetaTotalCount = String(totalCount);
           }
         } catch (e) {}
       });

@@ -1665,8 +1665,75 @@ function processCards() {
   });
 }
 
+// ─── PARSER UNIVERSAL DE TOTAL OFICIAL DA META (0ms / Instantâneo) ───────────────────────────
+// Extrai com precisão cirúrgica a contagem total de anúncios exibida pelo cabeçalho nativo da Meta
+// (ex: "~4.800 resultados", "~3.100 results", "~40 mil resultados", "~7 resultados", "1 resultado")
+function parseMetaResultsCount(text) {
+  if (!text || typeof text !== 'string') return null;
+  const clean = text.trim();
+  const isMatch = /resultado|result|an[uú]ncio|ads|\~/i.test(clean);
+  if (!isMatch) return null;
+
+  // Milhões (ex: ~1.5M, ~1,5 mi, ~2 milhões)
+  const millionMatch = clean.match(/~?\s*([\d.,]+)\s*(?:m|mi|milh[oõ]es|million(?:s)?)\b/i);
+  if (millionMatch) {
+    const numStr = millionMatch[1].replace(',', '.');
+    const val = parseFloat(numStr);
+    if (!isNaN(val) && val > 0) return Math.round(val * 1000000);
+  }
+
+  // Milhares abreviados (ex: ~40 mil, ~4.5k, ~40k)
+  const thousandKMatch = clean.match(/~?\s*([\d.,]+)\s*(?:k|mil)\b/i);
+  if (thousandKMatch) {
+    const numStr = thousandKMatch[1].replace(',', '.');
+    const val = parseFloat(numStr);
+    if (!isNaN(val) && val > 0) return Math.round(val * 1000);
+  }
+
+  // Número padrão com pontuação brasileira ou internacional (ex: ~4.800, ~4,800, 3.100, 7)
+  const standardMatch = clean.match(/~?\s*([\d.,]+)\s*(?:resultados?|results?|an[uú]ncios?|ads?)?/i);
+  if (standardMatch && standardMatch[1]) {
+    let numStr = standardMatch[1];
+    if (numStr.includes('.') && numStr.includes(',')) {
+      if (numStr.lastIndexOf('.') > numStr.lastIndexOf(',')) {
+        numStr = numStr.replace(/,/g, '');
+      } else {
+        numStr = numStr.replace(/\./g, '').replace(',', '.');
+      }
+    } else if (numStr.includes('.')) {
+      numStr = numStr.replace(/\./g, '');
+    } else if (numStr.includes(',')) {
+      numStr = numStr.replace(/,/g, '');
+    }
+    const val = parseInt(numStr, 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return null;
+}
+
 function getOfficialMetaTotalResults() {
-  // Soma todas as duplicações nativas da Meta reportadas nos cards processados na tela
+  // 1. Camada 1: Total capturado diretamente pelo sniffer via GraphQL/XHR ou React Fiber
+  const snifferCount = parseInt(document.documentElement.dataset.vivaMetaTotalCount, 10);
+  if (snifferCount && snifferCount > 0) {
+    return snifferCount;
+  }
+
+  // 2. Camada 2: Varredura relâmpago de elementos de cabeçalho no DOM (< 1ms)
+  const candidates = document.querySelectorAll("div, span, h2, h3, h4, strong, p");
+  for (const el of candidates) {
+    if (el.children.length > 2) continue; // Pula nós complexos para execução ultra-rápida
+    const txt = el.textContent || "";
+    if (txt.length < 45 && (txt.includes("resultado") || txt.includes("result") || txt.includes("~") || txt.includes("anúncio") || txt.includes("ads"))) {
+      const parsed = parseMetaResultsCount(txt);
+      if (parsed && parsed > 0) {
+        // Cacheia no dataset para chamadas subsequentes serem O(1) imediatas
+        document.documentElement.dataset.vivaMetaTotalCount = String(parsed);
+        return parsed;
+      }
+    }
+  }
+
+  // 3. Camada 3 (Fallback): Soma de cards carregados na tela (se a Meta não exibiu o cabeçalho consolidado)
   let totalAdsSum = 0;
   activeCardData.forEach(item => {
     totalAdsSum += (item.data.metaAdCount || 1);
