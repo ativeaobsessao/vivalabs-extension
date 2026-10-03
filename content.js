@@ -1,6 +1,14 @@
 // VIVA Labs Helper - Main Content Script (Meta Ad Library)
 
-// Auto-Clean de URL para Ver Anúncios da Página (Remove o Modal do Anúncio e abre direto na página)
+// Limpa um id residual de modal após navegação do histórico. Não executar no carregamento
+// inicial: links salvos usam id intencionalmente para abrir o anúncio, e a Meta pode remover
+// o fragmento viva_pin antes deste content script rodar em document_idle.
+const initialAdLinkIntent = (() => {
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get("id");
+  return id ? { id, pageId: params.get("view_all_page_id") || params.get("page_id") || "" } : null;
+})();
+
 function checkAndCleanAdModalUrl() {
   try {
     console.log("[VIVA-DEBUG] checkAndCleanAdModalUrl rodou. href atual:", window.location.href);
@@ -10,6 +18,8 @@ function checkAndCleanAdModalUrl() {
       return;
     }
     const params = new URLSearchParams(window.location.search);
+    const pageId = params.get("view_all_page_id") || params.get("page_id") || "";
+    if (initialAdLinkIntent && params.get("id") === initialAdLinkIntent.id && (!initialAdLinkIntent.pageId || pageId === initialAdLinkIntent.pageId)) return;
     if (params.get("search_type") === "page" && params.has("id") && params.has("view_all_page_id")) {
       console.log("[VIVA-DEBUG] APAGANDO id= agora! hash no momento da decisão:", window.location.hash);
       params.delete("id");
@@ -18,7 +28,6 @@ function checkAndCleanAdModalUrl() {
     }
   } catch (e) {}
 }
-checkAndCleanAdModalUrl();
 window.addEventListener("popstate", checkAndCleanAdModalUrl);
 
 // ─── Variáveis Globais de Estado ──────────────────────────────────────────────
@@ -32,6 +41,36 @@ let lastUrl = window.location.href;
 let activeCardData = [];
 let globalDropdownListenerAdded = false;
 let vivaMonitorMasterEnabled = true;
+let rankingOverlayPaused = false;
+let latestIntelligentRanking = [];
+let _vivaRankingOverlayState = null;
+let _vivaRankingFeatureLogShown = false;
+let _vivaIntelligentMessageListener = null;
+let motorStats = { count: 0, time: 0, lastUpdate: 0 };
+let lastSweepTime = 0;
+let lastMotorUpdate = 0;
+let motorUpdateScheduled = false;
+
+function updateMotorVivaLeve(count, timeMs) {
+  motorStats = { count, time: timeMs, lastUpdate: Date.now() };
+  if (motorUpdateScheduled) return;
+  motorUpdateScheduled = true;
+  requestAnimationFrame(() => {
+    motorUpdateScheduled = false;
+    const text = `⚡ O(1) · ${motorStats.time.toFixed(1)}ms (${motorStats.count} ads)`;
+    const status = document.getElementById("viva-motor-status");
+    if (status) status.textContent = text;
+    const health = document.getElementById("viva-engine-health");
+    if (health) health.textContent = text;
+
+    const now = Date.now();
+    if (now - lastMotorUpdate >= 1000) {
+      lastMotorUpdate = now;
+      console.info(`[VIVA] Motor cycle ${motorStats.time.toFixed(1)}ms (${motorStats.count} ads)`);
+    }
+  });
+}
+
 // FIX ITEM 12 (2026-08): cachedContingencyStatus/cachedContingencyChecked removidos junto com
 // checkContingencyStatus() (ver nota mais abaixo) — existiam só para essa função nunca chamada.
 
@@ -182,6 +221,7 @@ const mediaPruningObserver = new IntersectionObserver((entries) => {
         });
       }
     }
+    setupAdModalObserver();
   });
 }, { rootMargin: "400px 0px 400px 0px" });
 
@@ -335,13 +375,17 @@ async function fetchMonitoredPages() {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 5000);
   try {
-    const res = await fetch(`${API_URL}/api/paginas`, { signal: controller.signal });
-    monitoredPages = await res.json();
+    const res = await fetch(`${API_URL}/api/paginas`, { cache: "no-store", signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const records = await res.json();
+    if (!Array.isArray(records)) throw new Error("Resposta inválida ao consultar monitorados.");
+    monitoredPages = records;
     // A resposta pode chegar depois do painel já estar na tela — atualiza o botão
     // "Monitorar no VIVA Labs" / "✓ Monitorado" retroativamente, se o painel já existir.
     if (document.getElementById("viva-sidebar")) {
       const pageTitle = getPageNameFromHeader();
       if (pageTitle) checkMonitoredStatus(pageTitle);
+      checkKeywordMonitoredStatus();
     }
   } catch (e) {
     console.warn("[VIVA] Monitorados indisponíveis agora (timeout ou backend hibernado):", e.message);
@@ -519,9 +563,9 @@ function getAdCards(scanRoots) {
 // ─── VIVA O(1) Static Compiled RegExp & Set Pool ───
 const REGEX_META_DATE_PT = /(?:veicular em|iniciada em|Veiculação iniciada em)\s+(\d+)\s+de\s+([a-zç\.]+)(?:\s+de)?\s+(\d+)/i;
 const REGEX_META_DATE_EN = /(?:running on|on)\s+([a-z]+)\s+(\d+),\s+(\d+)/i;
-const REGEX_PID_HTML = /(?:view_all_page_id=|page_id=|[?&]id=|"pageID":\s*"|"pageId":\s*"|"advertiserID":\s*")(\d{10,20})/i;
+const REGEX_PID_HTML = /(?:view_all_page_id=|page_id=|[?&](?:amp;)?id=|"pageID":\s*"|"pageId":\s*"|"advertiserID":\s*")(\d{10,20})/i;
 const REGEX_AD_ARCHIVE_TEXT = /(?:Identifica[cç][aã]o da biblioteca|Library ID|ID)[:\s]+(\d{13,18})/i;
-const REGEX_AD_ARCHIVE_LINK = /[?&]id=(\d{13,18})/i;
+const REGEX_AD_ARCHIVE_LINK = /[?&](?:amp;)?id=(\d{13,18})/i;
 // FIX ITEM 12: REGEX_CREATED_DATE removida junto com checkContingencyStatus() (única
 // consumidora, nunca chamada em lugar nenhum — ver nota mais abaixo).
 const REGEX_META_AD_COUNT = /(\d+)\s+(?:an[uú]ncios\s+usam|ads\s+use)/i;
@@ -535,53 +579,192 @@ const WP_PATTERNS = [
   "zaplink", "linkzap", "superzap", "joinzap", "grupozap"
 ];
 
-// FIX REGRA DE FASE (2026-08): fase de veiculação determinada SOMENTE pelo tempo ativo do
-// anúncio — nunca por duplicação. Duplicação/mesmo criativo virou sinal à parte (ver badge
-// "Mesmo Criativo", inalterado), nunca critério de fase, pra nunca existir ambiguidade: um
-// anúncio jovem já duplicado antes não cabia em nenhuma faixa quando duas regras concorriam.
-// Três faixas mutuamente exclusivas, sem sobreposição e sem buraco — única fonte de verdade,
-// reaproveitada em processCards() (badge do card) e em showTopAdvertisersModal() (ranking).
-const STAGE_RANK = { teste: 0, potencial: 1, bruta: 2 };
+// Fases exclusivas: baixo volume tem prioridade; em seguida dias ativos e contagem oficial Meta
+// determinam escala. A duplicação do DOM permanece apenas um sinal separado para os badges.
+const STAGE_RANK = { teste: 0, validando: 1, potencial: 2, bruta: 3, monstro: 4, baixo: -1 };
 const STAGE_INFO = {
-  teste:     { label: "🧪 EM TESTE",         chipClass: "viva-escala-chip-teste" },
-  potencial: { label: "📈 POTENCIAL ESCALA", chipClass: "viva-escala-chip-potencial" },
-  bruta:     { label: "🔥 ESCALA BRUTA",     chipClass: "viva-escala-chip-bruta" }
+  teste: { label: "🧪 EM TESTE", chipClass: "viva-escala-chip-teste", color: "#8E8E93" },
+  validando: { label: "🔍 VALIDANDO", chipClass: "viva-escala-chip-validando", color: "#007AFF" },
+  potencial: { label: "📈 POTENCIAL ESCALA", chipClass: "viva-escala-chip-potencial", color: "#FF9500" },
+  bruta: { label: "🔥 ESCALA BRUTA", chipClass: "viva-escala-chip-bruta", color: "#FF3B30" },
+  monstro: { label: "💎 ESCALA MONSTRO", chipClass: "viva-escala-chip-monstro", color: "#AF52DE" },
+  baixo: { label: "⚫ BAIXO VOLUME", chipClass: "viva-escala-chip-baixo", color: "#000000" },
 };
 
-function resolveStage(adAgeDays) {
-  if (adAgeDays === null) return "teste"; // sem data confiável — trata como ainda não comprovado
-  if (adAgeDays >= 7) return "bruta";
-  if (adAgeDays >= 3) return "potencial";
+function resolveStageV2(adAgeDays, metaAdCount, temRecente, baixoVolume) {
+  if (baixoVolume) return "baixo";
+  if (adAgeDays === null) return "teste";
+  if (adAgeDays >= 30) return "monstro";
+  if (adAgeDays >= 15 || (metaAdCount && metaAdCount >= 3)) return "bruta";
+  if (adAgeDays >= 7) return "potencial";
+  if (adAgeDays >= 3) return "validando";
   return "teste";
+}
+
+function isBaixoVolumeCard(card) {
+  const text = (card.textContent || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return text.includes("baixo volume de impress") ||
+    text.includes("baixo volume") ||
+    (text.includes("volume de impress") && text.includes("baixo")) ||
+    text.includes("low volume of impressions") ||
+    text.includes("low volume") ||
+    text.includes("low impressions") ||
+    text.includes("baixo alcance de impress");
+}
+
+function syncBaixoVolumeDecoration(frame, card, baixoVolume) {
+  card.classList.toggle("viva-baixo-volume", baixoVolume);
+  frame.classList.toggle("viva-baixo-volume-frame", baixoVolume);
+
+  const badgeContainer = frame.querySelector(".viva-card-badge-container");
+  if (!badgeContainer) return;
+
+  let badge = badgeContainer.querySelector(".viva-badge-black");
+  if (!baixoVolume) {
+    if (badge) badge.remove();
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement("div");
+    badge.className = "viva-badge-black viva-el";
+    badge.textContent = "⚫ BAIXO VOLUME";
+    badge.title = "Este anúncio tem baixo volume de impressões - não está performando bem apesar de ter dias ativo";
+    badgeContainer.insertBefore(badge, badgeContainer.firstChild);
+  }
 }
 
 // ─── Single-Pass DOM Collector (Memoized per card instance) ───
 const domElementsCache = new WeakMap();
-function getCardDomElements(card) {
-  if (domElementsCache.has(card)) return domElementsCache.get(card);
-  const links = [];
-  const leafNodes = [];
-  let video = null;
-  let img = null;
-  
-  const allElements = card.querySelectorAll("a, video, img, div, span, p, h3, h4");
-  for (const el of allElements) {
-    const nodeName = el.nodeName;
-    if (nodeName === "A" && el.href) {
-      links.push(el);
-    } else if (nodeName === "VIDEO" && !video) {
-      video = el;
-    } else if (nodeName === "IMG" && !img) {
-      img = el;
-    } else if (nodeName === "DIV" || nodeName === "SPAN" || nodeName === "P" || nodeName === "H3" || nodeName === "H4") {
-      if (el.children.length === 0) {
-        leafNodes.push(el);
-      }
+let _vivaIntelligentReportSignature = "";
+let _vivaBuscaOutsideClickHandler = null;
+let _vivaBuscaEscapeHandler = null;
+
+function reportParaMineracaoInteligente() {
+  const params = new URLSearchParams(window.location.search);
+  const runId = params.get("viva_miner_run");
+  const planId = params.get("viva_miner_plan");
+  if (!runId || !planId || params.get("search_type") !== "keyword_unordered") return;
+
+  const pagesById = new Map();
+  const stageRank = STAGE_RANK;
+  for (const item of activeCardData) {
+    const pageId = item.data.pageId;
+    if (!pageId) continue;
+    let page = pagesById.get(pageId);
+    if (!page) {
+      page = {
+        page_id: pageId,
+        nome: item.data.advertiserName || "Desconhecido",
+        qtd_ads: 1,
+        qtd_duplicados: 0,
+        ages: [],
+        tem_recente: false,
+        scale: item.stage,
+        scaleRank: stageRank[item.stage] || 0,
+        baixaVolumeCount: 0,
+        cardCount: 0,
+      };
+      pagesById.set(pageId, page);
     }
+    page.cardCount += 1;
+    page.qtd_ads = Math.max(page.qtd_ads, Number(item.data.metaAdCount) || 1);
+    page.qtd_duplicados = Math.max(page.qtd_duplicados, (Number(item.effectiveDupCount) || 1) - 1);
+    const age = item.data.adAgeDays === null ? NaN : Number(item.data.adAgeDays);
+    if (Number.isFinite(age) && age >= 0) {
+      page.ages.push(age);
+      if (age <= 3) page.tem_recente = true;
+    }
+    if ((stageRank[item.stage] || 0) > page.scaleRank) {
+      page.scale = item.stage;
+      page.scaleRank = stageRank[item.stage] || 0;
+    }
+    if (isBaixoVolumeCard(item.card)) page.baixaVolumeCount += 1;
   }
-  const cache = { links, leafNodes, video, img };
+  const paginas = Array.from(pagesById.values()).map(page => {
+    const escala = page.baixaVolumeCount === page.cardCount
+      ? "BAIXO VOLUME"
+      : page.scale === "bruta" || page.scale === "monstro"
+        ? "ESCALA BRUTA"
+        : page.scale === "potencial"
+          ? "POTENCIAL ESCALA"
+          : "CAMPANHA NORMAL";
+    const mediaDias = page.ages.length
+      ? page.ages.reduce((sum, value) => sum + value, 0) / page.ages.length
+      : 0;
+    return {
+      page_id: page.page_id,
+      nome: page.nome,
+      qtd_ads: page.qtd_ads,
+      qtd_duplicados: page.qtd_duplicados,
+      media_dias: mediaDias,
+      dias_ativo: mediaDias,
+      tem_recente: page.tem_recente,
+      escala,
+      escala_tipo: escala,
+    };
+  });
+  if (paginas.length === 0) return;
+
+  const signature = JSON.stringify(paginas
+    .map(page => [page.page_id, page.qtd_ads, page.media_dias, page.tem_recente, page.escala, page.qtd_duplicados])
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+  const reportSignature = `${runId}:${planId}:${signature}`;
+  if (reportSignature === _vivaIntelligentReportSignature) return;
+  _vivaIntelligentReportSignature = reportSignature;
+
+  chrome.runtime.sendMessage({
+    action: "RESULTADO_PAGINA_MINERADA",
+    runId,
+    planId,
+    paginas,
+    url: window.location.href,
+  }).catch(err => {
+    console.warn("[VIVA] Não foi possível reportar resultados da mineração:", err.message);
+  });
+}
+
+function getCardDomElements(card) {
+  const identitySignal = getCardIdentitySignal(card);
+  if (domElementsCache.has(card)) {
+    const cached = domElementsCache.get(card);
+    if (cached.cardRoot === card && card.isConnected && cached.identitySignal === identitySignal) {
+      return cached;
+    }
+    domElementsCache.delete(card);
+  }
+
+  const allDivs = card.querySelectorAll("div, span, p, h3, h4");
+  const leafNodes = [];
+  const textNodes = [];
+  for (const el of allDivs) {
+    if (el.children.length !== 0 || !el.textContent) continue;
+    const txt = el.textContent.trim();
+    if (txt.length <= 3 || txt.length > 500) continue;
+    if (/ver detalhes|view details|ver resumo|abrir menu|active|ativo/i.test(txt) && txt.length < 30) continue;
+    leafNodes.push(el);
+    textNodes.push({ el, txt, len: txt.length });
+  }
+
+  const links = Array.from(card.querySelectorAll("a[href]"));
+  const video = card.querySelector("video");
+  const imgs = Array.from(card.querySelectorAll("img")).filter(img => {
+    const width = img.width || 0;
+    return width === 0 || width >= 60;
+  });
+  const img = imgs.find(image => (image.naturalWidth || image.width || 0) > 100) || imgs[0] || null;
+  const cache = { links, leafNodes, textNodes, video, imgs, img, cardRoot: card, identitySignal };
   domElementsCache.set(card, cache);
   return cache;
+}
+
+function refreshCardData(card) {
+  domElementsCache.delete(card);
+  cardDataMap.delete(card);
+  delete card._vivaData;
+  return extractCardData(card);
 }
 
 // AUDITORIA #02 (crítico — O(n²) -> O(n)): getAdCount(advertiserName) foi removida. Fazia
@@ -630,17 +813,80 @@ function extractDestinationUrl(card) {
     const href = a.href;
     if (href.startsWith("http") && !href.includes("facebook.com") && !href.includes("instagram.com")) return href;
   }
+  for (const a of links) {
+    const href = a.getAttribute("href") || "";
+    if (!href.includes("l.php?u=")) continue;
+    try {
+      const target = new URL(href, window.location.origin).searchParams.get("u");
+      if (target) return decodeURIComponent(target);
+    } catch (error) {
+      console.debug("[VIVA] Ignorando URL de destino inválida:", error);
+    }
+  }
   return null;
 }
 
 function extractMediaUrl(card) {
-  const { video, img } = getCardDomElements(card);
-  if (video && video.src && !video.src.startsWith("blob:")) return video.src;
-  if (img && img.src && !img.src.startsWith("data:")) {
-    if (img.naturalWidth > 100 || img.width > 100 || img.src.includes("fna.fbcdn")) return img.src;
+  const { video, imgs } = getCardDomElements(card);
+
+  // Vídeo tem prioridade
+  if (video && video.src && !video.src.startsWith("blob:")) {
+    return video.src;
   }
-  return null;
+
+  if (!imgs || imgs.length === 0) {
+    // Fallback: Meta às vezes usa div com background-image para criativo
+    const bgDiv = card.querySelector('div[style*="background-image"]');
+    if (bgDiv) {
+      const match = bgDiv.style.backgroundImage.match(/url\("?([^")]+)"?\)/);
+      if (match) return match[1];
+    }
+    return null;
+  }
+
+  // Filtra fotos de perfil: pequenas, no topo, perto de Patrocinado
+  const creativeCandidates = imgs.filter(img => {
+    const src = img.src || "";
+    if (!src || src.startsWith("data:") || src.startsWith("blob:")) return false;
+
+    // Foto de perfil: width < 100 ou natural < 150
+    const w = img.width || img.clientWidth || 0;
+    const nw = img.naturalWidth || 0;
+    if (w > 0 && w < 100) return false;
+    if (nw > 0 && nw < 150) return false;
+
+    // Foto de perfil costuma estar dentro de link de perfil ou avatar
+    const isAvatar = img.closest('a[href*="facebook.com/"][href*="/"]') && w < 120;
+    if (isAvatar) return false;
+
+    // Criativo real: scontent, fbcdn grande, ou natural grande
+    return true;
+  });
+
+  if (creativeCandidates.length > 0) {
+    // Pega a maior imagem por área - o criativo sempre é o maior
+    creativeCandidates.sort((a, b) => {
+      const areaA = (a.naturalWidth || a.width || 0) * (a.naturalHeight || a.height || 0);
+      const areaB = (b.naturalWidth || b.width || 0) * (b.naturalHeight || b.height || 0);
+      return areaB - areaA;
+    });
+    return creativeCandidates[0].src;
+  }
+
+  // Tenta a última imagem utilizável, sem aceitar um avatar identificável como fallback.
+  const fallbackImage = [...imgs].reverse().find(img => {
+    const src = img.src || "";
+    if (!src || src.startsWith("data:") || src.startsWith("blob:")) return false;
+    const w = img.width || img.clientWidth || 0;
+    const nw = img.naturalWidth || 0;
+    if ((w > 0 && w < 100) || (nw > 0 && nw < 150)) return false;
+    return !(img.closest('a[href*="facebook.com/"][href*="/"]') && w < 120);
+  });
+
+  return fallbackImage?.src || null;
 }
+
+console.info("[VIVA] Hotfix Baixar Mídia aplicado - pega maior imagem, não perfil");
 
 function parseMetaDate(text) {
   const monthsPt = { jan: 0, fev: 1, mar: 2, abr: 3, mai: 4, jun: 5, jul: 6, ago: 7, set: 8, out: 9, nov: 10, dez: 11 };
@@ -665,6 +911,9 @@ function extractCardTexts(card) {
            l.includes("plataformas") ||
            l.includes("ver resumo") ||
            l.includes("ver detalhes") ||
+           l.includes("abrir menu") ||
+           l === "ativo" ||
+           l === "active" ||
            l === advLower ||
            l === "patrocinado" ||
            l === "sponsored" ||
@@ -679,67 +928,148 @@ function extractCardTexts(card) {
   let title = "";
   let description = "";
 
-  const { leafNodes } = getCardDomElements(card);
-  const validLeafNodes = leafNodes.filter(el => {
-    if (el.querySelector("img, video, svg, button, input")) return false;
-    const txt = el.textContent.trim();
-    return !isMetaNoise(txt) && txt.length > 2;
+  const { textNodes } = getCardDomElements(card);
+  const validTextNodes = textNodes.filter(({ el, txt }) => {
+    return !isMetaNoise(txt) &&
+      !el.closest("button, input, [role='button']") &&
+      !REGEX_SIMPLE_DOMAIN.test(txt);
   });
 
-  // 1. ZONA A: TEXTO PRINCIPAL (Primary Text - parágrafos longos)
-  const primaryCandidates = validLeafNodes.filter(el => {
-    const txt = el.textContent.trim();
-    if (REGEX_SIMPLE_DOMAIN.test(txt)) return false;
-    return txt.length > 25;
-  });
-
+  const primaryCandidates = validTextNodes.filter(({ len }) => len >= 40 && len <= 500);
   if (primaryCandidates.length > 0) {
-    primaryCandidates.sort((a, b) => b.textContent.trim().length - a.textContent.trim().length);
-    primaryText = primaryCandidates[0].textContent.trim();
+    primaryCandidates.sort((a, b) => b.len - a.len);
+    primaryText = primaryCandidates[0].txt;
+  } else {
+    const cardText = (card.innerText || "")
+      .split("\n")
+      .map(text => text.trim())
+      .filter(text => text.length > 30 && !isMetaNoise(text) && !REGEX_SIMPLE_DOMAIN.test(text));
+    primaryText = cardText[0] || "";
   }
 
-  // 2. ZONA B: TÍTULO / HEADLINE (Zero getComputedStyle — Heurística O(1) de tags semânticas, classes e posição)
-  const boldElements = validLeafNodes.filter(el => {
-    const nodeName = el.nodeName;
-    const styleBold = el.style.fontWeight === "bold" || el.style.fontWeight === "700" || parseInt(el.style.fontWeight || "0") >= 600;
-    const classBold = typeof el.className === "string" && (el.className.includes("bold") || el.className.includes("font-semibold") || el.className.includes("font-bold"));
-    const isSemanticBold = nodeName === "STRONG" || nodeName === "B" || nodeName === "H3" || nodeName === "H4";
-    const txt = el.textContent.trim();
-    return (isSemanticBold || styleBold || classBold) && txt !== primaryText && txt.length < 120;
+  const boldElements = validTextNodes.filter(({ el, txt }) => {
+    const styleBold = el.style.fontWeight === "bold" ||
+      el.style.fontWeight === "700" ||
+      parseInt(el.style.fontWeight || "0", 10) >= 600;
+    const classBold = typeof el.className === "string" &&
+      (el.className.includes("bold") || el.className.includes("font-semibold") || el.className.includes("font-bold"));
+    const semanticBold = el.nodeName === "H3" || el.nodeName === "H4" || el.nodeName === "STRONG" || el.nodeName === "B";
+    return (styleBold || classBold || semanticBold) && txt !== primaryText && txt.length > 5 && txt.length < 120;
   });
 
   if (boldElements.length > 0) {
-    title = boldElements[boldElements.length - 1].textContent.trim();
+    title = boldElements[boldElements.length - 1].txt;
   } else {
-    // Fallback estrutural: se não achou tag/classe bold explícita, pega o último texto curto abaixo de 100 caracteres antes do final do card
-    const shortLeafs = validLeafNodes.filter(el => {
-      const txt = el.textContent.trim();
-      return txt !== primaryText && txt.length < 100 && !REGEX_ONLY_DOMAIN.test(txt);
-    });
-    if (shortLeafs.length > 0) {
-      title = shortLeafs[shortLeafs.length - 1].textContent.trim();
+    const shortTexts = validTextNodes.filter(({ txt }) =>
+      txt !== primaryText && txt.length >= 10 && txt.length < 100 && !REGEX_ONLY_DOMAIN.test(txt)
+    );
+    if (shortTexts.length > 0) title = shortTexts[shortTexts.length - 1].txt;
+  }
+
+  const descCandidates = validTextNodes.filter(({ txt }) =>
+    txt !== primaryText && txt !== title && txt.length >= 10 && txt.length < 150
+  );
+  if (descCandidates.length > 0) description = descCandidates[descCandidates.length - 1].txt;
+  if (!description) {
+    const destinationUrl = extractDestinationUrl(card);
+    if (destinationUrl) {
+      try {
+        description = new URL(destinationUrl).hostname;
+      } catch (error) {
+        console.debug("[VIVA] URL de destino não pôde ser usada como descrição:", error);
+      }
     }
   }
 
-  // 3. ZONA C: DESCRIÇÃO DO LINK (texto secundário curto no rodapé CTA)
-  const descCandidates = validLeafNodes.filter(el => {
-    const txt = el.textContent.trim();
-    return txt !== primaryText &&
-           txt !== title &&
-           txt.length < 150 &&
-           !REGEX_ONLY_DOMAIN.test(txt);
-  });
-
-  if (descCandidates.length > 0) {
-    description = descCandidates[descCandidates.length - 1].textContent.trim();
-  }
-
-  return { primaryText, title, description };
+  return {
+    primaryText: primaryText || "Texto não detectado - tente expandir o card",
+    title: title || "Headline não detectada",
+    description: description || "Descrição não detectada",
+  };
 }
 
+function showAppleToast(titulo, subtitulo, tipo = "success") {
+  document.querySelectorAll(".viva-apple-toast").forEach(toast => toast.remove());
+
+  const toast = document.createElement("div");
+  toast.className = `viva-apple-toast viva-toast-${tipo} viva-el`;
+  const icon = document.createElement("div");
+  icon.className = "viva-toast-icon";
+  icon.textContent = tipo === "success" ? "✓" : "!";
+  const content = document.createElement("div");
+  content.className = "viva-toast-content";
+  const title = document.createElement("div");
+  title.className = "viva-toast-title";
+  title.textContent = titulo;
+  const subtitle = document.createElement("div");
+  subtitle.className = "viva-toast-subtitle";
+  subtitle.textContent = subtitulo;
+  content.append(title, subtitle);
+  toast.append(icon, content);
+  document.body.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    toast.style.setProperty("transform", "translateX(-50%) translateY(0) scale(1)", "important");
+    toast.style.setProperty("opacity", "1", "important");
+  });
+
+  setTimeout(() => {
+    toast.style.setProperty("transform", "translateX(-50%) translateY(10px) scale(0.95)", "important");
+    toast.style.setProperty("opacity", "0", "important");
+    setTimeout(() => toast.remove(), 300);
+  }, 2500);
+}
+
+async function handleCopiarCopies(card) {
+  const data = refreshCardData(card);
+  const texts = extractCardTexts(card);
+  const formatado = `TÍTULO / HEADLINE
+${texts.title}
+
+DESCRIÇÃO PRINCIPAL
+${texts.primaryText}
+
+DESCRIÇÃO / LINK
+${texts.description}
+
+URL: ${data.destUrl || "Não detectada"}
+Página: ${data.advertiserName || ""} | ${data.adAgeDays ? `${data.adAgeDays} dias ativo` : ""} | ${data.metaAdCount}x anúncios`;
+
+  try {
+    await navigator.clipboard.writeText(formatado);
+  } catch (clipboardError) {
+    let copied = false;
+    let textarea = null;
+    try {
+      textarea = document.createElement("textarea");
+      textarea.value = formatado;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      copied = document.execCommand("copy");
+    } catch (fallbackError) {
+      console.warn("[VIVA] Fallback da área de transferência falhou:", fallbackError);
+    } finally {
+      if (textarea) textarea.remove();
+    }
+    if (!copied) {
+      console.error("[VIVA] Não foi possível copiar as copies do anúncio:", clipboardError);
+      showAppleToast("Falha ao copiar", "Permita o acesso à área de transferência e tente novamente.", "error");
+      return;
+    }
+  }
+
+  showAppleToast("Copiado!", "Título + Descrição + Headline copiados", "success");
+}
+
+console.info("[VIVA] Fix Copiar Copies + URL detection + Toast Apple implementado");
+
 function extractPageId(card) {
+  const adArchiveId = extractAdArchiveId(card);
   const fiberId = card.getAttribute("data-viva-page-id");
-  if (fiberId && REGEX_ONLY_DIGITS.test(fiberId)) {
+  if (fiberId && fiberId !== adArchiveId && REGEX_ONLY_DIGITS.test(fiberId)) {
     return fiberId;
   }
 
@@ -748,18 +1078,27 @@ function extractPageId(card) {
     if (a.href.includes("/ads/library/") || a.href.includes("view_all_page_id=") || a.href.includes("page_id=") || a.href.includes("id=")) {
       try {
         const u = new URL(a.href, window.location.origin);
-        const pid = u.searchParams.get("view_all_page_id") || u.searchParams.get("page_id") || u.searchParams.get("id");
-        if (pid && REGEX_ONLY_DIGITS.test(pid)) return pid;
+        const explicitPageId = u.searchParams.get("view_all_page_id") || u.searchParams.get("page_id");
+        if (explicitPageId && REGEX_ONLY_DIGITS.test(explicitPageId)) return explicitPageId;
+        const legacyId = u.searchParams.get("id");
+        if (legacyId && legacyId !== adArchiveId && REGEX_ONLY_DIGITS.test(legacyId)) return legacyId;
       } catch (e) {}
     }
   }
 
   const htmlMatch = card.outerHTML.match(REGEX_PID_HTML);
-  if (htmlMatch && htmlMatch[1]) {
+  if (htmlMatch && htmlMatch[1] && htmlMatch[1] !== adArchiveId) {
     return htmlMatch[1];
   }
 
   return null;
+}
+
+function getCardPageId(card, data) {
+  if (!card) return null;
+  const adArchiveId = extractAdArchiveId(card);
+  const candidates = [card.getAttribute("data-viva-page-id"), data?.pageId, extractPageId(card)];
+  return candidates.find(pageId => pageId && pageId !== adArchiveId && REGEX_ONLY_DIGITS.test(String(pageId))) || null;
 }
 
 function extractAdArchiveId(card) {
@@ -785,7 +1124,7 @@ function extractAdArchiveId(card) {
 function buildAdLibraryPermalink(card) {
   const adArchiveId = extractAdArchiveId(card);
   if (!adArchiveId) return null;
-  const pageId = card.getAttribute("data-viva-page-id") || extractPageId(card);
+  const pageId = getCardPageId(card);
   if (!pageId) {
     // Sem pageId não dá pra montar a URL completa no formato que a Meta preserva — cai pro
     // formato simples (ainda funciona em contexto sem a extensão, ex: aba anônima).
@@ -802,6 +1141,18 @@ function buildAdLibraryPermalink(card) {
     view_all_page_id: pageId
   });
   return `https://www.facebook.com/ads/library/?${params.toString()}#viva_pin=1`;
+}
+
+function getAdLibraryUrlDirect(card, data = card?._vivaData || cardDataMap.get(card) || {}) {
+  const adArchiveId = extractAdArchiveId(card);
+  if (adArchiveId) {
+    return `https://www.facebook.com/ads/library/?id=${encodeURIComponent(adArchiveId)}`;
+  }
+  const pageId = getCardPageId(card, data);
+  if (pageId) {
+    return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=${encodeURIComponent(pageId)}`;
+  }
+  return null;
 }
 
 // FIX ITEM 12 (2026-08): checkContingencyStatus() removida — função inteira nunca chamada em
@@ -1029,7 +1380,7 @@ function showActionsDropdown(card, data, anchorBtn) {
     evt.preventDefault();
     evt.stopPropagation();
     dropdown.remove();
-    let resolvedPageId = card.getAttribute("data-viva-page-id") || data.pageId || extractPageId(card);
+    let resolvedPageId = getCardPageId(card, data);
     let adArchiveId = extractAdArchiveId(card);
     let targetUrl;
 
@@ -1049,12 +1400,19 @@ function showActionsDropdown(card, data, anchorBtn) {
   // 2. Salvar no Funil
   const itemFunnel = document.createElement("button");
   itemFunnel.className = "viva-dropdown-item";
-  itemFunnel.innerHTML = `🔀 Salvar no Funil`;
+  itemFunnel.innerHTML = `🗂️ Salvar Funil`;
   itemFunnel.addEventListener("click", (evt) => {
     evt.preventDefault();
     evt.stopPropagation();
     dropdown.remove();
-    openFunnelModal(data.destUrl || "", data.advertiserName);
+    const pageId = getCardPageId(card, data);
+    const libraryUrl = getAdLibraryUrlDirect(card, data);
+    console.info(`[VIVA] Abrindo Salvar Funil para biblioteca ${pageId || "sem ID"}`);
+    openFunnelModal(libraryUrl || "", data.advertiserName, {
+      prefillAd: true,
+      pageId,
+      libraryUrl,
+    });
   });
   dropdown.appendChild(itemFunnel);
 
@@ -1068,7 +1426,7 @@ function showActionsDropdown(card, data, anchorBtn) {
     evt.stopPropagation();
     dropdown.remove();
 
-    const record = findMonitoredPageRecord();
+    const record = findMonitoredPageRecord(card, data);
     if (!record) {
       showLibraryNotRegisteredModal();
       return;
@@ -1128,15 +1486,10 @@ function showActionsDropdown(card, data, anchorBtn) {
   const itemCopy = document.createElement("button");
   itemCopy.className = "viva-dropdown-item";
   itemCopy.innerHTML = `📋 Copiar Copies`;
-  itemCopy.addEventListener("click", (evt) => {
+  itemCopy.addEventListener("click", async (evt) => {
     evt.stopPropagation();
     dropdown.remove();
-    let blocks = [];
-    if (data.primaryText) blocks.push(`TEXTO PRINCIPAL\n${data.primaryText}`);
-    if (data.title) blocks.push(`TÍTULO/HEADLINE\n${data.title}`);
-    if (data.description) blocks.push(`DESCRIÇÃO\n${data.description}`);
-    const copyText = blocks.length > 0 ? blocks.join("\n\n") : "Nenhum texto detectado neste anúncio";
-    navigator.clipboard.writeText(copyText).then(() => alert("Copies copiadas com sucesso!"));
+    await handleCopiarCopies(card);
   });
   dropdown.appendChild(itemCopy);
 
@@ -1170,7 +1523,7 @@ function showActionsDropdown(card, data, anchorBtn) {
 }
 
 function processCards() {
-  if (!vivaMonitorMasterEnabled) return;
+  if (!vivaMonitorMasterEnabled || rankingOverlayPaused) return;
   // FIX CAUSA RAIZ (2026-09): ver nota de arquitetura junto de _vivaSobreTabDiscoveryInProgress,
   // no topo do arquivo. Sai sem fazer nada enquanto a automação da aba "Sobre" está em
   // andamento — evita re-envolver cards em .viva-card-frame no meio da desmontagem/remontagem
@@ -1194,11 +1547,17 @@ function processCards() {
   // de abrir. O dropdown já é auto-gerenciado por 3 caminhos próprios: clique fora (listener
   // global), clique num item (remove-se sozinho) e scroll (fecha por segurança, ver abaixo) —
   // não precisa e não deve mais entrar nesta varredura genérica.
-  document.querySelectorAll(".viva-card-footer, .viva-escala-strip, .viva-card-badge-container").forEach(el => {
-    if (!el.isConnected || (!el.closest(".viva-card-frame") && !el.closest(".viva-processed") && !el.closest("[data-viva-id]"))) {
-      el.remove();
-    }
-  });
+  if (Date.now() - lastSweepTime >= 5000) {
+    lastSweepTime = Date.now();
+    let removedOrphans = 0;
+    document.querySelectorAll(".viva-card-footer, .viva-escala-strip, .viva-card-badge-container").forEach(el => {
+      if (!el.isConnected || (!el.closest(".viva-card-frame") && !el.closest(".viva-processed") && !el.closest("[data-viva-id]"))) {
+        el.remove();
+        removedOrphans += 1;
+      }
+    });
+    console.debug(`[VIVA] Orphan sweep (5s) · ${removedOrphans} removidos`);
+  }
 
   // PHASE 1: Pure Reads & Memory Calculations (NO DOM MUTATIONS)
   // FIX DE ESCALA: consome as raízes de mutação acumuladas desde o último ciclo (se houver)
@@ -1235,6 +1594,11 @@ function processCards() {
     // cardDataMap (WeakMap O(1)) + identitySignal, então chamá-la sempre aqui não reintroduz
     // custo — só reabilita a invalidação que já existia e nunca rodava.
     const data = extractCardData(card);
+    const baixoVolume = isBaixoVolumeCard(card);
+    if (baixoVolume && !card._vivaBaixoVolume) {
+      console.info("[VIVA] Card com baixo volume detectado e destacado em preto");
+    }
+    card._vivaBaixoVolume = baixoVolume;
     // FIX 4.3: registra o card no gate de proximidade assim que descoberto, independente de já
     // ter sido decidido se ele será exibido ou processado neste ciclo — o próprio
     // IntersectionObserver decide de forma assíncrona e barata quando ele está perto o bastante.
@@ -1252,7 +1616,7 @@ function processCards() {
     }
     advertiserCounts[data.advertiserName] = (advertiserCounts[data.advertiserName] || 0) + 1;
     data.linkKey = linkKey;
-    return { card, data };
+    return { card, data, baixoVolume };
   });
 
   activeCardData.forEach(item => {
@@ -1269,8 +1633,8 @@ function processCards() {
     // getAdCount() (removida) — que recalculava um activeCardData.filter() inteiro (O(n)) para
     // cada um dos n cards deste mesmo loop, o que era o O(n²) por ciclo de processCards().
     const adsCount = advertiserCounts[data.advertiserName] || 1;
-    // Fase determinada só pelo tempo — ver comentário FIX REGRA DE FASE junto de resolveStage().
-    item.stage = resolveStage(data.adAgeDays);
+    // Aplica as faixas da classificação Apple V2, preservando baixo volume como prioridade.
+    item.stage = resolveStageV2(data.adAgeDays, data.metaAdCount, false, item.baixoVolume);
     
     let shouldShow = true;
     if (minPageAds > 0 && adsCount < minPageAds) shouldShow = false;
@@ -1278,8 +1642,11 @@ function processCards() {
     // FIX ITEM 11: as duas condições de hideRecent/hideNonScaled saíram daqui — variáveis
     // removidas (nunca ligadas por nenhum controle de UI, sempre false na prática).
     if (filterOnlyRecent && (data.adAgeDays === null || data.adAgeDays > 3)) shouldShow = false;
-    item.shouldShow = shouldShow;
+    // Baixo volume é um alerta visual e não pode ser removido por filtros de desempenho.
+    item.shouldShow = item.baixoVolume || shouldShow;
   });
+
+  reportParaMineracaoInteligente();
 
   // (hasActiveFilter removido: o reflow agora roda sempre, ver FIX DIAGNÓSTICO 1 abaixo)
 
@@ -1299,11 +1666,6 @@ function processCards() {
 
   window.requestAnimationFrame(() => {
     try {
-      // Extermina qualquer engrenagem ou rodapé órfão que esteja flutuando fora de cartões reais
-      document.querySelectorAll(".viva-card-footer").forEach(f => {
-        if (!f.closest(".viva-card-frame") && !f.closest(".viva-processed") && !f.closest("[data-viva-id]")) f.remove();
-      });
-
       // FIX DIAGNÓSTICO 1: antes, esse "modo de reflow" só era aplicado quando um filtro
       // estava ativo (hasActiveFilter). No estado padrão (sem filtro), o código devolvia o
       // controle total ao posicionamento absoluto (top/left/transform) calculado pela grade
@@ -1360,11 +1722,28 @@ function processCards() {
         // FIX FRAME: a moldura de escala precisa envolver a caixa inteira, não mais só o card
         // nativo por dentro — "toda a card" pedida, não uma faixa espremida no meio do conteúdo.
         const frame = getOrCreateCardFrame(card);
+        const existingUrlInput = frame.querySelector(".viva-url-input");
+        if (existingUrlInput) {
+          existingUrlInput.dataset.destinationUrl = data.destUrl || "";
+          existingUrlInput.value = data.destUrl || "URL não detectada";
+          existingUrlInput.title = data.destUrl ? "Clique para copiar e abrir link no seu IP" : "Nenhum link detectado neste anúncio";
+          existingUrlInput.disabled = !data.destUrl;
+          existingUrlInput.style.opacity = data.destUrl ? "" : "0.5";
+          existingUrlInput.style.cursor = data.destUrl ? "" : "not-allowed";
+        }
 
-        // Única fonte de verdade para a fase (ver STAGE_INFO/resolveStage) — sem sistema
+        // Única fonte de verdade para a fase (ver STAGE_INFO/resolveStageV2) — sem sistema
         // paralelo de "níveis" antigo, pra nunca ter duas regras de escala competindo.
-        frame.classList.remove("viva-stage-teste", "viva-stage-potencial", "viva-stage-bruta");
+        frame.classList.remove(
+          "viva-stage-teste",
+          "viva-stage-validando",
+          "viva-stage-potencial",
+          "viva-stage-bruta",
+          "viva-stage-monstro",
+          "viva-stage-baixo",
+        );
         frame.classList.add(`viva-stage-${item.stage}`);
+        syncBaixoVolumeDecoration(frame, card, item.baixoVolume);
 
         if (!item.shouldShow) return; // Não injeta badges em cards ocultos para poupar RAM
 
@@ -1397,7 +1776,7 @@ function processCards() {
     card.dataset.vivaId = data.sig || "ad_card";
 
     // C. Injeção de Componentes Apple-style
-    const renderSig = `${item.effectiveDupCount}-${item.twinCount}-${data.adAgeDays}-${data.isWhatsApp}-${item.shouldShow}`;
+    const renderSig = `${item.effectiveDupCount}-${item.twinCount}-${data.adAgeDays}-${data.isWhatsApp}-${item.stage}-${item.shouldShow}-${item.baixoVolume}`;
     if (card.classList.contains("viva-processed") && card._vivaRenderSig === renderSig && frame.querySelector(".viva-card-badge-container") && frame.querySelector(".viva-card-footer")) {
       return; // Apple Dirty-Checking: 0.00ms DOM touch em cartões já processados e sem alteração de estado
     }
@@ -1582,23 +1961,26 @@ function processCards() {
       urlInput.readOnly = true;
       urlInput.value = data.destUrl ? data.destUrl : "URL não detectada";
       urlInput.title = data.destUrl ? "Clique para copiar e abrir link no seu IP" : "Nenhum link detectado neste anúncio";
+      urlInput.dataset.destinationUrl = data.destUrl || "";
 
-      if (data.destUrl) {
-        urlInput.addEventListener("click", (e) => {
-          e.stopPropagation();
-          navigator.clipboard.writeText(data.destUrl).then(() => {
-            urlInput.classList.add("viva-url-input-copied");
-            const originalVal = urlInput.value;
-            urlInput.value = "Copiado e abrindo! ✓";
-            
-            setTimeout(() => {
-              urlInput.classList.remove("viva-url-input-copied");
-              urlInput.value = originalVal;
-            }, 1200);
-          });
-          window.open(data.destUrl, "_blank");
+      urlInput.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const destinationUrl = urlInput.dataset.destinationUrl;
+        if (!destinationUrl) return;
+        const originalVal = urlInput.value;
+        navigator.clipboard.writeText(destinationUrl).then(() => {
+          urlInput.classList.add("viva-url-input-copied");
+          urlInput.value = "Copiado e abrindo! ✓";
+          setTimeout(() => {
+            urlInput.classList.remove("viva-url-input-copied");
+            urlInput.value = urlInput.dataset.destinationUrl || originalVal;
+          }, 1200);
+        }).catch(error => {
+          console.warn("[VIVA] Não foi possível copiar a URL do anúncio:", error);
         });
-      } else {
+        window.open(destinationUrl, "_blank");
+      });
+      if (!data.destUrl) {
         urlInput.disabled = true;
         urlInput.style.opacity = "0.5";
         urlInput.style.cursor = "not-allowed";
@@ -1625,7 +2007,17 @@ function processCards() {
       gearBtn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        showActionsDropdown(card, data, gearBtn);
+        const freshData = refreshCardData(card);
+        const currentUrlInput = frame.querySelector(".viva-url-input");
+        if (currentUrlInput) {
+          currentUrlInput.dataset.destinationUrl = freshData.destUrl || "";
+          currentUrlInput.value = freshData.destUrl || "URL não detectada";
+          currentUrlInput.title = freshData.destUrl ? "Clique para copiar e abrir link no seu IP" : "Nenhum link detectado neste anúncio";
+          currentUrlInput.disabled = !freshData.destUrl;
+          currentUrlInput.style.opacity = freshData.destUrl ? "" : "0.5";
+          currentUrlInput.style.cursor = freshData.destUrl ? "" : "not-allowed";
+        }
+        showActionsDropdown(card, freshData, gearBtn);
       });
 
       if (!globalDropdownListenerAdded) {
@@ -1642,6 +2034,7 @@ function processCards() {
       // nativo continua com exatamente os mesmos filhos que a Meta renderizou originalmente.
       frame.appendChild(cardFooter);
     }
+    syncBaixoVolumeDecoration(frame, card, item.baixoVolume);
   });
 
     } catch (err) {
@@ -1652,8 +2045,9 @@ function processCards() {
       lastCycleDurationMs = Math.round((performance.now() - cycleStartTime) * 100) / 100;
       const healthEl = document.getElementById("viva-engine-health");
       if (healthEl) {
-        healthEl.innerHTML = `⚡ O(1) · ${lastCycleDurationMs}ms (${activeCardData.length} ads)`;
+        healthEl.textContent = `⚡ O(1) · ${lastCycleDurationMs}ms (${activeCardData.length} ads)`;
       }
+      updateMotorVivaLeve(activeCardData.length, lastCycleDurationMs);
       if (pendingBatchCards) {
         pendingBatchCards = false;
         processCards();
@@ -1741,16 +2135,30 @@ function getOfficialMetaTotalResults() {
   return totalAdsSum || activeCardData.length || 1;
 }
 
-function openFunnelModal(landingUrl, advertiserContext) {
+function openFunnelModal(landingUrl, advertiserContext, options = {}) {
   const existing = document.getElementById("viva-funnel-modal-container");
   if (existing) existing.remove();
 
   const activeName = advertiserContext || getPageNameFromHeader() || extractCleanDomain(landingUrl) || "Anunciante";
   const slug = toSlug(activeName);
+  const targetPageId = options.pageId || null;
+  const registrationUrl = targetPageId
+    ? `https://www.facebook.com/ads/library/?view_all_page_id=${encodeURIComponent(targetPageId)}`
+    : window.location.href;
+  const registrationType = (targetPageId || window.location.href.includes("view_all_page_id=")) ? "pagina" : "dominio";
+  const initialStageType = options.prefillAd ? "ads" : "vsl";
+  const initialMetaTotal = options.prefillAd
+    ? (Number(document.documentElement.dataset.vivaMetaTotalCount) || activeCardData.length || 0)
+    : getOfficialMetaTotalResults();
 
-  // Lista dinâmica de N etapas do funil (inicia com rótulo vazio)
+  // Modal pode abrir sem esperar a consulta sequencial ao backend.
   let steps = [
-    { id: 1, tipo: "vsl", rotulo: "", url: landingUrl }
+    {
+      id: 1,
+      tipo: initialStageType,
+      rotulo: options.prefillAd ? "ads01" : "",
+      url: options.libraryUrl || landingUrl
+    }
   ];
 
   const overlay = document.createElement("div");
@@ -1764,7 +2172,7 @@ function openFunnelModal(landingUrl, advertiserContext) {
           <h2 class="viva-modal-title" style="margin:0;">Salvar Funil Operacional (Multi-Etapas)</h2>
           <div style="font-size:12px; color:var(--viva-muted); margin-top:3px;">Anunciante: <strong style="color:var(--viva-text)">${vivaEscapeHtml(activeName)}</strong></div>
         </div>
-        <span class="viva-funnel-step-badge">${getOfficialMetaTotalResults()} criativos ativos</span>
+        <span class="viva-funnel-step-badge">${initialMetaTotal} criativos ativos</span>
       </div>
       
       <div class="viva-modal-body" style="padding:16px;">
@@ -1799,6 +2207,7 @@ function openFunnelModal(landingUrl, advertiserContext) {
           <div style="flex:1;">
             <label class="viva-label" style="font-size:11px;">Tipo</label>
             <select class="viva-input step-tipo" style="padding:6px 10px;">
+              <option value="ads" ${step.tipo === "ads" ? "selected" : ""}>ADS</option>
               <option value="quiz" ${step.tipo === "quiz" ? "selected" : ""}>QUIZ</option>
               <option value="advertorial" ${step.tipo === "advertorial" ? "selected" : ""}>ADV (Advertorial)</option>
               <option value="vsl" ${step.tipo === "vsl" ? "selected" : ""}>VSL</option>
@@ -1824,7 +2233,10 @@ function openFunnelModal(landingUrl, advertiserContext) {
         const rotuloInput = card.querySelector(".step-rotulo");
         rotuloInput.placeholder = step.tipo.toUpperCase();
       });
-      card.querySelector(".step-rotulo").addEventListener("input", (e) => { step.rotulo = e.target.value.trim(); });
+      card.querySelector(".step-rotulo").addEventListener("input", (e) => {
+        step.rotulo = e.target.value.trim();
+        step._labelEdited = true;
+      });
       card.querySelector(".step-url").addEventListener("input", (e) => { step.url = e.target.value.trim(); });
 
       const rmBtn = card.querySelector(".viva-funnel-remove-btn");
@@ -1841,10 +2253,45 @@ function openFunnelModal(landingUrl, advertiserContext) {
 
   renderSteps();
 
+  let sequenceReady = Promise.resolve();
+  let sequenceResolved = true;
+  if (options.prefillAd && targetPageId) {
+    sequenceResolved = false;
+    sequenceReady = chrome.runtime.sendMessage({
+      action: "GET_NEXT_FUNIL_SEQ",
+      page_id: targetPageId,
+      advertiserName: activeName,
+    }).then(seqInfo => {
+      const firstStep = steps[0];
+      if (seqInfo?.error) {
+        console.warn("[VIVA] Sequencial indisponível; mantendo rótulo local:", seqInfo.error);
+        return;
+      }
+      if (
+        !overlay.isConnected
+        || !firstStep
+        || firstStep.tipo !== "ads"
+        || firstStep._labelEdited
+        || !seqInfo?.proximo
+      ) return;
+      firstStep.rotulo = seqInfo.proximo;
+      const labelInput = overlay.querySelector(".viva-funnel-step-card .step-rotulo");
+      if (labelInput) labelInput.value = seqInfo.proximo;
+      const badge = overlay.querySelector(".viva-funnel-step-badge");
+      if (badge && Number(seqInfo.total_ativos) > 0) {
+        badge.textContent = `${seqInfo.total_ativos} criativos ativos`;
+      }
+    }).catch(error => {
+      console.warn("[VIVA] Sequencial indisponível; mantendo rótulo local:", error.message);
+    }).finally(() => {
+      sequenceResolved = true;
+    });
+  }
+
   overlay.querySelector("#viva-funnel-add-step").addEventListener("click", () => {
     steps.push({
       id: Date.now(),
-      tipo: "checkout",
+      tipo: "vsl",
       rotulo: "",
       url: ""
     });
@@ -1854,7 +2301,16 @@ function openFunnelModal(landingUrl, advertiserContext) {
 
   overlay.querySelector("#viva-funnel-cancel").addEventListener("click", () => overlay.remove());
 
-  overlay.querySelector("#viva-funnel-review").addEventListener("click", () => {
+  overlay.querySelector("#viva-funnel-review").addEventListener("click", async (event) => {
+    const reviewButton = event.currentTarget;
+    if (reviewButton.disabled) return;
+    const originalButtonText = reviewButton.textContent;
+    reviewButton.disabled = true;
+    if (!sequenceResolved) reviewButton.textContent = "Consultando sequência…";
+    await sequenceReady;
+    reviewButton.textContent = originalButtonText;
+    reviewButton.disabled = false;
+
     const validSteps = steps.filter(s => s.url && s.url.length > 5);
     if (validSteps.length === 0) {
       alert("Por favor, preencha a URL de pelo menos uma etapa do funil.");
@@ -1879,8 +2335,8 @@ function openFunnelModal(landingUrl, advertiserContext) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             nome: activeName,
-            url: window.location.href,
-            tipo: window.location.href.includes("view_all_page_id=") ? "pagina" : "dominio",
+            url: registrationUrl,
+            tipo: registrationType,
             geo: geoInput ? geoInput.value.trim() : "BR",
             nicho: nichoInput ? nichoInput.value.trim() : "Geral",
             instagram_url: getInstagramUrlFromHeader() || null,
@@ -1906,16 +2362,18 @@ function openFunnelModal(landingUrl, advertiserContext) {
           await fetchMonitoredPages();
         }
         if (Array.isArray(monitoredPages)) {
-          const matchedPlayer = monitoredPages.find(p => {
-            if (!p) return false;
-            const pNome = (p.nome || "").toLowerCase().trim();
-            const aNome = (activeName || "").toLowerCase().trim();
-            if (pNome && pNome === aNome) return true;
-            if (p.slug && (p.slug === authoritativeSlug || p.slug === slug)) return true;
-            const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
-            if (pageId && p.url && p.url.includes(pageId)) return true;
-            return false;
-          });
+          const activeType = registrationType;
+          const matchedPlayer = targetPageId
+            ? monitoredPages.find(p => p?.tipo === "pagina" && p.url && p.url.includes(targetPageId))
+            : monitoredPages.find(p => {
+              if (!p || p.tipo !== activeType) return false;
+              const pNome = (p.nome || "").toLowerCase().trim();
+              const aNome = (activeName || "").toLowerCase().trim();
+              if (pNome && pNome === aNome) return true;
+              if (p.slug && (p.slug === authoritativeSlug || p.slug === slug)) return true;
+              const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
+              return Boolean(pageId && p.url && p.url.includes(pageId));
+            });
           if (matchedPlayer) {
             if (matchedPlayer.slug) authoritativeSlug = matchedPlayer.slug;
             if (matchedPlayer.id || matchedPlayer._id) authoritativeId = matchedPlayer.id || matchedPlayer._id;
@@ -1925,6 +2383,7 @@ function openFunnelModal(landingUrl, advertiserContext) {
         // 2º Passo: Salva todas as N etapas do funil vinculadas ao slug/ID autoritativo do servidor
         let successCount = 0;
         let lastErrorMsg = "";
+        const savedAdsStages = [];
 
         for (let i = 0; i < validSteps.length; i++) {
           const s = validSteps[i];
@@ -1944,6 +2403,7 @@ function openFunnelModal(landingUrl, advertiserContext) {
             });
             if (resEtapa.ok) {
               successCount++;
+              if (s.tipo === "ads") savedAdsStages.push(s);
             } else {
               lastErrorMsg = `HTTP ${resEtapa.status}: ${await resEtapa.text()}`;
               console.error("[VIVA LABS] Erro API ao salvar etapa:", lastErrorMsg);
@@ -1961,6 +2421,24 @@ function openFunnelModal(landingUrl, advertiserContext) {
           return;
         }
 
+        if (targetPageId && savedAdsStages.length > 0) {
+          try {
+            await chrome.runtime.sendMessage({
+              action: "INCREMENT_FUNIL_SEQ",
+              page_id: targetPageId,
+              count: savedAdsStages.length,
+              labels: savedAdsStages.map(step => step.rotulo),
+              total: getOfficialMetaTotalResults(),
+            });
+          } catch (error) {
+            console.warn("[VIVA] Não foi possível atualizar o sequencial local:", error.message);
+          }
+        }
+
+        const firstAdsStage = savedAdsStages[0];
+        if (firstAdsStage) {
+          showAppleToast("Funil salvo!", `${firstAdsStage.rotulo || "ADS"} com link do ADS`, "success");
+        }
         confirmBtn.textContent = `✓ ${successCount} Etapa(s) Salvas com Sucesso!`;
         confirmBtn.style.background = "#34C759";
 
@@ -2192,9 +2670,10 @@ function injectSidebar() {
 
         <div id="viva-tracker-content" style="margin-top: 10px;">
           <!-- Apple Segmented Control -->
-          <div class="viva-segmented-control">
-            <button id="viva-tab-page" class="viva-segmented-btn active">🏢 Por Página</button>
-            <button id="viva-tab-domain" class="viva-segmented-btn">🌐 Por Domínio/URL</button>
+          <div class="viva-segmented-control" role="tablist" aria-label="Tipo de monitoramento">
+            <button id="viva-tab-page" class="viva-segment viva-segmented-btn active" data-tab="pagina" role="tab" aria-selected="true" aria-label="Página"><span>📄 Página</span></button>
+            <button id="viva-tab-domain" class="viva-segment viva-segmented-btn" data-tab="dominio" role="tab" aria-selected="false" aria-label="Domínio"><span>🌐 Domínio</span></button>
+            <button id="viva-tab-keyword" class="viva-segment viva-segmented-btn" data-tab="palavra" role="tab" aria-selected="false" aria-label="Palavra-chave"><span data-active-label="Palavra-chave" data-inactive-label="Chave">🔑 Chave</span></button>
           </div>
 
           <!-- Aba 1: Por Página -->
@@ -2247,6 +2726,17 @@ function injectSidebar() {
 
             <button class="viva-btn viva-btn-primary" id="viva-side-save-domain" style="margin-top:4px; width:100%; box-sizing: border-box;">+ Monitorar Domínio (URL)</button>
           </div>
+
+          <!-- Aba 3: Por Palavra-chave -->
+          <div id="viva-tracker-keyword-view" style="display: none;">
+            <div class="viva-form-group">
+              <label class="viva-label" for="viva-side-keyword">Palavra-chave ou expressão</label>
+              <input type="text" id="viva-side-keyword" class="viva-input" placeholder="Ex: jejum intermitente" maxlength="200" autocomplete="off" style="width:100%; box-sizing: border-box;">
+              <span class="viva-keyword-hint">A busca será monitorada separadamente de páginas e domínios.</span>
+            </div>
+            <button class="viva-btn viva-btn-primary" id="viva-side-save-keyword" style="margin-top:4px; width:100%; box-sizing: border-box;">+ Monitorar Palavra-chave</button>
+            <span class="viva-keyword-status" id="viva-keyword-status" role="status" aria-live="polite"></span>
+          </div>
         </div>
       </div>
 
@@ -2258,16 +2748,6 @@ function injectSidebar() {
            logo abaixo de setupSidebarInteractions() também. -->
 
       <!-- Seção 2: Ranking e Inteligência de Escala -->
-      <div class="viva-panel-section">
-        <button class="viva-btn viva-btn-red-pro" id="viva-btn-show-ranking" title="Exibe o ranking em tempo real dos maiores anunciantes na tela">
-          🏆 Ver Top Anunciantes
-        </button>
-        <div style="margin-top: 12px; display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--viva-muted); padding-top: 8px; border-top: 1px dashed var(--viva-border);">
-          <span>Motor VIVA:</span>
-          <span id="viva-engine-health" style="font-weight: 600; color: #34C759;" title="Tempo real do último ciclo do processador O(1) e contagem de anúncios no cache">⚡ O(1) · 0.0ms</span>
-        </div>
-      </div>
-
     </div>
   `;
 
@@ -2284,30 +2764,54 @@ function setupSidebarInteractions() {
     });
   }
 
-  // Segmented Control Tabs (Por Página vs Por Domínio/URL)
+  // Segmented Control Tabs (Por Página, Domínio/URL e Palavra-chave)
   const tabPage = document.getElementById("viva-tab-page");
   const tabDomain = document.getElementById("viva-tab-domain");
+  const tabKeyword = document.getElementById("viva-tab-keyword");
   const pageView = document.getElementById("viva-tracker-page-view");
   const domainView = document.getElementById("viva-tracker-domain-view");
+  const keywordView = document.getElementById("viva-tracker-keyword-view");
 
-  if (tabPage && tabDomain && pageView && domainView) {
-    tabPage.addEventListener("click", () => {
-      tabPage.classList.add("active");
-      tabDomain.classList.remove("active");
-      pageView.style.display = "block";
-      domainView.style.display = "none";
-    });
+  if (tabPage && tabDomain && tabKeyword && pageView && domainView && keywordView) {
+    const tabs = [
+      { tab: tabPage, view: pageView },
+      { tab: tabDomain, view: domainView },
+      { tab: tabKeyword, view: keywordView },
+    ];
+    const selectTrackerMode = (selectedTab) => {
+      tabs.forEach(({ tab, view }) => {
+        const selected = tab === selectedTab;
+        tab.classList.toggle("active", selected);
+        tab.setAttribute("aria-selected", String(selected));
+        const label = tab.querySelector("[data-active-label]");
+        if (label) {
+          label.textContent = `🔑 ${selected ? label.dataset.activeLabel : label.dataset.inactiveLabel}`;
+          tab.setAttribute("aria-label", label.dataset.activeLabel);
+        }
+        view.style.display = selected ? "block" : "none";
+      });
+    };
+
+    tabPage.addEventListener("click", () => selectTrackerMode(tabPage));
     tabDomain.addEventListener("click", () => {
-      tabDomain.classList.add("active");
-      tabPage.classList.remove("active");
-      pageView.style.display = "none";
-      domainView.style.display = "block";
-
+      selectTrackerMode(tabDomain);
       const domainInput = document.getElementById("viva-side-domain");
       if (domainInput && !domainInput.value) {
         const detected = detectActiveDomainOrUrl();
         if (detected) domainInput.value = detected;
       }
+    });
+    tabKeyword.addEventListener("click", () => {
+      selectTrackerMode(tabKeyword);
+      const keywordInput = document.getElementById("viva-side-keyword");
+      const params = new URLSearchParams(window.location.search);
+      const query = params.get("q")?.trim();
+      const isKeywordSearch = params.get("search_type")?.startsWith("keyword");
+      const isDomainQuery = query && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(query);
+      if (keywordInput && !keywordInput.value && query && isKeywordSearch && !isDomainQuery) {
+        keywordInput.value = query;
+      }
+      checkKeywordMonitoredStatus();
     });
   }
 
@@ -2332,7 +2836,7 @@ function setupSidebarInteractions() {
   // empilhava um novo setInterval permanente, causando travamento progressivo da página.
   if (_vivaSidebarIntervalId) clearInterval(_vivaSidebarIntervalId);
   _vivaSidebarIntervalId = setInterval(() => {
-    if (!vivaMonitorMasterEnabled) return;
+    if (!vivaMonitorMasterEnabled || rankingOverlayPaused) return;
     // Poll Page Name
     if (nameInput && (!nameInput.value || nameInput.value === "Competidor Meta")) {
       const pageTitle = getPageNameFromHeader();
@@ -2544,6 +3048,77 @@ function setupSidebarInteractions() {
     });
   }
 
+  const saveKeywordBtn = document.getElementById("viva-side-save-keyword");
+  const keywordInput = document.getElementById("viva-side-keyword");
+  const keywordStatus = document.getElementById("viva-keyword-status");
+  if (saveKeywordBtn && keywordInput) {
+    keywordInput.addEventListener("input", () => {
+      keywordStatus.textContent = "";
+      keywordStatus.classList.remove("is-error");
+      checkKeywordMonitoredStatus();
+    });
+    saveKeywordBtn.addEventListener("click", () => {
+      const keyword = keywordInput.value.trim().replace(/\s+/g, " ");
+      if (!keyword) {
+        keywordStatus.textContent = "Digite uma palavra-chave ou expressão.";
+        keywordStatus.classList.add("is-error");
+        keywordInput.focus();
+        return;
+      }
+
+      keywordStatus.textContent = "";
+      keywordStatus.classList.remove("is-error");
+      showAppleConfirmModal({
+        nome: keyword,
+        tipo: "Palavra-chave",
+        simplified: true,
+      }, async () => {
+        saveKeywordBtn.disabled = true;
+        saveKeywordBtn.textContent = "Salvando...";
+        try {
+          const response = await fetch(`${API_URL}/api/salvar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              nome: keyword,
+              url: keyword,
+              tipo: "keyword",
+            }),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.error || `Erro HTTP ${response.status}`);
+          }
+          if (result.tipo !== "keyword" || !result.slug || !result.keyword_key) {
+            throw new Error("Resposta inválida ao registrar a palavra-chave.");
+          }
+
+          if (!Array.isArray(monitoredPages)) monitoredPages = [];
+          if (!monitoredPages.some((record) => record.slug === result.slug)) {
+            monitoredPages.push({
+              slug: result.slug,
+              nome: keyword,
+              url: result.url || "",
+              tipo: "keyword",
+              keyword_key: result.keyword_key,
+            });
+          }
+          if (typeof fetchMonitoredPages === "function") await fetchMonitoredPages();
+          keywordStatus.textContent = "Salva. A coleta será iniciada pelo monitor.";
+          keywordStatus.classList.remove("is-error");
+          showAppleSuccessModal({ nome: keyword, tipo: "A palavra-chave" });
+          checkKeywordMonitoredStatus();
+        } catch (err) {
+          keywordStatus.textContent = `Não foi possível salvar: ${err.message}`;
+          keywordStatus.classList.add("is-error");
+          saveKeywordBtn.textContent = "+ Monitorar Palavra-chave";
+          saveKeywordBtn.disabled = false;
+        }
+      });
+    });
+    checkKeywordMonitoredStatus();
+  }
+
   function showAppleConfirmModal(info, onConfirm) {
     let overlay = document.getElementById("viva-confirm-overlay");
     if (overlay) overlay.remove();
@@ -2570,18 +3145,18 @@ function setupSidebarInteractions() {
             <span class="viva-confirm-label">Tipo do Cadastro:</span>
             <span class="viva-confirm-value">${vivaEscapeHtml(info.tipo)}</span>
           </div>
-          <div class="viva-confirm-row">
+          ${info.simplified ? "" : `<div class="viva-confirm-row">
             <span class="viva-confirm-label">GEO • Nicho:</span>
             <span class="viva-confirm-value">${vivaEscapeHtml(info.geo)} • ${vivaEscapeHtml(info.nicho)}</span>
           </div>
           <div class="viva-confirm-row">
             <span class="viva-confirm-label">Instagram:</span>
             <span class="viva-confirm-value" title="${vivaEscapeHtml(info.instagram)}">${vivaEscapeHtml(info.instagram.replace("https://www.", "").replace("https://", ""))}</span>
-          </div>
-          <div class="viva-confirm-row">
+          </div>`}
+          ${info.totalMetaAds === undefined ? "" : `<div class="viva-confirm-row">
             <span class="viva-confirm-label">Total Oficial (Meta):</span>
             <span class="viva-confirm-value" style="color:#007AFF;">${info.totalMetaAds} anúncios ativos</span>
-          </div>
+          </div>`}
         </div>
         <div class="viva-confirm-actions">
           <button class="viva-confirm-btn viva-confirm-btn-cancel" id="viva-modal-cancel">Cancelar</button>
@@ -2665,136 +3240,200 @@ function setupSidebarInteractions() {
     return "";
   }
 
-  // 6. Top Anunciantes Ranking Modal (Apple Red Pro Trigger)
-  const rankingBtn = document.getElementById("viva-btn-show-ranking");
-  if (rankingBtn) {
-    rankingBtn.addEventListener("click", () => {
-      showTopAdvertisersModal();
-    });
-  }
 }
 
-function showTopAdvertisersModal() {
-  const existing = document.getElementById("viva-ranking-overlay");
-  if (existing) existing.remove();
+function showRankingOverlay(ranking) {
+  if (!Array.isArray(ranking) || ranking.length === 0) return;
+  closeRankingOverlay(false);
 
-  const advMap = {};
-  activeCardData.forEach(item => {
-    const name = item.data.advertiserName || "Desconhecido";
-    if (!advMap[name]) {
-      advMap[name] = {
-        name: name,
-        count: 0,
-        maxDup: item.effectiveDupCount || 1,
-        maxAge: item.data.adAgeDays || 0,
-        maxStage: item.stage,
-        pageId: item.card.getAttribute("data-viva-page-id") || item.data.pageId || extractPageId(item.card) || null,
-        adArchiveId: extractAdArchiveId(item.card) || null
-      };
-    } else {
-      if (!advMap[name].pageId) {
-        advMap[name].pageId = item.card.getAttribute("data-viva-page-id") || item.data.pageId || extractPageId(item.card) || null;
-      }
-      if (!advMap[name].adArchiveId) {
-        advMap[name].adArchiveId = extractAdArchiveId(item.card) || null;
-      }
-    }
-    advMap[name].count += 1;
-    if (item.effectiveDupCount > advMap[name].maxDup) advMap[name].maxDup = item.effectiveDupCount;
-    if (item.data.adAgeDays > advMap[name].maxAge) advMap[name].maxAge = item.data.adAgeDays;
-    // Ranking mostra a fase MAIS ALTA entre os anúncios do anunciante (bruta > potencial > teste).
-    if (STAGE_RANK[item.stage] > STAGE_RANK[advMap[name].maxStage]) {
-      advMap[name].maxStage = item.stage;
-    }
-  });
-
-  const advList = Object.values(advMap).sort((a, b) => (b.count * b.maxDup) - (a.count * a.maxDup));
+  const metaFeed = document.querySelector('[data-testid="ad-library"]')
+    || document.querySelector('div[role="main"]');
+  const sidebar = document.getElementById("viva-sidebar");
+  _vivaRankingOverlayState = {
+    metaFeed,
+    feedDisplay: metaFeed ? metaFeed.style.display : "",
+    scrollY: window.scrollY,
+    wasAutoScrollRunning: isAutoScrollRunning,
+    sidebar,
+  };
+  rankingOverlayPaused = true;
+  if (_vivaMainObserver) _vivaMainObserver.disconnect();
+  if (_vivaAdModalObserver) {
+    _vivaAdModalObserver.disconnect();
+    _vivaAdModalObserver = null;
+  }
+  _vivaAdDialogSearchObservers.forEach(observer => observer.disconnect());
+  if (isAutoScrollRunning) {
+    stopAutoScroll();
+    const autoScrollToggle = document.getElementById("viva-top-autoscroll");
+    if (autoScrollToggle) autoScrollToggle.checked = false;
+  }
+  if (metaFeed) metaFeed.style.display = "none";
+  if (sidebar) sidebar.classList.add("viva-ranking-suspended");
 
   const overlay = document.createElement("div");
   overlay.id = "viva-ranking-overlay";
-  overlay.className = "viva-confirm-overlay viva-el";
-
-  let listHtml = "";
-  if (advList.length === 0) {
-    listHtml = `<div style="text-align: center; padding: 24px; color: var(--viva-muted); font-size: 13px;">Nenhum anunciante detectado na tela ainda. Role a página para carregar anúncios.</div>`;
-  } else {
-    advList.slice(0, 15).forEach((adv, index) => {
-      let targetUrl;
-      if (adv.pageId) {
-        targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=${encodeURIComponent(adv.pageId)}`;
-      } else if (adv.adArchiveId) {
-        targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&id=${encodeURIComponent(adv.adArchiveId)}&is_targeted_country=false&media_type=all&search_type=page`;
-      } else {
-        targetUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&q=${encodeURIComponent('"' + adv.name + '"')}&search_type=keyword_exact_phrase`;
-      }
-
-      const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `#${index + 1}`;
-      const rankStageInfo = STAGE_INFO[adv.maxStage];
-      const badgeClass = rankStageInfo.chipClass;
-      const badgeText = rankStageInfo.label;
-      listHtml += `
-        <div class="viva-ranking-item" title="Clique para abrir a Biblioteca deste anunciante em nova aba" data-target-url="${vivaEscapeHtml(targetUrl)}" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--viva-border); border-radius: 10px; margin-bottom: 6px; background: rgba(255,255,255,0.6); transition: all 0.2s;">
-          <div style="display: flex; align-items: center; gap: 12px; max-width: 65%;">
-            <span style="font-size: 16px; font-weight: 700; width: 28px; text-align: center; color: var(--viva-text);">${medal}</span>
-            <div style="display: flex; flex-direction: column; overflow: hidden;">
-              <span style="font-weight: 600; font-size: 13.5px; color: var(--viva-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 5px;">
-                ${vivaEscapeHtml(adv.name)} <span style="font-size: 11px; color: var(--viva-accent); font-weight: 700;">↗</span>
-              </span>
-              <span style="font-size: 11px; color: var(--viva-muted);">Ativo no DOM: ${adv.count} cards • Pico de Variações: ${adv.maxDup}x</span>
-            </div>
-          </div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span class="viva-escala-chip ${badgeClass}" style="font-size: 10px; padding: 3px 8px;">${badgeText}</span>
-          </div>
-        </div>
-      `;
-    });
-  }
-
+  overlay.className = "viva-ranking-overlay viva-el";
   overlay.innerHTML = `
-    <div class="viva-confirm-card" style="width: 520px; max-height: 82vh; display: flex; flex-direction: column; padding: 24px;" onclick="event.stopPropagation()">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid var(--viva-border); padding-bottom: 14px;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <span style="font-size: 22px;">🏆</span>
-          <div>
-            <div class="viva-confirm-title" style="font-size: 18px; margin: 0;">Top Anunciantes na Tela</div>
-            <div class="viva-confirm-sub" style="font-size: 12px; margin: 2px 0 0 0;">Ranking em tempo real baseado no volume de escala e variações ativas.</div>
-          </div>
+    <section class="viva-ranking-modal" role="dialog" aria-modal="true" aria-labelledby="viva-ranking-title">
+      <header class="viva-ranking-header">
+        <div>
+          <h2 id="viva-ranking-title">⚡ Hack - Top Bibliotecas Escaladas</h2>
+          <p id="viva-ranking-summary"></p>
         </div>
-        <button id="viva-ranking-close" style="background: none; border: none; font-size: 20px; cursor: pointer; color: var(--viva-muted); padding: 4px;">✕</button>
+        <button id="viva-close-ranking" class="viva-close-btn" type="button">✕ Fechar</button>
+      </header>
+      <div class="viva-ranking-table-scroll">
+        <div class="viva-ranking-table-header" role="row">
+          <span>POS</span><span>BIBLIOTECA</span><span>SCORE</span><span>ADS</span>
+          <span>DIAS MÉD</span><span>RECENTE</span><span>ESCALA</span><span>AÇÃO</span>
+        </div>
+        <div id="viva-ranking-list" class="viva-ranking-list" role="rowgroup"></div>
       </div>
-      <div style="overflow-y: auto; flex: 1; padding-right: 4px; max-height: 52vh;">
-        ${listHtml}
-      </div>
-      <div style="margin-top: 18px; pt-3; border-top: 1px solid var(--viva-border); display: flex; justify-content: flex-end;">
-        <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-ranking-btn-ok" style="width: 100%; background: linear-gradient(135deg, #FF3B30 0%, #D70015 100%); border: none; box-shadow: 0 4px 12px rgba(215, 0, 21, 0.28);">Fechar Ranking</button>
-      </div>
-    </div>
+    </section>
   `;
-
+  const summary = overlay.querySelector("#viva-ranking-summary");
+  summary.textContent = `${ranking.length} páginas analisadas | Score max ${ranking[0]?.score || 0} | Critério: Ads + Dias + Recente`;
   document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add("viva-visible"));
 
-  // AUDITORIA #06: usa data-target-url + listener delegado, não mais onclick="window.open(...)"
-  // inline com URL interpolada crua no atributo — evita quebrar o HTML/injetar markup caso a
-  // URL alguma vez contenha aspas simples não previstas pelo .replace() manual anterior.
-  overlay.querySelectorAll(".viva-ranking-item[data-target-url]").forEach(el => {
-    el.addEventListener("click", () => {
-      const url = el.getAttribute("data-target-url");
-      if (url) window.open(url, "_blank");
-    });
-  });
+  const list = overlay.querySelector("#viva-ranking-list");
+  const batchSize = 20;
+  let renderedCount = 0;
+  let batchScheduled = false;
+  const renderBatch = () => {
+    batchScheduled = false;
+    if (!overlay.isConnected || renderedCount >= ranking.length) return;
+    const fragment = document.createDocumentFragment();
+    const end = Math.min(renderedCount + batchSize, ranking.length);
+    for (let index = renderedCount; index < end; index += 1) {
+      const item = ranking[index];
+      const row = document.createElement("div");
+      row.className = "viva-ranking-row";
+      row.setAttribute("role", "row");
 
-  const closeOverlay = () => {
-    overlay.classList.remove("viva-visible");
-    setTimeout(() => overlay.remove(), 250);
+      const position = document.createElement("span");
+      position.className = "pos";
+      position.textContent = `#${index + 1}`;
+
+      const library = document.createElement("span");
+      library.className = "biblio";
+      const name = document.createElement("strong");
+      name.textContent = item.nome || "Biblioteca sem nome";
+      const pageId = document.createElement("small");
+      pageId.textContent = item.page_id || "";
+      library.append(name, pageId);
+
+      const score = document.createElement("span");
+      score.className = `score${Number(item.score) > 150 ? " high" : ""}`;
+      score.textContent = String(Number(item.score) || 0);
+
+      const ads = document.createElement("span");
+      ads.textContent = `${Number(item.qtd_ads) || 0}x`;
+      const days = document.createElement("span");
+      days.textContent = `${Math.round(Number(item.media_dias ?? item.dias_ativo) || 0)}d`;
+      const recent = document.createElement("span");
+      recent.className = item.tem_recente ? "recent yes" : "recent no";
+      recent.textContent = item.tem_recente ? "● Sim" : "○ Não";
+
+      const scale = document.createElement("span");
+      const scaleValue = item.escala_tipo || item.escala || "CAMPANHA NORMAL";
+      scale.className = `escala-badge ${scaleValue.toLowerCase().replace(/\s+/g, "-")}`;
+      scale.textContent = scaleValue;
+
+      const actions = document.createElement("span");
+      actions.className = "viva-ranking-actions";
+      const viewAds = document.createElement("button");
+      viewAds.type = "button";
+      viewAds.className = "viva-ver-ads-btn";
+      viewAds.textContent = "Ver Ads";
+      viewAds.addEventListener("click", () => {
+        const url = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&media_type=all&search_type=page&view_all_page_id=${encodeURIComponent(item.page_id)}`;
+        window.open(url, "_blank", "noopener");
+      });
+
+      const monitor = document.createElement("button");
+      monitor.type = "button";
+      monitor.className = "viva-monitor-btn";
+      monitor.textContent = "Monitorar";
+      monitor.addEventListener("click", async () => {
+        monitor.disabled = true;
+        monitor.textContent = "Salvando...";
+        try {
+          const response = await fetch(`${API_URL}/api/salvar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              nome: item.nome || "Desconhecido",
+              url: `https://www.facebook.com/ads/library/?view_all_page_id=${encodeURIComponent(item.page_id)}`,
+              tipo: "pagina",
+              ads_count_inicial: Number(item.qtd_ads) || 1,
+            }),
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          monitor.textContent = "✓ Monitorado";
+        } catch (error) {
+          console.error(`[VIVA] Falha ao monitorar biblioteca ${item.page_id}:`, error);
+          monitor.disabled = false;
+          monitor.textContent = "Tentar novamente";
+        }
+      });
+      actions.append(viewAds, monitor);
+      row.append(position, library, score, ads, days, recent, scale, actions);
+      fragment.appendChild(row);
+    }
+    list.appendChild(fragment);
+    renderedCount = end;
+  };
+  const scheduleBatch = () => {
+    if (batchScheduled || renderedCount >= ranking.length) return;
+    batchScheduled = true;
+    requestAnimationFrame(renderBatch);
   };
 
-  overlay.addEventListener("click", closeOverlay);
-  const closeBtn = overlay.querySelector("#viva-ranking-close");
-  const okBtn = overlay.querySelector("#viva-ranking-btn-ok");
-  if (closeBtn) closeBtn.addEventListener("click", closeOverlay);
-  if (okBtn) okBtn.addEventListener("click", closeOverlay);
+  list.addEventListener("scroll", () => {
+    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 200) scheduleBatch();
+  }, { passive: true });
+  requestAnimationFrame(renderBatch);
+
+  const closeBtn = overlay.querySelector("#viva-close-ranking");
+  closeBtn.addEventListener("click", () => closeRankingOverlay());
+  overlay.addEventListener("click", event => {
+    if (event.target === overlay) closeRankingOverlay();
+  });
+  overlay.addEventListener("keydown", event => {
+    if (event.key === "Escape") closeRankingOverlay();
+  });
+  closeBtn.focus();
+}
+
+function closeRankingOverlay(resumeEngine = true) {
+  const overlay = document.getElementById("viva-ranking-overlay");
+  const state = _vivaRankingOverlayState;
+  if (overlay) overlay.remove();
+  if (!state) return;
+
+  if (state.metaFeed) state.metaFeed.style.display = state.feedDisplay;
+  if (state.sidebar) state.sidebar.classList.remove("viva-ranking-suspended");
+  window.scrollTo(0, state.scrollY);
+  _vivaRankingOverlayState = null;
+  rankingOverlayPaused = false;
+
+  if (resumeEngine && vivaMonitorMasterEnabled) {
+    if (_vivaMainObserver) {
+      try {
+        _vivaMainObserver.observe(getObserverRoot(), { childList: true, subtree: true });
+      } catch (error) {
+        console.error("[VIVA] Não foi possível reconectar o observer após fechar o ranking:", error);
+      }
+    }
+    requestAnimationFrame(() => {
+      if (vivaMonitorMasterEnabled) processCards();
+    });
+    isAutoScrollRunning = state.wasAutoScrollRunning;
+    const autoScrollToggle = document.getElementById("viva-top-autoscroll");
+    if (autoScrollToggle) autoScrollToggle.checked = isAutoScrollRunning;
+    if (isAutoScrollRunning && vivaMonitorMasterEnabled) startAutoScroll();
+  }
 }
 
 function startAutoScroll() {
@@ -2834,7 +3473,7 @@ function checkMonitoredStatus(pageName) {
   } else {
     const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
     if (pageId) {
-      isMonitored = monitoredPages.some(p => p.url.includes(pageId));
+      isMonitored = monitoredPages.some(p => p.tipo === "pagina" && p.url.includes(pageId));
     }
   }
 
@@ -2851,23 +3490,69 @@ function checkMonitoredStatus(pageName) {
   }
 }
 
+function normalizeKeywordIdentity(value) {
+  const normalized = String(value || "").normalize("NFKC").trim().replace(/\s+/g, " ");
+  return normalized ? normalized.toLocaleLowerCase("pt-BR") : "";
+}
+
+function checkKeywordMonitoredStatus() {
+  const saveBtn = document.getElementById("viva-side-save-keyword");
+  const keywordInput = document.getElementById("viva-side-keyword");
+  if (!saveBtn || !keywordInput) return;
+  const identity = normalizeKeywordIdentity(keywordInput.value);
+  const isMonitored = Boolean(identity) && Array.isArray(monitoredPages)
+    && monitoredPages.some((record) => record.tipo === "keyword"
+      && normalizeKeywordIdentity(record.keyword_key || record.nome) === identity);
+  saveBtn.textContent = isMonitored ? "✓ Palavra-chave Monitorada" : "+ Monitorar Palavra-chave";
+  saveBtn.style.backgroundColor = isMonitored ? "rgba(142, 142, 147, 0.16)" : "var(--viva-accent)";
+  saveBtn.style.color = isMonitored ? "var(--viva-text)" : "#fff";
+  saveBtn.disabled = isMonitored;
+}
+
 // Mesma lógica de checkMonitoredStatus() acima, mas devolvendo o REGISTRO encontrado (com
 // o slug) em vez de só true/false — usado pelo botão "📢 Salvar Anúncio" do dropdown "Ações"
 // para saber se pode salvar e, se puder, com qual slug.
-function findMonitoredPageRecord() {
+function findMonitoredPageRecord(card, data) {
   if (!Array.isArray(monitoredPages) || monitoredPages.length === 0) return null;
   const currentUrl = window.location.href;
-  const isDomain = !currentUrl.includes("view_all_page_id=");
+  const currentParams = new URLSearchParams(window.location.search);
+  const urlPageId = currentParams.get("view_all_page_id") || currentParams.get("page_id");
+  const urlAdId = currentParams.get("id");
+  const adArchiveId = card ? extractAdArchiveId(card) : null;
+  if (urlAdId && (!adArchiveId || urlAdId !== adArchiveId)) return null;
 
-  if (isDomain) {
-    const rootDom = getRootDomain(currentUrl);
-    if (!rootDom) return null;
-    return monitoredPages.find(p => p.tipo === "dominio" && p.url.toLowerCase().includes(rootDom.toLowerCase())) || null;
-  } else {
-    const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
-    if (!pageId) return null;
-    return monitoredPages.find(p => p.url.includes(pageId)) || null;
+  const findPageById = (pageId) => monitoredPages.find(p => {
+    if (p.tipo !== "pagina") return false;
+    try {
+      const params = new URL(p.url).searchParams;
+      const explicitPageId = params.get("view_all_page_id") || params.get("page_id");
+      const legacyPageId = params.get("id");
+      return (explicitPageId || (legacyPageId !== adArchiveId ? legacyPageId : null)) === pageId;
+    } catch (e) {
+      return false;
+    }
+  }) || null;
+
+  if (urlPageId) return findPageById(urlPageId);
+
+  const cardIdentityPageId = getCardPageId(card, data);
+  if (cardIdentityPageId) return findPageById(cardIdentityPageId);
+
+  const isVerifiedAdOnlyLink = !!urlAdId && urlAdId === adArchiveId;
+  if (urlAdId && !isVerifiedAdOnlyLink) return null;
+  if (currentParams.has("page_id") || currentParams.has("view_all_page_id")) return null;
+
+  const advertiserName = String(data?.advertiserName || "").trim();
+  const pageName = String(isVerifiedAdOnlyLink && advertiserName.toLocaleLowerCase() !== "anunciante" ? advertiserName : "").trim().toLocaleLowerCase();
+  if (pageName) {
+    const pagesByName = monitoredPages.filter(p => p.tipo === "pagina" && String(p.nome || "").trim().toLocaleLowerCase() === pageName);
+    return pagesByName.length === 1 ? pagesByName[0] : null;
   }
+
+  if (urlAdId || currentParams.has("q") || currentUrl.includes("view_all_page_id=")) return null;
+  const rootDom = getRootDomain(currentUrl);
+  if (!rootDom) return null;
+  return monitoredPages.find(p => p.tipo === "dominio" && p.url.toLowerCase().includes(rootDom.toLowerCase())) || null;
 }
 
 
@@ -2911,10 +3596,10 @@ function findAdCardInsideModal(dialogEl) {
 // Injeta o botão "Ações" dentro do modal, ancorado ao lado do "Saiba mais" nativo — mesmo botão
 // e mesmo menu (showActionsDropdown) usados nos cards da grade, sem duplicar nenhuma lógica.
 function injectActionsIntoAdModal(dialogEl) {
-  if (dialogEl.querySelector(".viva-modal-actions-btn")) return; // já injetado neste modal
+  if (dialogEl.querySelector(".viva-modal-actions-btn")) return true; // já injetado neste modal
 
   const card = findAdCardInsideModal(dialogEl);
-  if (!card) return;
+  if (!card) return false;
 
   const data = extractCardData(card);
 
@@ -2949,6 +3634,49 @@ function injectActionsIntoAdModal(dialogEl) {
     actionsBtn.style.margin = "10px 0 0 0";
     card.insertAdjacentElement("afterend", actionsBtn);
   }
+  return true;
+}
+
+function queueActionsForAdDialog(dialogEl) {
+  let attempts = 0;
+  const injectWhenReady = () => {
+    if (!vivaMonitorMasterEnabled || !dialogEl.isConnected) return;
+    if (injectActionsIntoAdModal(dialogEl)) return;
+    attempts++;
+    if (attempts < 8) setTimeout(injectWhenReady, 250);
+  };
+  setTimeout(injectWhenReady, 300);
+}
+
+function queueAdDialogSearch(container) {
+  if (!vivaMonitorMasterEnabled || !container.isConnected) return;
+  const dialog = (container.matches && container.matches("[role='dialog']"))
+    ? container
+    : (container.querySelector ? container.querySelector("[role='dialog']") : null);
+  if (dialog) {
+    queueActionsForAdDialog(dialog);
+    return;
+  }
+  if (!container.querySelector || (container.classList && container.classList.contains("viva-el"))) return;
+
+  const dialogObserver = new MutationObserver(() => {
+    if (!vivaMonitorMasterEnabled || !container.isConnected) {
+      stopObserver();
+      return;
+    }
+    const mountedDialog = container.querySelector("[role='dialog']");
+    if (mountedDialog) {
+      stopObserver();
+      queueActionsForAdDialog(mountedDialog);
+    }
+  });
+  const stopObserver = () => {
+    dialogObserver.disconnect();
+    _vivaAdDialogSearchObservers.delete(dialogObserver);
+  };
+  _vivaAdDialogSearchObservers.add(dialogObserver);
+  dialogObserver.observe(container, { childList: true, subtree: true });
+  setTimeout(stopObserver, 5000);
 }
 
 // Observer leve, dedicado só a detectar a abertura desse modal específico. Escopado a
@@ -2956,25 +3684,21 @@ function injectActionsIntoAdModal(dialogEl) {
 // diretos de <body>, então isso dispara raramente (só quando um modal abre/fecha), bem mais
 // barato que o observer principal (que por isso é escopado a div[role='main'], não a body).
 let _vivaAdModalObserver = null;
+const _vivaAdDialogSearchObservers = new Set();
 function setupAdModalObserver() {
-  if (_vivaAdModalObserver) return; // já registrado nesta sessão da página
-  _vivaAdModalObserver = new MutationObserver((mutations) => {
-    if (!vivaMonitorMasterEnabled) return;
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType !== 1) continue;
-        const dialog = (node.matches && node.matches("[role='dialog']"))
-          ? node
-          : (node.querySelector ? node.querySelector("[role='dialog']") : null);
-        if (dialog) {
-          // Pequeno atraso pra dar tempo do React da Meta terminar de montar o conteúdo
-          // interno do modal (card, texto, botão "Saiba mais") antes de procurar por eles.
-          setTimeout(() => injectActionsIntoAdModal(dialog), 300);
+  if (!_vivaAdModalObserver) {
+    _vivaAdModalObserver = new MutationObserver((mutations) => {
+      if (!vivaMonitorMasterEnabled || rankingOverlayPaused) return;
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          queueAdDialogSearch(node);
         }
       }
-    }
-  });
-  _vivaAdModalObserver.observe(document.body, { childList: true, subtree: false });
+    });
+    _vivaAdModalObserver.observe(document.body, { childList: true, subtree: false });
+  }
+  document.querySelectorAll("[role='dialog']").forEach(queueActionsForAdDialog);
 }
 
 // FIX INSTAGRAM AUTO-DETECT (2026-09): sinal correto e definitivo de "estamos na biblioteca de
@@ -3007,7 +3731,7 @@ function getCurrentPageIdentityKey() {
   if (pid) return pid;
   if (Array.isArray(activeCardData)) {
     for (const item of activeCardData) {
-      const cardPid = (item.card && item.card.getAttribute("data-viva-page-id")) || (item.data && item.data.pageId);
+      const cardPid = getCardPageId(item.card, item.data);
       if (cardPid) return cardPid;
     }
   }
@@ -3048,7 +3772,7 @@ async function autoAttachInstagramIfMonitored(igUrl) {
   if (!identityKey) return;
 
   const record = monitoredPages.find(p => {
-    if (!p) return false;
+    if (!p || p.tipo !== "pagina") return false;
     if (pageId && p.url && p.url.includes(pageId)) return true;
     if (pageName && p.nome && p.nome.toLowerCase().trim() === pageName.toLowerCase().trim()) return true;
     return false;
@@ -3185,6 +3909,8 @@ function resetCardFramesAndState() {
     try { mediaPruningObserver.unobserve(el); } catch (e) {}
     try { viewportProximityObserver.unobserve(el); } catch (e) {}
     el.classList.remove("viva-processed");
+    el.classList.remove("viva-baixo-volume");
+    el._vivaBaixoVolume = false;
   });
   activeCardData = [];
   cardSignatures = {};
@@ -3336,65 +4062,186 @@ function tryTriggerAutoDiscoverInstagram() {
 
 
 
-// ─── VIVA Dock: barra fixa no rodapé com os filtros de tela ─────────────────────────────────
-// Extraído da sidebar (Controle & Filtros) para ficar sempre visível, independente de scroll,
-// e pra deixar claro visualmente que os filtros são cumulativos: Mínimo de Ads Ativos e
-// Recentes, por exemplo, podem estar ativos ao mesmo tempo — nenhum exclui o outro. A lógica
-// de combinação em processCards() já era assim (ifs sequenciais que só desligam shouldShow,
-// nunca resetam); aqui só reorganiza ONDE os controles vivem, o comportamento é idêntico.
-function injectDock() {
-  if (document.getElementById("viva-dock")) return;
+// ─── VIVA Top Bar: filtros e busca inteligente na região do cabeçalho Meta ───────────────────
+function injectTopBar() {
+  const metaHeader = document.querySelector("header")
+    || document.querySelector('div[role="banner"]')
+    || document.querySelector("nav");
+  const metaNavLinks = document.querySelectorAll(
+    'a[href*="ads/library/report"], a[href*="api"], a[href*="brand"]',
+  );
+  metaNavLinks.forEach(el => {
+    const container = el.closest("div")?.parentElement;
+    if (container && !container.closest("#viva-top-bar")) container.style.display = "none";
+  });
+  if (metaHeader && metaHeader.id === "viva-top-bar") return;
+  if (document.getElementById("viva-top-bar")) return;
 
-  const dock = document.createElement("div");
-  dock.id = "viva-dock";
-  dock.className = "viva-dock viva-el";
-
-  dock.innerHTML = `
-    <div class="viva-dock-group">
-      <label class="viva-dock-label" for="viva-dock-min-page" title="Quantidade total de anúncios que o anunciante está rodando (indica volume).">Mín. Ads Ativos</label>
-      <input type="number" id="viva-dock-min-page" class="viva-dock-input" min="0" placeholder="0">
+  const topBar = document.createElement("div");
+  topBar.id = "viva-top-bar";
+  topBar.className = "viva-top-bar viva-el";
+  topBar.innerHTML = `
+    <div class="viva-top-left">
+      <span class="viva-top-logo">VIVA Labs</span>
+      <span class="viva-top-version" id="viva-top-connection">✓ Conectado</span>
     </div>
-
-    <div class="viva-dock-group">
-      <label class="viva-dock-label" for="viva-dock-min-dup" title="Quantidade de vezes que o MESMO criativo se repete (indica agressividade na escala).">Mín. Duplicados</label>
-      <input type="number" id="viva-dock-min-dup" class="viva-dock-input" min="0" placeholder="0">
-    </div>
-
-    <button class="viva-btn viva-btn-primary viva-dock-apply-btn" id="viva-dock-apply" type="button">Aplicar</button>
-
-    <div class="viva-dock-divider"></div>
-
-    <div class="viva-dock-toggle-group" title="Mostra somente anúncios com até 3 dias de veiculação ativa">
-      <label class="viva-switch viva-switch-sm">
-        <input type="checkbox" id="viva-dock-recentes">
-        <span class="viva-slider"></span>
+    <div class="viva-top-center">
+      <div class="viva-top-filter-group">
+        <label for="viva-top-min-ads">MÍN. ADS ATIVOS</label>
+        <input id="viva-top-min-ads" type="number" min="0" aria-label="Mínimo de anúncios ativos">
+      </div>
+      <div class="viva-top-filter-group">
+        <label for="viva-top-min-dup">MÍN. DUPLICADOS</label>
+        <input id="viva-top-min-dup" type="number" min="0" aria-label="Mínimo de anúncios duplicados">
+      </div>
+      <button class="viva-btn viva-btn-primary viva-top-apply" id="viva-top-apply" type="button">Aplicar</button>
+      <label class="viva-top-toggle">
+        <span>Recentes ≤ 3 dias</span>
+        <span class="viva-switch viva-switch-sm">
+          <input id="viva-top-recentes" type="checkbox" aria-label="Filtrar anúncios recentes">
+          <span class="viva-slider"></span>
+        </span>
       </label>
-      <span class="viva-dock-toggle-label">Recentes (≤ 3 dias)</span>
-    </div>
-
-    <div class="viva-dock-toggle-group" title="Rola a página sozinho até o fim da biblioteca para carregar tudo">
-      <label class="viva-switch viva-switch-sm">
-        <input type="checkbox" id="viva-dock-autoscroll">
-        <span class="viva-slider"></span>
+      <label class="viva-top-toggle">
+        <span>Auto-Scroll</span>
+        <span class="viva-switch viva-switch-sm">
+          <input id="viva-top-autoscroll" type="checkbox" aria-label="Ativar auto-scroll">
+          <span class="viva-slider"></span>
+        </span>
       </label>
-      <span class="viva-dock-toggle-label">Auto-Scroll</span>
+      <button id="viva-btn-busca-inteligente" class="viva-btn-busca-inteligente" type="button" aria-expanded="false" aria-controls="viva-busca-dropdown">⚡ Busca Inteligente</button>
     </div>
+    <span class="viva-top-spacer"></span>
   `;
+  document.body.prepend(topBar);
 
-  document.body.appendChild(dock);
-  setupDockInteractions();
+  const dropdown = document.createElement("div");
+  dropdown.id = "viva-busca-dropdown";
+  dropdown.className = "viva-busca-dropdown viva-el";
+  dropdown.hidden = true;
+  dropdown.innerHTML = `
+    <div class="viva-busca-header">⚡ Busca Inteligente em Massa</div>
+    <textarea id="viva-mass-keywords" maxlength="5000" placeholder='emagrecimento "truque"&#10;ansiedade "controle"&#10;bíblia explicada' aria-label="Termos para busca, um por linha"></textarea>
+    <div class="viva-busca-opcoes">
+      <label><input type="checkbox" id="viva-chk-exato" checked> Com aspas (exato)</label>
+      <label><input type="checkbox" id="viva-chk-amplo" checked> Sem aspas (amplo)</label>
+    </div>
+    <button id="viva-btn-minerar" class="viva-btn-minerar" type="button">🔍 Minerar em Massa</button>
+    <div id="viva-progresso-inteligente" class="viva-progresso" role="status" aria-live="polite"></div>
+  `;
+  dropdown.setAttribute("role", "dialog");
+  dropdown.setAttribute("aria-modal", "true");
+  dropdown.setAttribute("aria-label", "Busca Inteligente em Massa");
+  document.body.appendChild(dropdown);
+  console.log("[VIVA] Fix overlap Busca Inteligente + redesign Apple aplicado");
+
+  const searchButton = topBar.querySelector("#viva-btn-busca-inteligente");
+  const getSidebar = () => document.querySelector("#viva-sidebar, .viva-sidebar, #viva-side-panel, .viva-monitor-panel");
+  const closeBuscaInteligente = () => {
+    dropdown.hidden = true;
+    searchButton.setAttribute("aria-expanded", "false");
+    const sidebar = getSidebar();
+    if (sidebar) sidebar.classList.remove("viva-busca-sidebar-hidden");
+  };
+  searchButton.addEventListener("click", () => {
+    const shouldOpen = dropdown.hidden;
+    dropdown.hidden = !shouldOpen;
+    searchButton.setAttribute("aria-expanded", String(shouldOpen));
+    const sidebar = getSidebar();
+    if (sidebar) sidebar.classList.toggle("viva-busca-sidebar-hidden", shouldOpen);
+    if (shouldOpen) dropdown.querySelector("#viva-mass-keywords").focus();
+  });
+  dropdown.addEventListener("click", event => event.stopPropagation());
+  _vivaBuscaOutsideClickHandler = event => {
+    if (dropdown.hidden || dropdown.contains(event.target) || searchButton.contains(event.target)) return;
+    closeBuscaInteligente();
+  };
+  _vivaBuscaEscapeHandler = event => {
+    if (event.key === "Escape" && !dropdown.hidden) {
+      closeBuscaInteligente();
+      searchButton.focus();
+    }
+  };
+  document.addEventListener("click", _vivaBuscaOutsideClickHandler);
+  document.addEventListener("keydown", _vivaBuscaEscapeHandler);
+  dropdown.querySelector("#viva-btn-minerar").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const lines = dropdown.querySelector("#viva-mass-keywords").value
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+    const options = {
+      exact: dropdown.querySelector("#viva-chk-exato").checked,
+      broad: dropdown.querySelector("#viva-chk-amplo").checked,
+    };
+    const progress = dropdown.querySelector("#viva-progresso-inteligente");
+    if (lines.length === 0) {
+      progress.textContent = "Adicione ao menos uma busca, uma por linha.";
+      progress.classList.add("is-error");
+      return;
+    }
+    if (!options.exact && !options.broad) {
+      progress.textContent = "Selecione busca exata, ampla ou ambas.";
+      progress.classList.add("is-error");
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = "Iniciando...";
+    progress.classList.remove("is-error");
+    progress.textContent = "Preparando as buscas...";
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: "INICIAR_MINERACAO_INTELIGENTE",
+        linhas: lines,
+        options,
+      });
+      if (!response || response.status !== "fila_iniciada") {
+        throw new Error(response?.error || "Não foi possível iniciar a mineração.");
+      }
+      latestIntelligentRanking = [];
+      const rankingButton = document.getElementById("viva-btn-show-ranking");
+      if (rankingButton) rankingButton.hidden = true;
+      progress.textContent = `Fila iniciada · ${response.total} buscas`;
+    } catch (err) {
+      progress.textContent = err.message;
+      progress.classList.add("is-error");
+    } finally {
+      button.disabled = false;
+      button.textContent = "🔍 Minerar em Massa";
+    }
+  });
+
+  if (!_vivaIntelligentMessageListener) {
+    _vivaIntelligentMessageListener = message => {
+      const progress = document.getElementById("viva-progresso-inteligente");
+      if (!progress) return;
+      if (message.action === "PROGRESSO_INTELIGENTE") {
+        progress.textContent = message.ranking !== undefined
+          ? `${message.texto} · ${message.ranking} páginas cruzadas`
+          : message.texto || "";
+        progress.classList.toggle("is-error", String(message.texto || "").startsWith("Falha:"));
+      } else if (message.action === "RANKING_FINAL") {
+        latestIntelligentRanking = Array.isArray(message.ranking) ? message.ranking : [];
+        const rankingButton = document.getElementById("viva-btn-show-ranking");
+        if (rankingButton) rankingButton.hidden = latestIntelligentRanking.length === 0;
+        progress.textContent = `Mineração finalizada · ${message.ranking?.length || 0} páginas encontradas`;
+        progress.classList.remove("is-error");
+      }
+    };
+    chrome.runtime.onMessage.addListener(_vivaIntelligentMessageListener);
+  }
+
+  setupTopBarInteractions();
 }
 
-function setupDockInteractions() {
-  const minPageInput = document.getElementById("viva-dock-min-page");
-  const minDupInput = document.getElementById("viva-dock-min-dup");
-  const applyBtn = document.getElementById("viva-dock-apply");
-  const recentesToggle = document.getElementById("viva-dock-recentes");
-  const scrollToggle = document.getElementById("viva-dock-autoscroll");
+function setupTopBarInteractions() {
+  const minPageInput = document.getElementById("viva-top-min-ads");
+  const minDupInput = document.getElementById("viva-top-min-dup");
+  const applyBtn = document.getElementById("viva-top-apply");
+  const recentesToggle = document.getElementById("viva-top-recentes");
+  const scrollToggle = document.getElementById("viva-top-autoscroll");
 
-  // FIX SINCRONIA: ao recriar o dock (ex.: navegação SPA dentro da Ad Library), os campos
-  // nascem refletindo o estado JS atual — nunca zerados — para deixar visualmente óbvio que
-  // os filtros continuam ativos e são cumulativos, não um substituindo o outro.
   if (minPageInput) minPageInput.value = minPageAds > 0 ? minPageAds : "";
   if (minDupInput) minDupInput.value = minDupAds > 0 ? minDupAds : "";
   if (recentesToggle) recentesToggle.checked = filterOnlyRecent;
@@ -3404,43 +4251,66 @@ function setupDockInteractions() {
     applyBtn.addEventListener("click", () => {
       minPageAds = parseInt(minPageInput.value, 10) || 0;
       minDupAds = parseInt(minDupInput.value, 10) || 0;
-
-      // Mesmo efeito colateral de antes: aplicar filtro manual para o auto-scroll.
       isAutoScrollRunning = false;
       if (scrollToggle) scrollToggle.checked = false;
       stopAutoScroll();
-
       processCards();
-
       applyBtn.textContent = "Aplicado ✓";
-      applyBtn.style.backgroundColor = "var(--viva-success)";
+      applyBtn.classList.add("is-applied");
       setTimeout(() => {
         applyBtn.textContent = "Aplicar";
-        applyBtn.style.backgroundColor = "var(--viva-accent)";
+        applyBtn.classList.remove("is-applied");
       }, 1500);
     });
   }
 
-  // Recentes e Auto-Scroll aplicam direto no "change" — sem precisar clicar em Aplicar, e sem
-  // desligar nenhum outro filtro. São cumulativos com Mín. Ads Ativos/Duplicados.
   if (recentesToggle) {
-    recentesToggle.addEventListener("change", (e) => {
-      filterOnlyRecent = e.target.checked;
+    recentesToggle.addEventListener("change", event => {
+      filterOnlyRecent = event.target.checked;
       processCards();
     });
   }
-
   if (scrollToggle) {
-    scrollToggle.addEventListener("change", (e) => {
-      isAutoScrollRunning = e.target.checked;
-      if (isAutoScrollRunning) {
-        startAutoScroll();
-      } else {
+    scrollToggle.addEventListener("change", event => {
+      isAutoScrollRunning = event.target.checked;
+      if (isAutoScrollRunning) startAutoScroll();
+      else {
         stopAutoScroll();
         processCards();
       }
     });
   }
+}
+
+// ─── VIVA Dock: ações e status fixos no rodapé ───────────────────────────────────────────────
+function injectDock() {
+  if (document.getElementById("viva-dock")) return;
+
+  const dock = document.createElement("div");
+  dock.id = "viva-dock";
+  dock.className = "viva-dock viva-footer-dock viva-el";
+
+  dock.innerHTML = `
+    <button class="viva-btn viva-btn-red-pro viva-dock-ranking ver-top-btn" id="viva-btn-show-ranking" type="button" title="Abre o ranking das bibliotecas mais escaladas" hidden>⚡ Bibliotecas Escaladas</button>
+    <div class="viva-dock-engine">
+      <span class="viva-dock-engine-label">MOTOR VIVA</span>
+      <span id="viva-motor-status" class="viva-motor-status viva-motor-viva">⚡ O(1) · ${lastCycleDurationMs || 0}ms (${activeCardData.length} ads)</span>
+    </div>
+  `;
+
+  document.body.appendChild(dock);
+  const rankingBtn = dock.querySelector("#viva-btn-show-ranking");
+  if (rankingBtn) rankingBtn.addEventListener("click", () => showRankingOverlay(latestIntelligentRanking));
+  if (!_vivaRankingFeatureLogShown) {
+    _vivaRankingFeatureLogShown = true;
+    console.log("[VIVA] Hack Ranking Escalado implementado - Score Ads+Dias+Recente - Overlay blindado anti-travamento");
+  }
+  chrome.storage.local.get("viva_ultimo_ranking")
+    .then(data => {
+      latestIntelligentRanking = Array.isArray(data.viva_ultimo_ranking) ? data.viva_ultimo_ranking : [];
+      if (rankingBtn) rankingBtn.hidden = latestIntelligentRanking.length === 0;
+    })
+    .catch(error => console.error("[VIVA] Não foi possível recuperar o último ranking salvo:", error));
 }
 
 function injectScrollTopBtn() {
@@ -3498,6 +4368,7 @@ function debounce(func, wait) {
 //     observer, limpa o polling de URL e remove o scroll handler (ver ensureVivaBackgroundServicesRunning
 //     para a reconexão quando o toggle é ligado de novo).
 function teardownVivaMonitor(fullTeardown = false) {
+  closeRankingOverlay(false);
   // FIX: para de vez o intervalo de polling de nome/Instagram. Antes esta função só
   // removia elementos do DOM, mas nunca parava o setInterval — por isso o toggle
   // "desligar" no popup não interrompia o processamento em segundo plano.
@@ -3514,6 +4385,14 @@ function teardownVivaMonitor(fullTeardown = false) {
     if (_vivaMainObserver) {
       try { _vivaMainObserver.disconnect(); } catch (e) {}
     }
+    if (_vivaAdModalObserver) {
+      try { _vivaAdModalObserver.disconnect(); } catch (e) {}
+      _vivaAdModalObserver = null;
+    }
+    _vivaAdDialogSearchObservers.forEach(observer => {
+      try { observer.disconnect(); } catch (e) {}
+    });
+    _vivaAdDialogSearchObservers.clear();
     if (_vivaUrlIntervalId) {
       clearInterval(_vivaUrlIntervalId);
       _vivaUrlIntervalId = null;
@@ -3531,6 +4410,21 @@ function teardownVivaMonitor(fullTeardown = false) {
   }
   const panel = document.getElementById("viva-sidebar");
   if (panel) panel.remove();
+  const topBar = document.getElementById("viva-top-bar");
+  if (topBar) topBar.remove();
+  const intelligentSearch = document.getElementById("viva-busca-dropdown");
+  if (intelligentSearch) intelligentSearch.remove();
+  document.querySelectorAll(".viva-busca-sidebar-hidden").forEach(sidebar => {
+    sidebar.classList.remove("viva-busca-sidebar-hidden");
+  });
+  if (_vivaBuscaOutsideClickHandler) {
+    document.removeEventListener("click", _vivaBuscaOutsideClickHandler);
+    _vivaBuscaOutsideClickHandler = null;
+  }
+  if (_vivaBuscaEscapeHandler) {
+    document.removeEventListener("keydown", _vivaBuscaEscapeHandler);
+    _vivaBuscaEscapeHandler = null;
+  }
   // AUDITORIA #03: o overlay do modal do funil é criado em openFunnelModal() com
   // id="viva-funnel-modal-container" (ver função acima) — "viva-funnel-modal-overlay" nunca foi
   // atribuído a nenhum elemento em todo o arquivo (provavelmente um rename de "-overlay" para
@@ -3585,6 +4479,8 @@ function teardownVivaMonitor(fullTeardown = false) {
     // inteiro já é destruído/desembrulhado antes deste ponto (ver bloco FIX FRAME acima), então
     // não há nada de fase pra limpar aqui, só o carimbo de processado do card em si.
     el.classList.remove("viva-processed");
+    el.classList.remove("viva-baixo-volume");
+    el._vivaBaixoVolume = false;
   });
   activeCardData = [];
   cardSignatures = {};
@@ -3626,7 +4522,9 @@ async function init() {
   }
   _vivaInitialized = true;
 
+  console.log("[VIVA] Motor otimizado O(1) + 5 cores Apple aplicadas");
   console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v7.4 (2026-09) — corrige o link ADS sendo trocado por view_all_page_id= ao abrir com a extensão ativa (marcador viva_pin=1), e injeta o botão 'Ações' também dentro do modal 'Link para o anúncio' da Meta, ancorado ao lado do 'Saiba mais', sem reparentar nenhum nó nativo");
+  console.log("[VIVA] Highlight preto baixo volume aplicado");
   await loadLocalApiUrl();
   fetchMonitoredPages();
 
@@ -3644,6 +4542,7 @@ async function init() {
     injectMediaPreconnects();
     setupAdModalObserver();
     setTimeout(() => {
+      injectTopBar();
       injectSidebar();
       injectScrollTopBtn();
       injectDock();
@@ -3668,6 +4567,8 @@ async function init() {
         // precisa reconectá-los — antes isso não era necessário porque nada era desconectado.
         ensureVivaBackgroundServicesRunning();
         injectMediaPreconnects();
+        setupAdModalObserver();
+        injectTopBar();
         injectSidebar();
         injectScrollTopBtn();
         injectDock();
@@ -3719,7 +4620,7 @@ async function init() {
   // Observa novos elementos adicionados no DOM para processamento imediato (sem intervalo de pooling desnecessário)
   // Observa novos elementos no DOM ignorando completamente players de vídeo, controles, tooltips e modais em O(1)
   const observer = new MutationObserver((mutations) => {
-    if (!vivaMonitorMasterEnabled) return;
+    if (!vivaMonitorMasterEnabled || rankingOverlayPaused) return;
     // FIX #1: enquanto o usuário digita/interage com GEO, Tipo de Anúncio ou a busca por
     // palavra-chave da própria Meta, pula todo o processamento pesado desta leva de mutações.
     if (isInteractingWithNativeControl) return;
@@ -3817,7 +4718,7 @@ async function init() {
 // na primeira criação do polling (init) quanto na recriação após religar o toggle
 // (ensureVivaBackgroundServicesRunning), sem duplicar a lógica em dois lugares.
 function checkUrlChangeTick() {
-  if (!vivaMonitorMasterEnabled) return;
+  if (!vivaMonitorMasterEnabled || rankingOverlayPaused) return;
   if (window.location.href !== lastUrl) {
     lastUrl = window.location.href;
     console.log("[VIVA] URL mudou, limpando cache local e reiniciando...");
@@ -3828,6 +4729,7 @@ function checkUrlChangeTick() {
     lastFullScanTime = 0; // força uma varredura completa de descoberta logo após a navegação SPA
 
     setTimeout(() => {
+      injectTopBar();
       injectSidebar();
       injectScrollTopBtn();
       injectDock();

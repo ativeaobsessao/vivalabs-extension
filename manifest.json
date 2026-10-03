@@ -7,10 +7,15 @@
     "storage",
     "downloads",
     "declarativeNetRequest",
-    "activeTab"
+    "activeTab",
+    "tabs",
+    "clipboardRead",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "https://www.facebook.com/ads/library/*",
+    "https://viva-labs-monitor.onrender.com/*",
+    "https://app.vivalabs.com.br/*",
     "https://www.proxysite.com/*",
     "https://*.instagram.com/*",
     "https://*.facebook.com/*"

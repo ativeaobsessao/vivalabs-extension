@@ -15,6 +15,7 @@
   --viva-warning: #ff9500; /* Apple Orange */
   --viva-danger: #ff3b30; /* Apple Red */
   --viva-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.08);
+  --viva-top-bar-height: 68px;
   /* FIX RESTAURAÇÃO (2026-09): variável reintroduzida — o dock voltou a ser a barra fixa de
      largura total no rodapé (design original), e tanto a altura do dock quanto o max-height da
      sidebar e o "bottom" do botão de voltar ao topo precisam desta única fonte de verdade para
@@ -53,7 +54,7 @@
    repeat(auto-fill, 300px)` (ver processCards() em content.js) — a grade é
    quem organiza os frames lado a lado; a largura fixa aqui é só um reforço
    defensivo caso o pai correto não seja encontrado por algum motivo. Cantos,
-   sombra e ausência de borda seguem o design original (v5): raio 14px,
+   sombra e ausência de borda seguem o design original (v5): raio 12px,
    sombra suave 1px, sem borda sólida — a única "borda" visual vem das classes
    de fase (viva-stage-*) abaixo.
    ══════════════════════════════════════════════════════════════════════════ */
@@ -64,16 +65,16 @@
   max-width: 300px !important;
   box-sizing: border-box !important;
   background: #ffffff !important;
-  border-radius: 14px !important;
   overflow: hidden !important;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
-  transition: box-shadow 0.2s ease, transform 0.2s ease !important;
-  contain: layout style !important;
+  border-left: 4px solid transparent !important;
+  border-radius: 12px !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+  contain: layout style paint !important;
 }
 
 .viva-card-frame:hover {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.09) !important;
-  transform: translateY(-1px) !important;
 }
 
 /* O card nativo da Meta, uma vez dentro do frame, deve preencher a largura do
@@ -85,29 +86,23 @@
   flex-shrink: 0 !important;
 }
 
-/* ─── Sistema de Fase em 3 Estágios (design original — acento discreto) ──── */
-/*
- * teste      : < 3 dias (ou data não detectada) → SEM acento — não compete
- *              visualmente com o resto; é o estado da maioria dos cards, e
- *              destacar a maioria anularia o propósito de "bater o olho e
- *              achar o que escalou" (ver Seção 6.2 do framework).
- * potencial  : 3-6 dias                          → Âmbar, acento lateral 3px
- * bruta      : 7+ dias                           → Vermelho Apple, 4px
- *
- * Única fonte de verdade: STAGE_INFO/resolveStage() em content.js.
- */
-.viva-stage-teste {
-  /* Sem acento de propósito. */
-}
-
-.viva-stage-potencial {
-  border-left: 3px solid #FF9F0A !important;
-  background-color: rgba(255, 159, 10, 0.035) !important;
-}
-
+/* Fases mutuamente exclusivas: a regra e os limites vivem em STAGE_INFO/resolveStageV2. */
+.viva-stage-teste { border-left-color: #8E8E93 !important; }
+.viva-stage-validando { border-left-color: #007AFF !important; }
+.viva-stage-potencial { border-left-color: #FF9500 !important; }
 .viva-stage-bruta {
-  border-left: 4px solid #FF3B30 !important;
-  background-color: rgba(255, 59, 48, 0.04) !important;
+  border-left-color: #FF3B30 !important;
+  box-shadow: 0 2px 12px rgba(255, 59, 48, 0.12), 0 1px 4px rgba(0, 0, 0, 0.06) !important;
+}
+.viva-stage-monstro {
+  border-left-color: #AF52DE !important;
+  box-shadow: 0 4px 20px rgba(175, 82, 222, 0.2), 0 1px 4px rgba(0, 0, 0, 0.06) !important;
+  background: linear-gradient(180deg, #fff 0%, #fbf5ff 100%) !important;
+}
+.viva-stage-baixo {
+  border-left-color: #000 !important;
+  background: #0A0A0A !important;
+  opacity: 0.9 !important;
 }
 
 /* Escala Potencial Modular Apple Banner (32px / 13px Bold) */
@@ -141,18 +136,46 @@
 
 /* ─── Chips de Fase (única fonte de verdade: STAGE_INFO em content.js) ───── */
 .viva-escala-chip-teste {
-  background: rgba(142, 142, 147, 0.14) !important;
-  color: var(--viva-muted) !important;
+  background: #F2F2F7 !important;
+  color: #8E8E93 !important;
+  border: 1px solid #E5E5EA !important;
+  backdrop-filter: blur(10px) !important;
+}
+
+.viva-escala-chip-validando {
+  background: #E5F0FF !important;
+  color: #007AFF !important;
+  border: 1px solid #C7DFFF !important;
 }
 
 .viva-escala-chip-potencial {
-  background: rgba(255, 159, 10, 0.16) !important;
-  color: #B25900 !important;
+  background: #FFF4E5 !important;
+  color: #FF9500 !important;
+  border: 1px solid #FFD9A3 !important;
 }
 
 .viva-escala-chip-bruta {
-  background: linear-gradient(135deg, #FF3B30, #FF6300) !important;
-  color: #FFFFFF !important;
+  background: linear-gradient(180deg, #FF3B30 0%, #D70015 100%) !important;
+  color: #FFF !important;
+  box-shadow: 0 2px 8px rgba(255, 59, 48, 0.3) !important;
+}
+
+.viva-escala-chip-monstro {
+  background: linear-gradient(135deg, #AF52DE 0%, #7D2AE8 100%) !important;
+  color: #FFF !important;
+  box-shadow: 0 2px 12px rgba(175, 82, 222, 0.4) !important;
+  animation: viva-glow 2s ease-in-out infinite alternate !important;
+}
+
+.viva-escala-chip-baixo {
+  background: #000 !important;
+  color: #FFF !important;
+  border: 1px solid #333 !important;
+}
+
+@keyframes viva-glow {
+  from { box-shadow: 0 2px 12px rgba(175, 82, 222, 0.4); }
+  to { box-shadow: 0 4px 20px rgba(175, 82, 222, 0.6); }
 }
 
 .viva-escala-chip-whatsapp {
@@ -399,7 +422,7 @@
   border-radius: 12px !important;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16) !important;
   padding: 6px !important;
-  z-index: 2147483000 !important;
+  z-index: 2147483647 !important;
   pointer-events: auto !important;
   display: flex !important;
   flex-direction: column !important;
@@ -452,19 +475,19 @@
 /* ─── Floating Sidebar (Apple Control Center Style) ───────────────────────── */
 .viva-sidebar {
   position: fixed !important;
-  top: 96px !important;
+  top: calc(var(--viva-top-bar-height) + 24px) !important;
   right: 40px !important;
   width: 280px !important;
   /* FIX RESTAURAÇÃO: usa a variável do dock para nunca sobrepor a barra fixa do rodapé,
      qualquer que seja a altura de viewport. */
-  max-height: calc(100vh - 128px - var(--viva-dock-height)) !important;
+  max-height: calc(100vh - var(--viva-top-bar-height) - 56px - var(--viva-dock-height)) !important;
   background: var(--viva-bg) !important;
   backdrop-filter: blur(20px) saturate(190%) !important;
   -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
   border: 1px solid var(--viva-border) !important;
   border-radius: 20px !important;
   box-shadow: 0 10px 40px rgba(0,0,0,0.15) !important;
-  z-index: 999999 !important;
+  z-index: 9999 !important;
   display: flex !important;
   flex-direction: column !important;
   overflow: hidden !important;
@@ -668,31 +691,61 @@ input:checked + .viva-slider:before {
 /* Segmented Control (Estilo Toggle de Abas iOS) */
 .viva-segmented-control {
   display: flex !important;
-  background-color: rgba(120, 120, 128, 0.12) !important;
-  border-radius: 8px !important;
-  padding: 2px !important;
+  width: 100% !important;
+  background: #f0f0f5 !important;
+  border-radius: 9px !important;
+  padding: 3px !important;
   border: none !important;
   margin-bottom: 12px !important;
+  gap: 0 !important;
 }
 
+.viva-segment,
 .viva-segmented-btn {
   flex: 1 !important;
+  min-width: 0 !important;
+  height: 32px !important;
   border: none !important;
   background: transparent !important;
   border-radius: 7px !important;
-  padding: 6px 4px !important;
+  padding: 0 3px !important;
   font-size: 11px !important;
-  font-weight: 600 !important;
+  font-weight: 500 !important;
   color: var(--viva-muted) !important;
   cursor: pointer !important;
+  white-space: nowrap !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
   transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
 }
 
+.viva-segment.active,
 .viva-segmented-btn.active {
   background: #ffffff !important;
   color: var(--viva-text) !important;
-  font-weight: 700 !important;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15) !important;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.08) !important;
+}
+
+.viva-keyword-hint,
+.viva-keyword-status {
+  color: var(--viva-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 2px;
+}
+
+.viva-keyword-status {
+  display: block;
+  margin-top: 7px;
+}
+
+.viva-keyword-status.is-error {
+  color: #d70015;
 }
 
 /* Tabela de Resultados Agregados */
@@ -773,6 +826,21 @@ input:checked + .viva-slider:before {
   animation: viva-modal-fade 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
   display: flex !important;
   flex-direction: column !important;
+}
+
+#viva-funnel-modal-container {
+  z-index: 2147483647 !important;
+  padding: 20px !important;
+  box-sizing: border-box !important;
+}
+
+#viva-funnel-modal-container .viva-modal {
+  max-height: calc(100vh - 40px) !important;
+}
+
+#viva-funnel-modal-container .viva-modal-body {
+  max-height: 60vh !important;
+  overflow-y: auto !important;
 }
 
 @keyframes viva-modal-fade {
@@ -890,6 +958,219 @@ input:checked + .viva-slider:before {
   transition: all 0.2s !important;
   opacity: 0;
   visibility: hidden;
+}
+
+/* ─── Fixed VIVA top bar replaces the Meta brand/navigation row ─────────── */
+.viva-top-bar {
+  position: fixed !important;
+  inset: 0 0 auto 0 !important;
+  min-height: var(--viva-top-bar-height) !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 22px !important;
+  padding: 9px 22px !important;
+  color: var(--viva-text) !important;
+  background: rgba(255, 255, 255, 0.85) !important;
+  backdrop-filter: blur(20px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
+  border-bottom: 1px solid var(--viva-border) !important;
+  box-shadow: 0 3px 18px rgba(0, 0, 0, 0.06) !important;
+  z-index: 9998 !important;
+}
+
+.viva-top-left {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+  min-width: 112px !important;
+}
+
+.viva-top-logo {
+  color: var(--viva-text) !important;
+  font-size: 16px !important;
+  font-weight: 750 !important;
+  letter-spacing: -0.4px !important;
+  white-space: nowrap !important;
+}
+
+.viva-top-version {
+  color: var(--viva-success) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+}
+
+.viva-top-center {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 12px !important;
+  min-width: 0 !important;
+}
+
+.viva-top-filter-group {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+}
+
+.viva-top-filter-group > label {
+  color: var(--viva-muted) !important;
+  font-size: 9px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.45px !important;
+  white-space: nowrap !important;
+}
+
+.viva-top-filter-group input[type="number"] {
+  width: 66px !important;
+  height: 29px !important;
+  padding: 0 8px !important;
+  color: var(--viva-text) !important;
+  background: rgba(0, 0, 0, 0.035) !important;
+  border: 1px solid var(--viva-border) !important;
+  border-radius: 8px !important;
+  outline: none !important;
+  font: 12px var(--viva-font) !important;
+}
+
+.viva-top-filter-group input[type="number"]:focus {
+  background: #fff !important;
+  border-color: var(--viva-accent) !important;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.13) !important;
+}
+
+.viva-top-apply {
+  align-self: flex-end !important;
+  height: 30px !important;
+  padding: 0 13px !important;
+  border-radius: 8px !important;
+  font-size: 11px !important;
+  white-space: nowrap !important;
+}
+
+.viva-top-apply.is-applied {
+  background: var(--viva-success) !important;
+}
+
+.viva-top-toggle {
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  color: var(--viva-text) !important;
+  font-size: 11px !important;
+  font-weight: 550 !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+
+.viva-btn-busca-inteligente {
+  min-height: 34px !important;
+  padding: 0 13px !important;
+  color: #fff !important;
+  background: linear-gradient(135deg, #6857e8, #4a36c7) !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  box-shadow: 0 3px 9px rgba(80, 61, 200, 0.22) !important;
+  font: 650 11px var(--viva-font) !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  transition: transform 0.18s ease, box-shadow 0.18s ease !important;
+}
+
+.viva-btn-busca-inteligente:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 5px 14px rgba(80, 61, 200, 0.28) !important;
+}
+
+.viva-top-spacer {
+  flex: 1 !important;
+}
+
+.viva-busca-dropdown {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  width: min(440px, calc(100vw - 32px)) !important;
+  max-height: calc(100vh - 40px) !important;
+  overflow-y: auto !important;
+  padding: 22px !important;
+  color: var(--viva-text) !important;
+  background: rgba(255, 255, 255, 0.97) !important;
+  border: 1px solid var(--viva-border) !important;
+  border-radius: 20px !important;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24) !important;
+  backdrop-filter: blur(24px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
+  transform: translate(-50%, -50%) !important;
+  z-index: 2147483647 !important;
+}
+
+.viva-busca-dropdown[hidden] {
+  display: none !important;
+}
+
+.viva-busca-header {
+  margin-bottom: 10px !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+}
+
+.viva-busca-dropdown textarea {
+  width: 100% !important;
+  min-height: 112px !important;
+  padding: 10px !important;
+  resize: vertical !important;
+  color: var(--viva-text) !important;
+  background: #f5f5f7 !important;
+  border: 1px solid var(--viva-border) !important;
+  border-radius: 9px !important;
+  outline: none !important;
+  font: 12px/1.5 var(--viva-font) !important;
+  box-sizing: border-box !important;
+}
+
+.viva-busca-opcoes {
+  display: flex !important;
+  gap: 14px !important;
+  margin: 10px 0 12px !important;
+}
+
+.viva-busca-opcoes label {
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  color: var(--viva-muted) !important;
+  font-size: 11px !important;
+}
+
+.viva-btn-minerar {
+  width: 100% !important;
+  min-height: 36px !important;
+  color: #fff !important;
+  background: var(--viva-accent) !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  font: 650 12px var(--viva-font) !important;
+  cursor: pointer !important;
+}
+
+.viva-btn-minerar:disabled {
+  opacity: 0.65 !important;
+  cursor: wait !important;
+}
+
+.viva-progresso {
+  min-height: 14px !important;
+  margin-top: 9px !important;
+  color: var(--viva-muted) !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+}
+
+.viva-progresso.is-error {
+  color: var(--viva-danger) !important;
 }
 
 .viva-scroll-top-btn.viva-visible {
@@ -1191,16 +1472,16 @@ input:checked + .viva-slider:before {
   height: var(--viva-dock-height) !important;
   display: flex !important;
   align-items: center !important;
-  justify-content: center !important;
-  flex-wrap: wrap !important;
-  gap: 20px !important;
+  justify-content: space-between !important;
+  flex-wrap: nowrap !important;
+  gap: 16px !important;
   padding: 0 24px !important;
   background: var(--viva-bg) !important;
   backdrop-filter: blur(20px) saturate(190%) !important;
   -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
   border-top: 1px solid var(--viva-border) !important;
   box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.06) !important;
-  z-index: 999998 !important;
+  z-index: 9999 !important;
   box-sizing: border-box !important;
   font-family: var(--viva-font) !important;
 }
@@ -1268,13 +1549,547 @@ input:checked + .viva-slider:before {
   white-space: nowrap !important;
 }
 
+.viva-dock-ranking {
+  width: auto !important;
+  min-height: 36px !important;
+  padding: 0 16px !important;
+  border-radius: 9px !important;
+  white-space: nowrap !important;
+}
+
+.viva-dock-engine {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  margin-left: auto !important;
+  padding: 8px 13px !important;
+  background: rgba(0, 0, 0, 0.035) !important;
+  border: 1px solid var(--viva-border) !important;
+  border-radius: 10px !important;
+}
+
+.viva-dock-engine-label {
+  color: var(--viva-muted) !important;
+  font-size: 10px !important;
+  font-weight: 750 !important;
+  letter-spacing: 0.55px !important;
+  white-space: nowrap !important;
+}
+
+.viva-motor-status {
+  color: var(--viva-text) !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  white-space: nowrap !important;
+}
+
 /* Em telas estreitas, o dock quebra em múltiplas linhas centralizadas em vez de estourar a
    largura da viewport (flex-wrap acima já cuida disso; aqui só ajusta o respiro). */
 @media (max-width: 720px) {
+  :root {
+    --viva-top-bar-height: 112px;
+    --viva-dock-height: 88px;
+  }
+  .viva-top-bar {
+    align-content: center !important;
+    flex-wrap: wrap !important;
+    gap: 7px 12px !important;
+    padding: 8px 12px !important;
+  }
+  .viva-top-left {
+    min-width: 0 !important;
+    flex-direction: row !important;
+    align-items: baseline !important;
+    gap: 8px !important;
+  }
+  .viva-top-logo {
+    font-size: 13px !important;
+  }
+  .viva-top-center {
+    order: 2 !important;
+    width: 100% !important;
+    justify-content: space-between !important;
+    gap: 6px !important;
+  }
+  .viva-top-filter-group > label {
+    font-size: 7px !important;
+  }
+  .viva-top-filter-group input[type="number"] {
+    width: 45px !important;
+  }
+  .viva-top-toggle {
+    flex-direction: column !important;
+    gap: 3px !important;
+    font-size: 9px !important;
+  }
+  .viva-btn-busca-inteligente {
+    padding: 0 8px !important;
+    font-size: 9px !important;
+  }
   .viva-dock {
     padding: 8px 16px !important;
-    gap: 12px !important;
+    gap: 8px !important;
     height: auto !important;
     min-height: var(--viva-dock-height) !important;
   }
+  .viva-dock-ranking {
+    padding: 0 10px !important;
+    font-size: 10px !important;
+  }
+  .viva-dock-engine {
+    gap: 6px !important;
+    padding: 7px 9px !important;
+  }
+  .viva-motor-status {
+    font-size: 10px !important;
+  }
+}
+
+.viva-baixo-volume {
+  border: 2px solid #000 !important;
+  background: #0a0a0a !important;
+  position: relative;
+}
+
+.viva-baixo-volume::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 1;
+  border-radius: inherit;
+}
+
+.viva-baixo-volume > * {
+  position: relative;
+  z-index: 2;
+}
+
+.viva-baixo-volume-frame {
+  border: 2px solid #000 !important;
+  background: #0a0a0a !important;
+}
+
+.viva-badge-black {
+  background: #000 !important;
+  color: #fff !important;
+  border: 1px solid #333 !important;
+  padding: 4px 8px !important;
+  border-radius: 6px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.5px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  z-index: 2 !important;
+  position: relative !important;
+}
+
+.viva-baixo-volume-frame .viva-processed,
+.viva-baixo-volume-frame .viva-escala-strip,
+.viva-baixo-volume-frame .viva-card-badge-container,
+.viva-baixo-volume-frame .viva-card-footer {
+  z-index: 2;
+  position: relative;
+}
+
+body {
+  background: #f5f5f7 !important;
+}
+
+.viva-card-frame {
+  background: #fff !important;
+  border-radius: 12px !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06) !important;
+  z-index: 1 !important;
+}
+
+.viva-busca-sidebar-hidden {
+  transform: translateX(120%) !important;
+}
+
+.viva-footer-dock {
+  left: 50% !important;
+  right: auto !important;
+  bottom: 16px !important;
+  width: max-content !important;
+  max-width: calc(100vw - 32px) !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 8px 16px !important;
+  justify-content: center !important;
+  gap: 16px !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+  transform: translateX(-50%) !important;
+  z-index: 9999 !important;
+}
+
+.viva-footer-dock .viva-dock-engine {
+  margin-left: 0 !important;
+}
+
+.viva-footer-dock,
+.viva-motor-viva {
+  contain: layout style paint !important;
+}
+
+.viva-footer-dock {
+  will-change: transform;
+}
+
+.viva-footer-dock .ver-top-btn {
+  background: linear-gradient(180deg, #ff3b30 0%, #d70015 100%) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  padding: 10px 20px !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 8px rgba(255, 59, 48, 0.3) !important;
+}
+
+.viva-dock-ranking[hidden] {
+  display: none !important;
+}
+
+.viva-ranking-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 20px !important;
+  background: rgba(245, 245, 247, 0.92) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  z-index: 2147483647 !important;
+  box-sizing: border-box !important;
+}
+
+.viva-ranking-modal {
+  width: 100% !important;
+  max-width: 1100px !important;
+  max-height: 85vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  background: #fff !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15) !important;
+  overflow: hidden !important;
+  color: #1d1d1f !important;
+}
+
+.viva-ranking-header {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  padding: 20px 24px !important;
+  border-bottom: 1px solid #e5e5ea !important;
+}
+
+.viva-ranking-header h2 {
+  margin: 0 !important;
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.35px !important;
+  color: #1d1d1f !important;
+}
+
+.viva-ranking-header p {
+  margin: 4px 0 0 !important;
+  color: #86868b !important;
+  font-size: 12px !important;
+}
+
+.viva-close-btn {
+  flex: 0 0 auto !important;
+  min-height: 34px !important;
+  padding: 0 12px !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  background: #f0f0f5 !important;
+  color: #1d1d1f !important;
+  font: 600 12px var(--viva-font) !important;
+  cursor: pointer !important;
+}
+
+.viva-close-btn:hover {
+  background: #e5e5ea !important;
+}
+
+.viva-ranking-table-scroll {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-x: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.viva-ranking-table-header,
+.viva-ranking-row {
+  min-width: 900px !important;
+  display: grid !important;
+  grid-template-columns: 50px minmax(180px, 1fr) 72px 55px 80px 80px 130px 170px !important;
+  gap: 12px !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+}
+
+.viva-ranking-table-header {
+  padding: 12px 24px !important;
+  background: #f5f5f7 !important;
+  color: #86868b !important;
+  font-size: 10px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0.5px !important;
+  text-transform: uppercase !important;
+}
+
+.viva-ranking-list {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: calc(85vh - 115px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+}
+
+.viva-ranking-row {
+  min-height: 58px !important;
+  padding: 10px 24px !important;
+  border-bottom: 1px solid #f2f2f7 !important;
+  color: #1d1d1f !important;
+  font-size: 12px !important;
+}
+
+.viva-ranking-row:hover {
+  background: #f5f5f7 !important;
+}
+
+.viva-ranking-row .pos {
+  color: #86868b !important;
+  font-weight: 700 !important;
+}
+
+.viva-ranking-row .biblio {
+  min-width: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+}
+
+.viva-ranking-row .biblio strong {
+  overflow: hidden !important;
+  color: #1d1d1f !important;
+  font-size: 13px !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.viva-ranking-row .biblio small {
+  color: #86868b !important;
+  font-size: 10px !important;
+}
+
+.viva-ranking-row .score {
+  width: max-content !important;
+  min-width: 40px !important;
+  padding: 4px 8px !important;
+  border-radius: 6px !important;
+  background: #f0f0f5 !important;
+  text-align: center !important;
+  font-weight: 700 !important;
+}
+
+.viva-ranking-row .score.high {
+  color: #fff !important;
+  background: #ff3b30 !important;
+}
+
+.viva-ranking-row .recent.yes {
+  color: #248a3d !important;
+  font-weight: 600 !important;
+}
+
+.viva-ranking-row .recent.no {
+  color: #86868b !important;
+}
+
+.viva-ranking-row .escala-badge {
+  width: max-content !important;
+  max-width: 130px !important;
+  padding: 4px 7px !important;
+  border-radius: 6px !important;
+  background: #f0f0f5 !important;
+  color: #515154 !important;
+  font-size: 9px !important;
+  font-weight: 700 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+}
+
+.viva-ranking-row .escala-badge.escala-bruta {
+  color: #fff !important;
+  background: #ff3b30 !important;
+}
+
+.viva-ranking-row .escala-badge.potencial-escala {
+  color: #7a4b00 !important;
+  background: #fff0d6 !important;
+}
+
+.viva-ranking-row .escala-badge.baixo-volume {
+  color: #fff !important;
+  background: #111 !important;
+}
+
+.viva-ranking-actions {
+  display: flex !important;
+  gap: 6px !important;
+}
+
+.viva-ranking-actions button {
+  min-height: 28px !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: #f0f0f5 !important;
+  color: #1d1d1f !important;
+  font: 600 10px var(--viva-font) !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+
+.viva-ranking-actions .viva-ver-ads-btn {
+  color: #fff !important;
+  background: #007aff !important;
+}
+
+.viva-ranking-actions button:disabled {
+  opacity: 0.6 !important;
+  cursor: default !important;
+}
+
+.viva-sidebar.viva-ranking-suspended {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+@media (max-width: 720px) {
+  .viva-footer-dock {
+    width: max-content !important;
+    max-width: calc(100vw - 24px) !important;
+    gap: 8px !important;
+    padding: 7px 10px !important;
+  }
+
+  .viva-footer-dock .viva-dock-engine {
+    gap: 6px !important;
+    padding: 6px 8px !important;
+  }
+
+  .viva-footer-dock .viva-dock-engine-label {
+    font-size: 8px !important;
+  }
+
+  .viva-footer-dock .viva-motor-status {
+    font-size: 10px !important;
+  }
+
+  .viva-footer-dock .ver-top-btn {
+    padding: 8px 10px !important;
+    font-size: 11px !important;
+  }
+
+  .viva-ranking-overlay {
+    padding: 8px !important;
+  }
+
+  .viva-ranking-modal {
+    max-height: 94vh !important;
+  }
+
+  .viva-ranking-header {
+    padding: 14px !important;
+  }
+
+  .viva-ranking-header h2 {
+    font-size: 16px !important;
+  }
+
+  .viva-ranking-table-header {
+    padding: 10px 14px !important;
+  }
+
+  .viva-ranking-row {
+    padding: 9px 14px !important;
+  }
+}
+
+.viva-apple-toast {
+  position: fixed !important;
+  left: 50% !important;
+  bottom: 80px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  min-width: 280px !important;
+  max-width: min(400px, calc(100vw - 32px)) !important;
+  padding: 12px 16px !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 14px !important;
+  background: rgba(0, 0, 0, 0.85) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
+  color: #fff !important;
+  opacity: 0 !important;
+  transform: translateX(-50%) translateY(20px) scale(0.9) !important;
+  transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  z-index: 2147483647 !important;
+  pointer-events: none !important;
+}
+
+.viva-toast-icon {
+  display: flex !important;
+  flex: 0 0 28px !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 50% !important;
+  background: #30d158 !important;
+  color: #000 !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+}
+
+.viva-toast-error .viva-toast-icon {
+  background: #ff3b30 !important;
+  color: #fff !important;
+}
+
+.viva-toast-content {
+  min-width: 0 !important;
+}
+
+.viva-toast-title {
+  color: #fff !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.1px !important;
+}
+
+.viva-toast-subtitle {
+  margin-top: 1px !important;
+  color: rgba(255, 255, 255, 0.7) !important;
+  font-size: 11px !important;
+  font-weight: 400 !important;
 }
