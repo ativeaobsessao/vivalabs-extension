@@ -1,4 +1,47 @@
 // Parses mixed quoted/unquoted terms into Meta Ad Library search plans.
+function parseBuscaInput(rawText) {
+  const entries = String(rawText || "")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line.length >= 2)
+    .map(original => ({
+      original,
+      term: original.replace(/["“”]/g, "").trim(),
+    }))
+    .filter(entry => entry.term.length >= 2);
+  if (entries.length === 0) return { modo: "vazio" };
+
+  if (entries.length === 1) {
+    return {
+      modo: "normal",
+      termoOriginal: entries[0].original,
+      termoBusca: entries[0].term,
+      linhasReais: 1,
+    };
+  }
+
+  return {
+    modo: "turbo",
+    termosOriginais: entries.map(entry => entry.original),
+    termosBusca: entries.map(entry => entry.term),
+    linhasReais: entries.length,
+    tempoEstimado: entries.length * 60,
+  };
+}
+
+function buildAdLibraryUrl(termo) {
+  const params = new URLSearchParams({
+    active_status: "active",
+    ad_type: "all",
+    country: "ALL",
+    is_targeted_country: "false",
+    media_type: "all",
+    q: String(termo || ""),
+    search_type: "keyword_unordered",
+  });
+  return `https://www.facebook.com/ads/library/?${params.toString()}`;
+}
+
 function parseLinhaInteligente(linha) {
   const regex = /"([^"]+)"|(\S+)/g;
   const tokens = [];
@@ -52,11 +95,21 @@ function gerarPlanoBusca(tokens, linhaOriginal, lineId = "0", options = {}) {
   return plans;
 }
 
-function gerarFilaInteligente(linhas, options = {}) {
+function gerarFilaInteligente(linhas) {
   if (!Array.isArray(linhas)) return [];
-  return linhas.flatMap((linha, index) => {
-    const original = String(linha ?? "").trim();
-    if (!original) return [];
-    return gerarPlanoBusca(parseLinhaInteligente(original), original, String(index), options);
+  const parsed = parseBuscaInput(linhas.join("\n"));
+  if (parsed.modo !== "turbo") return [];
+  return parsed.termosBusca.map((termo, index) => {
+    const linhaOriginal = parsed.termosOriginais[index];
+    const lineId = String(index);
+    return {
+      q: termo,
+      tipo: "linha",
+      termo,
+      linhaOriginal,
+      lineId,
+      planId: `${lineId}:base`,
+      url: buildAdLibraryUrl(termo),
+    };
   });
 }

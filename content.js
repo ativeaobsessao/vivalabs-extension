@@ -601,6 +601,26 @@ function resolveStageV2(adAgeDays, metaAdCount, temRecente, baixoVolume) {
   return "teste";
 }
 
+function aplicarBrilhoThumb(frame, stage) {
+  if (frame.dataset.vivaVisualStage === stage && frame.querySelector(".viva-escala-bar")) return;
+
+  frame.dataset.vivaVisualStage = stage;
+  const destaque = ["monstro", "bruta", "validando", "potencial"].includes(stage);
+  frame.querySelectorAll("img, video").forEach(media => {
+    media.classList.toggle("viva-thumb-viva", destaque);
+  });
+
+  let bar = frame.querySelector(".viva-escala-bar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "viva-escala-bar viva-el";
+    frame.appendChild(bar);
+  }
+  bar.hidden = !destaque;
+}
+
+console.info("[VIVA] Visual Boost Completo - brilho intenso + thumbs vivas brightness/saturate + shimmer + elevation");
+
 function isBaixoVolumeCard(card) {
   const text = (card.textContent || "")
     .toLowerCase()
@@ -797,32 +817,39 @@ function extractAdvertiserName(card) {
 
 function extractDestinationUrl(card) {
   const { links } = getCardDomElements(card);
-  for (const a of links) {
-    if (a.href.includes("l.facebook.com/l.php")) {
-      try {
-        const urlObj = new URL(a.href);
-        const targetUrl = urlObj.searchParams.get("u");
-        if (targetUrl) {
-          const decoded = decodeURIComponent(targetUrl);
-          if (!decoded.includes("instagram.com") && !decoded.includes("facebook.com")) return decoded;
-        }
-      } catch (e) {}
-    }
-  }
-  for (const a of links) {
-    const href = a.href;
-    if (href.startsWith("http") && !href.includes("facebook.com") && !href.includes("instagram.com")) return href;
-  }
-  for (const a of links) {
-    const href = a.getAttribute("href") || "";
-    if (!href.includes("l.php?u=")) continue;
+  const externalHosts = ["facebook.com", "fb.com", "instagram.com"];
+  const normalizeDestination = (href, redirectDepth = 0) => {
+    if (!href) return null;
+    if (redirectDepth > 2) return null;
     try {
-      const target = new URL(href, window.location.origin).searchParams.get("u");
-      if (target) return decodeURIComponent(target);
+      const url = new URL(href, window.location.origin);
+      if (url.hostname === "l.facebook.com" && url.pathname === "/l.php") {
+        const redirected = url.searchParams.get("u") || url.searchParams.get("url");
+        if (redirected) return normalizeDestination(redirected, redirectDepth + 1);
+      }
+      if (url.hostname === "api.whatsapp.com" || url.hostname === "wa.me") return url.href;
+      if (externalHosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) return null;
+      return /^https?:$/.test(url.protocol) ? url.href : null;
     } catch (error) {
       console.debug("[VIVA] Ignorando URL de destino inválida:", error);
+      return null;
     }
+  };
+
+  for (const a of links) {
+    const href = a.getAttribute("href") || a.href;
+    const destination = normalizeDestination(href);
+    if (destination && /(?:api\.whatsapp\.com|wa\.me)/i.test(destination)) return destination;
   }
+
+  for (const a of links) {
+    const href = a.getAttribute("href") || a.href;
+    const destination = normalizeDestination(href);
+    if (destination) return destination;
+  }
+
+  if (/api\.whatsapp\.com/i.test(card.textContent || "")) return "https://api.whatsapp.com";
+  if (/\bwa\.me\b/i.test(card.textContent || "")) return "https://wa.me";
   return null;
 }
 
@@ -898,93 +925,125 @@ function parseMetaDate(text) {
   return null;
 }
 
-function extractCardTexts(card) {
-  const advertiserName = extractAdvertiserName(card) || "";
-  const advLower = advertiserName.toLowerCase();
+function normalizeCopyText(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
 
-  const isMetaNoise = (txt) => {
-    if (!txt || txt.length < 2) return true;
-    const l = txt.toLowerCase();
-    return l.includes("identificação da biblioteca") ||
-           l.includes("veiculação iniciada") ||
-           l.includes("anúncios usam") ||
-           l.includes("plataformas") ||
-           l.includes("ver resumo") ||
-           l.includes("ver detalhes") ||
-           l.includes("abrir menu") ||
-           l === "ativo" ||
-           l === "active" ||
-           l === advLower ||
-           l === "patrocinado" ||
-           l === "sponsored" ||
-           l.includes("dias ativo") ||
-           l.includes("escala potencial") ||
-           l.includes("campanha normal") ||
-           l.includes("funil whatsapp") ||
-           l.includes("copiar copies");
-  };
+function expandTextoPrincipal(card) {
+  const moreLabels = /^(?:ver mais|see more)(?:\s*[.…]{1,3})?$/i;
+  const candidates = Array.from(card.querySelectorAll('div[role="button"], span, button'))
+    .filter(element => moreLabels.test(normalizeCopyText(element.textContent)))
+    .sort((a, b) => normalizeCopyText(a.textContent).length - normalizeCopyText(b.textContent).length);
+  if (!candidates.length) return false;
 
-  let primaryText = "";
-  let title = "";
-  let description = "";
+  candidates[0].click();
+  return true;
+}
 
-  const { textNodes } = getCardDomElements(card);
-  const validTextNodes = textNodes.filter(({ el, txt }) => {
-    return !isMetaNoise(txt) &&
-      !el.closest("button, input, [role='button']") &&
-      !REGEX_SIMPLE_DOMAIN.test(txt);
-  });
+function isCopyInterfaceText(text) {
+  const normalized = normalizeCopyText(text);
+  return !normalized ||
+    /^(?:patrocinado|sponsored|ver mais|see more|ver detalhes|view details|ver resumo|abrir menu suspenso|ativo|active|enviar mensagem|send message|saiba mais|learn more|assistir mais|converse conosco|baixar|comprar agora|inscreva-se|fale conosco)$/i.test(normalized) ||
+    /identificação da biblioteca|veiculação iniciada|veiculando desde|running on|plataformas|anúncios usam|dias ativo|escala potencial|campanha normal|funil whatsapp|copiar copies|biblioteca de anúncios/i.test(normalized);
+}
 
-  const primaryCandidates = validTextNodes.filter(({ len }) => len >= 40 && len <= 500);
-  if (primaryCandidates.length > 0) {
-    primaryCandidates.sort((a, b) => b.len - a.len);
-    primaryText = primaryCandidates[0].txt;
-  } else {
-    const cardText = (card.innerText || "")
-      .split("\n")
-      .map(text => text.trim())
-      .filter(text => text.length > 30 && !isMetaNoise(text) && !REGEX_SIMPLE_DOMAIN.test(text));
-    primaryText = cardText[0] || "";
+function extractTextoPrincipalCompleto(card, advertiserName = "") {
+  const advertiser = normalizeCopyText(advertiserName).toLowerCase();
+  const media = Array.from(card.querySelectorAll("video, img")).find(element => {
+    if (element.nodeName === "VIDEO") return true;
+    return Math.max(element.naturalWidth || 0, element.width || 0, element.offsetWidth || 0) >= 150;
+  }) || null;
+  const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+  const fragments = [];
+  let node;
+
+  while ((node = walker.nextNode())) {
+    const parent = node.parentElement;
+    if (!parent || parent.closest("button, input, textarea, [role='button'], .viva-escala-strip, .viva-card-badge-container, .viva-card-footer")) continue;
+    if (media && (media.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) === 0) continue;
+
+    const text = normalizeCopyText(node.textContent);
+    if (text.length < 2 || text.length > 1000 || isCopyInterfaceText(text)) continue;
+    if (advertiser && text.toLowerCase() === advertiser) continue;
+    if (/^(?:https?:\/\/|www\.)/i.test(text) || REGEX_SIMPLE_DOMAIN.test(text)) continue;
+    fragments.push(text);
   }
 
-  const boldElements = validTextNodes.filter(({ el, txt }) => {
-    const styleBold = el.style.fontWeight === "bold" ||
-      el.style.fontWeight === "700" ||
-      parseInt(el.style.fontWeight || "0", 10) >= 600;
-    const classBold = typeof el.className === "string" &&
-      (el.className.includes("bold") || el.className.includes("font-semibold") || el.className.includes("font-bold"));
-    const semanticBold = el.nodeName === "H3" || el.nodeName === "H4" || el.nodeName === "STRONG" || el.nodeName === "B";
-    return (styleBold || classBold || semanticBold) && txt !== primaryText && txt.length > 5 && txt.length < 120;
-  });
-
-  if (boldElements.length > 0) {
-    title = boldElements[boldElements.length - 1].txt;
-  } else {
-    const shortTexts = validTextNodes.filter(({ txt }) =>
-      txt !== primaryText && txt.length >= 10 && txt.length < 100 && !REGEX_ONLY_DOMAIN.test(txt)
-    );
-    if (shortTexts.length > 0) title = shortTexts[shortTexts.length - 1].txt;
+  const uniqueFragments = [];
+  for (const fragment of fragments) {
+    if (uniqueFragments.some(existing => existing === fragment || existing.includes(fragment) || fragment.includes(existing))) continue;
+    uniqueFragments.push(fragment);
   }
 
-  const descCandidates = validTextNodes.filter(({ txt }) =>
-    txt !== primaryText && txt !== title && txt.length >= 10 && txt.length < 150
-  );
-  if (descCandidates.length > 0) description = descCandidates[descCandidates.length - 1].txt;
-  if (!description) {
-    const destinationUrl = extractDestinationUrl(card);
-    if (destinationUrl) {
-      try {
-        description = new URL(destinationUrl).hostname;
-      } catch (error) {
-        console.debug("[VIVA] URL de destino não pôde ser usada como descrição:", error);
-      }
+  let complete = uniqueFragments.join(" ")
+    .replace(/\s+([,.;!?])/g, "$1")
+    .replace(/([.!?])\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ])/g, "$1\n")
+    .trim();
+
+  if (complete.length < 40) {
+    const candidates = Array.from(card.querySelectorAll("div, p, span"))
+      .map(element => normalizeCopyText(element.innerText || element.textContent))
+      .filter(text =>
+        text.length >= 40 &&
+        text.length <= 1200 &&
+        !isCopyInterfaceText(text) &&
+        !/identificação da biblioteca|veiculação|plataformas|ver detalhes/i.test(text)
+      )
+      .sort((a, b) => b.length - a.length);
+    if (candidates[0]) complete = candidates[0].replace(/(?:ver mais|see more)\s*$/i, "").trim();
+  }
+
+  return complete || "Texto principal não detectado";
+}
+
+function extractHeadlineCTA(card) {
+  const ctaPatterns = [
+    { pattern: /^enviar mens(?:agem)?(?:\s*[.…]{1,3})?$/i, label: "Enviar mensagem" },
+    { pattern: /^send message(?:\s*[.…]{1,3})?$/i, label: "Send message" },
+    { pattern: /^saiba mais(?:\s*[.…]{1,3})?$/i, label: "Saiba mais" },
+    { pattern: /^learn more(?:\s*[.…]{1,3})?$/i, label: "Learn more" },
+    { pattern: /^assistir mais(?:\s*[.…]{1,3})?$/i, label: "Assistir mais" },
+    { pattern: /^converse conosco(?:\s*[.…]{1,3})?$/i, label: "Converse conosco" },
+    { pattern: /^baixar(?:\s*[.…]{1,3})?$/i, label: "Baixar" },
+    { pattern: /^comprar agora(?:\s*[.…]{1,3})?$/i, label: "Comprar agora" },
+    { pattern: /^inscreva-se(?:\s*[.…]{1,3})?$/i, label: "Inscreva-se" },
+    { pattern: /^fale conosco(?:\s*[.…]{1,3})?$/i, label: "Fale conosco" },
+  ];
+  const candidates = Array.from(card.querySelectorAll("a[href], button, [role='button'], span, div"))
+    .map(element => normalizeCopyText(element.textContent))
+    .filter(text => text.length > 0 && text.length < 45);
+
+  for (const { pattern, label } of ctaPatterns) {
+    if (candidates.some(text => pattern.test(text))) return label;
+  }
+  return "Sem headline - anúncio focado em texto principal";
+}
+
+function extractDescricaoLink(card, destinationUrl = null) {
+  const texts = Array.from(card.querySelectorAll("div, span, p"))
+    .map(element => normalizeCopyText(element.textContent))
+    .filter(text => text.length > 0 && text.length < 70);
+  const whatsappDomain = texts.find(text => /^api\.whatsapp\.com$/i.test(text));
+  const whatsappPrompt = texts.find(text => /^converse conosco$/i.test(text));
+
+  let hostname = whatsappDomain ? "API.WHATSAPP.COM" : "";
+  if (!hostname && destinationUrl) {
+    try {
+      hostname = new URL(destinationUrl).hostname.toUpperCase();
+    } catch (error) {
+      console.debug("[VIVA] URL de destino não pôde ser usada como descrição:", error);
     }
   }
 
+  const parts = [hostname, whatsappPrompt].filter(Boolean);
+  return parts.join("\n") || "Link não exibido no card";
+}
+
+function extractCardTexts(card, destinationUrl = null, advertiserName = extractAdvertiserName(card)) {
   return {
-    primaryText: primaryText || "Texto não detectado - tente expandir o card",
-    title: title || "Headline não detectada",
-    description: description || "Descrição não detectada",
+    primaryText: extractTextoPrincipalCompleto(card, advertiserName),
+    title: extractHeadlineCTA(card),
+    description: extractDescricaoLink(card, destinationUrl),
   };
 }
 
@@ -1021,19 +1080,25 @@ function showAppleToast(titulo, subtitulo, tipo = "success") {
 }
 
 async function handleCopiarCopies(card) {
+  if (expandTextoPrincipal(card)) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+
   const data = refreshCardData(card);
-  const texts = extractCardTexts(card);
+  const texts = extractCardTexts(card, data.destUrl, data.advertiserName);
+  const libraryId = extractAdArchiveId(card);
   const formatado = `TÍTULO / HEADLINE
 ${texts.title}
 
-DESCRIÇÃO PRINCIPAL
+TEXTO PRINCIPAL
 ${texts.primaryText}
 
 DESCRIÇÃO / LINK
 ${texts.description}
 
 URL: ${data.destUrl || "Não detectada"}
-Página: ${data.advertiserName || ""} | ${data.adAgeDays ? `${data.adAgeDays} dias ativo` : ""} | ${data.metaAdCount}x anúncios`;
+Página: ${data.advertiserName || ""} | ${data.adAgeDays ? `${data.adAgeDays} dias ativo` : ""} | ${data.metaAdCount || 1}x anúncios
+ID Biblioteca: ${libraryId || ""}`;
 
   try {
     await navigator.clipboard.writeText(formatado);
@@ -1061,10 +1126,10 @@ Página: ${data.advertiserName || ""} | ${data.adAgeDays ? `${data.adAgeDays} di
     }
   }
 
-  showAppleToast("Copiado!", "Título + Descrição + Headline copiados", "success");
+  showAppleToast("Copiado!", "Título + Texto Principal + Link copiados", "success");
 }
 
-console.info("[VIVA] Fix Copiar Copies + URL detection + Toast Apple implementado");
+console.info("[VIVA] Fix Copiar Copies - TEXTO PRINCIPAL completo + headline CTA + URL real");
 
 function extractPageId(card) {
   const adArchiveId = extractAdArchiveId(card);
@@ -1220,7 +1285,7 @@ function extractCardData(card) {
   const mediaUrl = extractMediaUrl(card);
   const pageId = extractPageId(card);
   const advertiserName = extractAdvertiserName(card);
-  const { primaryText, title, description } = extractCardTexts(card);
+  const { primaryText, title, description } = extractCardTexts(card, destUrl, advertiserName);
   let adAgeDays = null;
   const { leafNodes } = getCardDomElements(card);
   const dateEl = leafNodes.find(el => {
@@ -1370,6 +1435,7 @@ function showActionsDropdown(card, data, anchorBtn) {
   const dropdown = document.createElement("div");
   dropdown.className = "viva-gear-dropdown viva-el viva-active";
   dropdown._vivaOwnerBtn = anchorBtn;
+  dropdown._vivaCard = card;
   dropdown.addEventListener("click", (evt) => evt.stopPropagation());
 
   // 1. Ver Anúncios da Página
@@ -1489,7 +1555,7 @@ function showActionsDropdown(card, data, anchorBtn) {
   itemCopy.addEventListener("click", async (evt) => {
     evt.stopPropagation();
     dropdown.remove();
-    await handleCopiarCopies(card);
+    await handleCopiarCopies(dropdown._vivaCard || card);
   });
   dropdown.appendChild(itemCopy);
 
@@ -1743,6 +1809,7 @@ function processCards() {
           "viva-stage-baixo",
         );
         frame.classList.add(`viva-stage-${item.stage}`);
+        aplicarBrilhoThumb(frame, item.stage);
         syncBaixoVolumeDecoration(frame, card, item.baixoVolume);
 
         if (!item.shouldShow) return; // Não injeta badges em cards ocultos para poupar RAM
@@ -4117,120 +4184,329 @@ function injectTopBar() {
 
   const dropdown = document.createElement("div");
   dropdown.id = "viva-busca-dropdown";
-  dropdown.className = "viva-busca-dropdown viva-el";
+  dropdown.className = "viva-busca-dropdown viva-busca-popup viva-el";
   dropdown.hidden = true;
   dropdown.innerHTML = `
-    <div class="viva-busca-header">⚡ Busca Inteligente em Massa</div>
-    <textarea id="viva-mass-keywords" maxlength="5000" placeholder='emagrecimento "truque"&#10;ansiedade "controle"&#10;bíblia explicada' aria-label="Termos para busca, um por linha"></textarea>
-    <div class="viva-busca-opcoes">
-      <label><input type="checkbox" id="viva-chk-exato" checked> Com aspas (exato)</label>
-      <label><input type="checkbox" id="viva-chk-amplo" checked> Sem aspas (amplo)</label>
+    <div class="viva-busca-header">
+      <span>⚡ Busca Inteligente em Massa</span>
+      <button id="viva-busca-fechar" class="viva-busca-close" type="button" aria-label="Fechar">✕</button>
     </div>
-    <button id="viva-btn-minerar" class="viva-btn-minerar" type="button">🔍 Minerar em Massa</button>
+    <textarea id="viva-mass-keywords" maxlength="5000" placeholder='Uma linha: busca normal, sem abrir abas.&#10;Duas ou mais: Turbo após confirmação.&#10;Ex.: emagrecimento "truque"&#10;ansiedade controle' aria-label="Termos para busca, um por linha"></textarea>
+    <div id="viva-busca-info" class="viva-busca-info" aria-live="polite"></div>
+    <div id="viva-turbo-controls" class="viva-turbo-controls" hidden>
+      <label class="viva-timer-row" for="viva-timer-slider">
+        Tempo por busca: <strong id="viva-timer-val">60s</strong>
+        <input type="range" id="viva-timer-slider" min="20" max="180" value="60" step="10">
+        <small id="viva-timer-hint">Coleta completa + ranking (até 2 abas)</small>
+      </label>
+      <div id="viva-progress-wrap" class="viva-progress-wrap" hidden>
+        <div class="viva-progress-bar"><div id="viva-progress-fill"></div></div>
+        <div id="viva-progress-text">0/0 · Aguardando</div>
+      </div>
+      <div class="viva-turbo-actions">
+        <button id="viva-btn-pausar" type="button" hidden>⏸ Pausar</button>
+        <button id="viva-btn-cancelar" type="button" hidden>■ Cancelar</button>
+      </div>
+    </div>
+    <div class="viva-busca-footer">
+      <button id="viva-btn-minerar" class="viva-btn-minerar" type="button" disabled>Digite uma palavra-chave</button>
+    </div>
     <div id="viva-progresso-inteligente" class="viva-progresso" role="status" aria-live="polite"></div>
   `;
   dropdown.setAttribute("role", "dialog");
   dropdown.setAttribute("aria-modal", "true");
-  dropdown.setAttribute("aria-label", "Busca Inteligente em Massa");
+  dropdown.setAttribute("aria-label", "Busca Inteligente");
   document.body.appendChild(dropdown);
-  console.log("[VIVA] Fix overlap Busca Inteligente + redesign Apple aplicado");
+  console.info("[VIVA] Busca Inteligente v2: modo normal x turbo com consentimento");
 
   const searchButton = topBar.querySelector("#viva-btn-busca-inteligente");
+  const input = dropdown.querySelector("#viva-mass-keywords");
+  const primaryButton = dropdown.querySelector("#viva-btn-minerar");
+  const info = dropdown.querySelector("#viva-busca-info");
+  const progress = dropdown.querySelector("#viva-progresso-inteligente");
+  const turboControls = dropdown.querySelector("#viva-turbo-controls");
+  const progressWrap = dropdown.querySelector("#viva-progress-wrap");
+  const timerSlider = dropdown.querySelector("#viva-timer-slider");
+  const timerValue = dropdown.querySelector("#viva-timer-val");
+  const timerHint = dropdown.querySelector("#viva-timer-hint");
+  const pauseButton = dropdown.querySelector("#viva-btn-pausar");
+  const cancelButton = dropdown.querySelector("#viva-btn-cancelar");
+  let buscaState = {
+    modo: "vazio",
+    isPaused: false,
+    isRunning: false,
+    isStarting: false,
+    cancelWhenStarted: false,
+    runId: null,
+  };
   const getSidebar = () => document.querySelector("#viva-sidebar, .viva-sidebar, #viva-side-panel, .viva-monitor-panel");
-  const closeBuscaInteligente = () => {
+
+  const closeBuscaInteligente = (cancelRun = false) => {
+    if (cancelRun && (buscaState.isRunning || buscaState.isStarting)) {
+      buscaState.cancelWhenStarted = buscaState.isStarting;
+      if (buscaState.isRunning) {
+        chrome.runtime.sendMessage({ action: "CANCELAR_MINERACAO_INTELIGENTE", runId: buscaState.runId })
+          .catch(error => console.error("[VIVA] Não foi possível cancelar ao fechar a Busca Inteligente:", error));
+      }
+      buscaState.isRunning = false;
+    }
     dropdown.hidden = true;
     searchButton.setAttribute("aria-expanded", "false");
     const sidebar = getSidebar();
     if (sidebar) sidebar.classList.remove("viva-busca-sidebar-hidden");
   };
-  searchButton.addEventListener("click", () => {
+
+  const setRunState = (running, paused = false) => {
+    buscaState.isRunning = running;
+    buscaState.isPaused = paused;
+    input.disabled = running;
+    timerSlider.disabled = running;
+    progressWrap.hidden = !running;
+    turboControls.hidden = buscaState.modo !== "turbo" && !running;
+    pauseButton.hidden = !running;
+    cancelButton.hidden = !running;
+    primaryButton.disabled = running || buscaState.modo === "vazio";
+    primaryButton.textContent = running
+      ? (paused ? "⏸ Turbo pausado" : "🚀 Turbo em andamento")
+      : buscaState.modo === "normal"
+        ? `🔍 Buscar Normal: "${buscaState.termoBusca}" (sem abas)`
+        : buscaState.modo === "turbo"
+          ? `🚀 Iniciar Turbo (${buscaState.linhasReais} buscas)`
+          : "Digite uma palavra-chave";
+    pauseButton.textContent = paused ? "▶ Retomar" : "⏸ Pausar";
+  };
+
+  const updateInputMode = () => {
+    const parsed = parseBuscaInput(input.value);
+    buscaState = { ...buscaState, ...parsed };
+    progress.textContent = "";
+    progress.classList.remove("is-error");
+    if (parsed.modo === "vazio") {
+      info.textContent = "";
+      turboControls.hidden = true;
+      primaryButton.disabled = true;
+      primaryButton.textContent = "Digite uma palavra-chave";
+      primaryButton.className = "viva-btn-minerar";
+    } else if (parsed.modo === "normal") {
+      info.textContent = "Modo Normal: busca na biblioteca atual. Não abre abas nem inicia mineração.";
+      turboControls.hidden = true;
+      primaryButton.disabled = false;
+      primaryButton.textContent = `🔍 Buscar Normal: "${parsed.termoBusca}" (sem abas)`;
+      primaryButton.className = "viva-btn-minerar viva-btn-normal";
+    } else {
+      const seconds = Number(timerSlider.value) || 60;
+      info.textContent = `Modo Turbo: ${parsed.linhasReais} linhas, até 2 abas em segundo plano, estimativa ~${Math.ceil(parsed.linhasReais * seconds / 60)} min. Requer confirmação antes de abrir abas.`;
+      turboControls.hidden = false;
+      primaryButton.disabled = false;
+      primaryButton.textContent = `🚀 Iniciar Turbo (${parsed.linhasReais} buscas)`;
+      primaryButton.className = "viva-btn-minerar viva-btn-turbo";
+    }
+  };
+
+  input.addEventListener("input", updateInputMode);
+  timerSlider.addEventListener("input", () => {
+    const seconds = Number(timerSlider.value);
+    timerValue.textContent = `${seconds}s`;
+    if (seconds < 30) {
+      timerHint.textContent = "Modo rápido: coleta leve, sem score completo.";
+      timerHint.dataset.mode = "fast";
+    } else {
+      timerHint.textContent = "Coleta completa + ranking (até 2 abas).";
+      timerHint.dataset.mode = "complete";
+    }
+    if (buscaState.modo === "turbo") updateInputMode();
+  });
+
+  const startNormalSearch = async parsed => {
+    const nativeSearchSelectors = [
+      'input[placeholder*="Pesquisar"]',
+      'input[placeholder*="Search"]',
+      'input[aria-label*="Pesquisar"]',
+      'input[aria-label*="Search"]',
+      'input[type="search"]',
+    ];
+    const searchInput = nativeSearchSelectors
+      .map(selector => document.querySelector(selector))
+      .find(element => element && !element.closest("#viva-sidebar, #viva-top-bar, #viva-busca-dropdown"));
+    if (!searchInput) {
+      progress.textContent = "Campo de busca da Biblioteca não encontrado. Abra a busca nativa e tente novamente.";
+      progress.classList.add("is-error");
+      return;
+    }
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    if (setter) setter.call(searchInput, parsed.termoBusca);
+    else searchInput.value = parsed.termoBusca;
+    searchInput.focus();
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    searchInput.dispatchEvent(new Event("change", { bubbles: true }));
+    searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+    searchInput.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
+    try {
+      await chrome.storage.local.set({
+        viva_ultima_busca_normal: { termo: parsed.termoBusca, timestamp: Date.now() },
+      });
+    } catch (error) {
+      console.error("[VIVA] Não foi possível salvar a última busca normal:", error);
+    }
+    closeBuscaInteligente();
+    showAppleToast("Busca normal iniciada", `"${parsed.termoBusca}" · sem abrir abas`, "success");
+  };
+
+  primaryButton.addEventListener("click", async () => {
+    const parsed = parseBuscaInput(input.value);
+    if (parsed.modo === "vazio") return;
+    if (parsed.modo === "normal") {
+      await startNormalSearch(parsed);
+      return;
+    }
+
+    const seconds = Number(timerSlider.value) || 60;
+    const estimate = Math.ceil(parsed.linhasReais * seconds / 60);
+    const approved = window.confirm(
+      `Modo Turbo abrirá até 2 abas em segundo plano para analisar ${parsed.linhasReais} linhas. Tempo estimado: ~${estimate} min. As abas serão fechadas automaticamente. Deseja continuar?`,
+    );
+    if (!approved) return;
+
+    primaryButton.disabled = true;
+    buscaState.isStarting = true;
+    buscaState.cancelWhenStarted = false;
+    progress.classList.remove("is-error");
+    progress.textContent = "Preparando a fila autorizada…";
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: "INICIAR_MINERACAO_INTELIGENTE",
+        consentGranted: true,
+        linhas: parsed.termosOriginais,
+        options: {
+          tempoPorBusca: seconds,
+          modoRapido: seconds < 30,
+        },
+      });
+      if (!response || response.status !== "fila_iniciada") {
+        throw new Error(response?.error || "Não foi possível iniciar o Turbo.");
+      }
+      buscaState.runId = response.runId;
+      buscaState.isStarting = false;
+      if (buscaState.cancelWhenStarted) {
+        await chrome.runtime.sendMessage({
+          action: "CANCELAR_MINERACAO_INTELIGENTE",
+          runId: response.runId,
+        });
+        buscaState.cancelWhenStarted = false;
+        setRunState(false);
+        progress.textContent = "Mineração cancelada · abas encerradas";
+        return;
+      }
+      setRunState(true);
+      progress.textContent = `Autorizado · 0/${response.total} buscas · até 2 abas`;
+      latestIntelligentRanking = [];
+    } catch (error) {
+      buscaState.isStarting = false;
+      progress.textContent = error.message;
+      progress.classList.add("is-error");
+      setRunState(false);
+    }
+  });
+
+  pauseButton.addEventListener("click", async () => {
+    if (!buscaState.isRunning) return;
+    const action = buscaState.isPaused ? "RETOMAR_MINERACAO_INTELIGENTE" : "PAUSAR_MINERACAO_INTELIGENTE";
+    try {
+      const response = await chrome.runtime.sendMessage({ action, runId: buscaState.runId });
+      if (response?.error) throw new Error(response.error);
+      setRunState(true, !buscaState.isPaused);
+    } catch (error) {
+      progress.textContent = `Não foi possível alterar a mineração: ${error.message}`;
+      progress.classList.add("is-error");
+    }
+  });
+
+  cancelButton.addEventListener("click", async () => {
+    cancelButton.disabled = true;
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: "CANCELAR_MINERACAO_INTELIGENTE",
+        runId: buscaState.runId,
+      });
+      if (response?.error) throw new Error(response.error);
+      setRunState(false);
+      progress.textContent = "Mineração cancelada · abas encerradas";
+    } catch (error) {
+      progress.textContent = `Não foi possível cancelar: ${error.message}`;
+      progress.classList.add("is-error");
+    } finally {
+      cancelButton.disabled = false;
+    }
+  });
+
+  dropdown.querySelector("#viva-busca-fechar").addEventListener("click", () => closeBuscaInteligente(true));
+  searchButton.addEventListener("click", async () => {
     const shouldOpen = dropdown.hidden;
     dropdown.hidden = !shouldOpen;
     searchButton.setAttribute("aria-expanded", String(shouldOpen));
     const sidebar = getSidebar();
     if (sidebar) sidebar.classList.toggle("viva-busca-sidebar-hidden", shouldOpen);
-    if (shouldOpen) dropdown.querySelector("#viva-mass-keywords").focus();
+    if (shouldOpen) {
+      input.focus();
+      try {
+        const current = await chrome.runtime.sendMessage({ action: "GET_INTELIGENTE_STATE" });
+        if (!dropdown.hidden && current?.status === "running") {
+          buscaState.runId = current.runId;
+          buscaState.modo = "turbo";
+          buscaState.linhasReais = current.total;
+          setRunState(true, current.paused);
+          progress.textContent = current.paused
+            ? `Mineração pausada · ${current.index}/${current.total}`
+            : `Mineração em andamento · ${current.index}/${current.total}`;
+          progressWrap.hidden = false;
+          dropdown.querySelector("#viva-progress-text").textContent = progress.textContent;
+        }
+      } catch (error) {
+        console.warn("[VIVA] Não foi possível recuperar o estado do Turbo:", error.message);
+      }
+    }
   });
   dropdown.addEventListener("click", event => event.stopPropagation());
   _vivaBuscaOutsideClickHandler = event => {
     if (dropdown.hidden || dropdown.contains(event.target) || searchButton.contains(event.target)) return;
-    closeBuscaInteligente();
+    closeBuscaInteligente(false);
   };
   _vivaBuscaEscapeHandler = event => {
     if (event.key === "Escape" && !dropdown.hidden) {
-      closeBuscaInteligente();
+      closeBuscaInteligente(true);
       searchButton.focus();
     }
   };
   document.addEventListener("click", _vivaBuscaOutsideClickHandler);
   document.addEventListener("keydown", _vivaBuscaEscapeHandler);
-  dropdown.querySelector("#viva-btn-minerar").addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    const lines = dropdown.querySelector("#viva-mass-keywords").value
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(Boolean);
-    const options = {
-      exact: dropdown.querySelector("#viva-chk-exato").checked,
-      broad: dropdown.querySelector("#viva-chk-amplo").checked,
-    };
-    const progress = dropdown.querySelector("#viva-progresso-inteligente");
-    if (lines.length === 0) {
-      progress.textContent = "Adicione ao menos uma busca, uma por linha.";
-      progress.classList.add("is-error");
-      return;
-    }
-    if (!options.exact && !options.broad) {
-      progress.textContent = "Selecione busca exata, ampla ou ambas.";
-      progress.classList.add("is-error");
-      return;
-    }
-
-    button.disabled = true;
-    button.textContent = "Iniciando...";
-    progress.classList.remove("is-error");
-    progress.textContent = "Preparando as buscas...";
-    try {
-      const response = await chrome.runtime.sendMessage({
-        action: "INICIAR_MINERACAO_INTELIGENTE",
-        linhas: lines,
-        options,
-      });
-      if (!response || response.status !== "fila_iniciada") {
-        throw new Error(response?.error || "Não foi possível iniciar a mineração.");
-      }
-      latestIntelligentRanking = [];
-      const rankingButton = document.getElementById("viva-btn-show-ranking");
-      if (rankingButton) rankingButton.hidden = true;
-      progress.textContent = `Fila iniciada · ${response.total} buscas`;
-    } catch (err) {
-      progress.textContent = err.message;
-      progress.classList.add("is-error");
-    } finally {
-      button.disabled = false;
-      button.textContent = "🔍 Minerar em Massa";
-    }
-  });
 
   if (!_vivaIntelligentMessageListener) {
     _vivaIntelligentMessageListener = message => {
-      const progress = document.getElementById("viva-progresso-inteligente");
-      if (!progress) return;
       if (message.action === "PROGRESSO_INTELIGENTE") {
-        progress.textContent = message.ranking !== undefined
-          ? `${message.texto} · ${message.ranking} páginas cruzadas`
-          : message.texto || "";
+        progress.textContent = message.texto || "";
         progress.classList.toggle("is-error", String(message.texto || "").startsWith("Falha:"));
+        const match = String(message.texto || "").match(/(\d+)\/(\d+)/);
+        if (match) {
+          const percent = Math.min(100, Number(match[1]) / Math.max(1, Number(match[2])) * 100);
+          dropdown.querySelector("#viva-progress-fill").style.width = `${percent}%`;
+          dropdown.querySelector("#viva-progress-text").textContent = message.texto;
+        }
+        if (message.status === "paused") setRunState(true, true);
+        else if (message.status === "running") setRunState(true, false);
+        else if (message.status === "cancelled" || message.status === "completed" || message.status === "failed") {
+          setRunState(false);
+        }
       } else if (message.action === "RANKING_FINAL") {
         latestIntelligentRanking = Array.isArray(message.ranking) ? message.ranking : [];
-        const rankingButton = document.getElementById("viva-btn-show-ranking");
-        if (rankingButton) rankingButton.hidden = latestIntelligentRanking.length === 0;
-        progress.textContent = `Mineração finalizada · ${message.ranking?.length || 0} páginas encontradas`;
+        progress.textContent = `Mineração finalizada · ${latestIntelligentRanking.length} páginas encontradas`;
         progress.classList.remove("is-error");
+        setRunState(false);
       }
     };
     chrome.runtime.onMessage.addListener(_vivaIntelligentMessageListener);
   }
+
+  updateInputMode();
 
   setupTopBarInteractions();
 }
@@ -4288,27 +4564,39 @@ function injectDock() {
 
   const dock = document.createElement("div");
   dock.id = "viva-dock";
-  dock.className = "viva-dock viva-footer-dock viva-el";
+  dock.className = "viva-dock viva-el";
 
   dock.innerHTML = `
-    <button class="viva-btn viva-btn-red-pro viva-dock-ranking ver-top-btn" id="viva-btn-show-ranking" type="button" title="Abre o ranking das bibliotecas mais escaladas" hidden>⚡ Bibliotecas Escaladas</button>
-    <div class="viva-dock-engine">
-      <span class="viva-dock-engine-label">MOTOR VIVA</span>
-      <span id="viva-motor-status" class="viva-motor-status viva-motor-viva">⚡ O(1) · ${lastCycleDurationMs || 0}ms (${activeCardData.length} ads)</span>
+    <div class="viva-dock-left"></div>
+    <div class="viva-dock-center">
+      <button id="viva-btn-show-ranking" class="viva-btn viva-btn-red-pro viva-dock-ranking ver-top-btn" type="button" title="Abre o ranking das bibliotecas mais escaladas">⚡ VER TOP ANUNCIANTES</button>
+    </div>
+    <div class="viva-dock-right">
+      <div class="viva-dock-engine">
+        <span class="viva-dock-engine-label">MOTOR VIVA</span>
+        <span id="viva-motor-status" class="viva-motor-status viva-motor-viva">⚡ O(1) · ${lastCycleDurationMs || 0}ms (${activeCardData.length} ads)</span>
+      </div>
     </div>
   `;
 
   document.body.appendChild(dock);
   const rankingBtn = dock.querySelector("#viva-btn-show-ranking");
-  if (rankingBtn) rankingBtn.addEventListener("click", () => showRankingOverlay(latestIntelligentRanking));
+  if (rankingBtn) {
+    rankingBtn.addEventListener("click", () => {
+      if (latestIntelligentRanking.length > 0) {
+        showRankingOverlay(latestIntelligentRanking);
+      } else {
+        showAppleToast("Nenhum ranking ainda", "Use a Busca Inteligente Turbo para gerar o Top", "error");
+      }
+    });
+  }
   if (!_vivaRankingFeatureLogShown) {
     _vivaRankingFeatureLogShown = true;
-    console.log("[VIVA] Hack Ranking Escalado implementado - Score Ads+Dias+Recente - Overlay blindado anti-travamento");
+    console.log("[VIVA] Dock fixo: VER TOP ANUNCIANTES centralizado + MOTOR VIVA à direita");
   }
   chrome.storage.local.get("viva_ultimo_ranking")
     .then(data => {
       latestIntelligentRanking = Array.isArray(data.viva_ultimo_ranking) ? data.viva_ultimo_ranking : [];
-      if (rankingBtn) rankingBtn.hidden = latestIntelligentRanking.length === 0;
     })
     .catch(error => console.error("[VIVA] Não foi possível recuperar o último ranking salvo:", error));
 }

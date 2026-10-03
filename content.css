@@ -1112,9 +1112,28 @@ input:checked + .viva-slider:before {
 }
 
 .viva-busca-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
   margin-bottom: 10px !important;
   font-size: 14px !important;
   font-weight: 700 !important;
+}
+
+.viva-busca-close {
+  width: 30px !important;
+  height: 30px !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  color: var(--viva-muted) !important;
+  background: #f2f2f7 !important;
+  font-size: 15px !important;
+  cursor: pointer !important;
+}
+
+.viva-busca-close:hover {
+  color: var(--viva-text) !important;
+  background: #e5e5ea !important;
 }
 
 .viva-busca-dropdown textarea {
@@ -1145,6 +1164,46 @@ input:checked + .viva-slider:before {
   font-size: 11px !important;
 }
 
+.viva-busca-info {
+  min-height: 16px !important;
+  margin-top: 8px !important;
+  color: var(--viva-muted) !important;
+  font-size: 11px !important;
+  line-height: 1.45 !important;
+}
+
+.viva-turbo-controls[hidden],
+.viva-progress-wrap[hidden] {
+  display: none !important;
+}
+
+.viva-timer-row {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 7px !important;
+  margin-top: 12px !important;
+  color: var(--viva-text) !important;
+  font-size: 11px !important;
+}
+
+.viva-timer-row input {
+  width: 100% !important;
+  accent-color: var(--viva-accent) !important;
+}
+
+.viva-timer-row small {
+  color: var(--viva-muted) !important;
+  font-size: 10px !important;
+}
+
+.viva-timer-row small[data-mode="fast"] {
+  color: var(--viva-warning) !important;
+}
+
+.viva-busca-footer {
+  margin-top: 14px !important;
+}
+
 .viva-btn-minerar {
   width: 100% !important;
   min-height: 36px !important;
@@ -1158,6 +1217,71 @@ input:checked + .viva-slider:before {
 
 .viva-btn-minerar:disabled {
   opacity: 0.65 !important;
+  cursor: wait !important;
+}
+
+.viva-btn-minerar.viva-btn-normal {
+  background: #007aff !important;
+}
+
+.viva-btn-minerar.viva-btn-turbo {
+  background: linear-gradient(135deg, #7d4cff, #5530c9) !important;
+}
+
+.viva-btn-minerar:disabled:not([disabled="false"]) {
+  opacity: 0.65 !important;
+}
+
+.viva-progress-wrap {
+  margin-top: 14px !important;
+}
+
+.viva-progress-bar {
+  width: 100% !important;
+  height: 7px !important;
+  overflow: hidden !important;
+  border-radius: 99px !important;
+  background: #e5e5ea !important;
+}
+
+.viva-progress-bar > div {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #007aff, #7d4cff);
+  transition: width 0.25s ease;
+}
+
+#viva-progress-text {
+  margin-top: 6px !important;
+  color: var(--viva-muted) !important;
+  font-size: 10px !important;
+}
+
+.viva-turbo-actions {
+  display: flex !important;
+  gap: 8px !important;
+  margin-top: 10px !important;
+}
+
+.viva-turbo-actions button {
+  flex: 1 !important;
+  min-height: 34px !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  background: #f2f2f7 !important;
+  color: var(--viva-text) !important;
+  font: 600 11px var(--viva-font) !important;
+  cursor: pointer !important;
+}
+
+.viva-turbo-actions #viva-btn-cancelar {
+  color: #d70015 !important;
+  background: #fff0ef !important;
+}
+
+.viva-turbo-actions button:disabled {
+  opacity: 0.6 !important;
   cursor: wait !important;
 }
 
@@ -1469,21 +1593,35 @@ input:checked + .viva-slider:before {
   left: 0 !important;
   right: 0 !important;
   bottom: 0 !important;
-  height: var(--viva-dock-height) !important;
-  display: flex !important;
+  height: 62px !important;
+  z-index: 999999 !important;
+  display: grid !important;
+  grid-template-columns: 1fr auto 1fr !important;
   align-items: center !important;
-  justify-content: space-between !important;
-  flex-wrap: nowrap !important;
-  gap: 16px !important;
   padding: 0 24px !important;
-  background: var(--viva-bg) !important;
+  background: rgba(255, 255, 255, 0.94) !important;
   backdrop-filter: blur(20px) saturate(190%) !important;
   -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
   border-top: 1px solid var(--viva-border) !important;
-  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.06) !important;
-  z-index: 9999 !important;
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.08) !important;
   box-sizing: border-box !important;
   font-family: var(--viva-font) !important;
+}
+
+.viva-dock-left {
+  display: flex !important;
+}
+
+.viva-dock-center {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+.viva-dock-right {
+  display: flex !important;
+  justify-content: flex-end !important;
+  align-items: center !important;
 }
 
 .viva-dock-group {
@@ -1560,12 +1698,23 @@ input:checked + .viva-slider:before {
 .viva-dock-engine {
   display: flex !important;
   align-items: center !important;
-  gap: 12px !important;
-  margin-left: auto !important;
-  padding: 8px 13px !important;
+  gap: 10px !important;
+  padding: 8px 14px !important;
   background: rgba(0, 0, 0, 0.035) !important;
   border: 1px solid var(--viva-border) !important;
   border-radius: 10px !important;
+}
+
+.viva-dock-ranking.ver-top-btn {
+  background: linear-gradient(180deg, #ff3b30 0%, #d70015 100%) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  padding: 10px 18px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  box-shadow: 0 2px 8px rgba(255, 59, 48, 0.3) !important;
 }
 
 .viva-dock-engine-label {
@@ -1626,22 +1775,20 @@ input:checked + .viva-slider:before {
     padding: 0 8px !important;
     font-size: 9px !important;
   }
-  .viva-dock {
-    padding: 8px 16px !important;
-    gap: 8px !important;
-    height: auto !important;
-    min-height: var(--viva-dock-height) !important;
-  }
+  .viva-dock { padding: 0 8px !important; }
   .viva-dock-ranking {
-    padding: 0 10px !important;
-    font-size: 10px !important;
+    padding: 0 8px !important;
+    font-size: 9px !important;
   }
   .viva-dock-engine {
-    gap: 6px !important;
-    padding: 7px 9px !important;
+    gap: 4px !important;
+    padding: 5px 6px !important;
+  }
+  .viva-dock-engine-label {
+    font-size: 8px !important;
   }
   .viva-motor-status {
-    font-size: 10px !important;
+    font-size: 8px !important;
   }
 }
 
@@ -1706,55 +1853,222 @@ body {
   z-index: 1 !important;
 }
 
+/* Destaque visual por fase. Fica após os estilos-base para não perder as regras
+   estruturais do frame nem ser sobrescrito pelo bloco legado acima. */
+.viva-card-frame {
+  position: relative !important;
+  border: 1.5px solid rgba(0, 0, 0, 0.06) !important;
+  border-left-width: 5px !important;
+  border-radius: 16px !important;
+  background: #fff !important;
+  overflow: hidden !important;
+  isolation: isolate !important;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease, filter 0.25s ease !important;
+  contain: layout style paint !important;
+}
+
+.viva-card-frame:hover {
+  transform: translateY(-3px) !important;
+  filter: brightness(1.02) !important;
+}
+
+.viva-card-frame.viva-stage-monstro {
+  border-left-color: #AF52DE !important;
+  background: linear-gradient(135deg, #fff 0%, #F9F0FF 50%, #F3E8FF 100%) !important;
+  box-shadow: 0 0 0 1px rgba(175, 82, 222, 0.14), 0 6px 28px rgba(175, 82, 222, 0.28), 0 0 52px rgba(175, 82, 222, 0.2) !important;
+}
+
+.viva-card-frame.viva-stage-monstro::after {
+  content: "" !important;
+  position: absolute !important;
+  inset: -2px !important;
+  background: linear-gradient(135deg, #AF52DE, #7D2AE8, #AF52DE) !important;
+  border-radius: 18px !important;
+  z-index: -1 !important;
+  opacity: 0.18 !important;
+  animation: viva-border-glow 2s ease-in-out infinite alternate !important;
+  filter: blur(2px) !important;
+}
+
+.viva-card-frame.viva-stage-monstro img,
+.viva-card-frame.viva-stage-monstro video {
+  filter: brightness(1.12) saturate(1.35) contrast(1.08) !important;
+  transition: filter 0.35s ease !important;
+}
+
+.viva-card-frame.viva-stage-monstro .viva-escala-chip-monstro {
+  background: linear-gradient(135deg, #AF52DE 0%, #7D2AE8 50%, #5E17EB 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 0 22px rgba(175, 82, 222, 0.65), 0 4px 14px rgba(175, 82, 222, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  font-weight: 800 !important;
+  animation: viva-pulse-monstro 1.8s ease-in-out infinite alternate !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.25) !important;
+}
+
+.viva-card-frame.viva-stage-bruta {
+  border-left-color: #FF3B30 !important;
+  background: linear-gradient(135deg, #fff 0%, #FFF5F5 60%, #FFE5E5 100%) !important;
+  box-shadow: 0 0 0 1px rgba(255, 59, 48, 0.15), 0 6px 24px rgba(255, 59, 48, 0.26), 0 0 40px rgba(255, 59, 48, 0.18) !important;
+}
+
+.viva-card-frame.viva-stage-bruta img,
+.viva-card-frame.viva-stage-bruta video {
+  filter: brightness(1.1) saturate(1.3) contrast(1.07) !important;
+  transition: filter 0.35s ease !important;
+}
+
+.viva-card-frame.viva-stage-bruta .viva-escala-chip-bruta {
+  background: linear-gradient(135deg, #FF453A 0%, #FF3B30 50%, #D70015 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 0 20px rgba(255, 59, 48, 0.6), 0 4px 12px rgba(255, 59, 48, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+  animation: viva-pulse-bruta 1.5s ease-in-out infinite alternate !important;
+  font-weight: 800 !important;
+}
+
+.viva-card-frame.viva-stage-validando {
+  border-left-color: #007AFF !important;
+  background: linear-gradient(135deg, #fff 0%, #F0F7FF 100%) !important;
+  box-shadow: 0 3px 18px rgba(0, 122, 255, 0.14), 0 0 24px rgba(0, 122, 255, 0.09) !important;
+}
+
+.viva-card-frame.viva-stage-validando img,
+.viva-card-frame.viva-stage-validando video {
+  filter: brightness(1.05) saturate(1.18) !important;
+}
+
+.viva-card-frame.viva-stage-validando .viva-escala-chip-validando {
+  background: linear-gradient(135deg, #0A84FF 0%, #007AFF 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 0 14px rgba(0, 122, 255, 0.45), 0 3px 8px rgba(0, 122, 255, 0.28) !important;
+  font-weight: 700 !important;
+}
+
+.viva-card-frame.viva-stage-potencial {
+  border-left-color: #FF9500 !important;
+  background: linear-gradient(135deg, #fff 0%, #FFF8F0 100%) !important;
+  box-shadow: 0 3px 18px rgba(255, 149, 0, 0.14), 0 0 22px rgba(255, 149, 0, 0.09) !important;
+}
+
+.viva-card-frame.viva-stage-potencial img,
+.viva-card-frame.viva-stage-potencial video {
+  filter: brightness(1.06) saturate(1.2) !important;
+}
+
+.viva-card-frame.viva-stage-potencial .viva-escala-chip-potencial {
+  background: linear-gradient(135deg, #FF9F0A 0%, #FF9500 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 0 14px rgba(255, 149, 0, 0.45) !important;
+  font-weight: 700 !important;
+}
+
+.viva-card-frame.viva-stage-teste {
+  border-left-color: #8E8E93 !important;
+}
+
+.viva-card-frame .viva-thumb-viva {
+  transition: filter 0.4s ease !important;
+}
+
+.viva-card-frame.viva-stage-monstro:hover img,
+.viva-card-frame.viva-stage-monstro:hover video {
+  filter: brightness(1.2) saturate(1.45) contrast(1.1) !important;
+}
+
+.viva-card-frame.viva-stage-bruta:hover img,
+.viva-card-frame.viva-stage-bruta:hover video {
+  filter: brightness(1.18) saturate(1.4) contrast(1.09) !important;
+}
+
+.viva-card-frame.viva-stage-validando:hover img,
+.viva-card-frame.viva-stage-validando:hover video {
+  filter: brightness(1.1) saturate(1.25) !important;
+}
+
+.viva-card-frame.viva-stage-potencial:hover img,
+.viva-card-frame.viva-stage-potencial:hover video {
+  filter: brightness(1.12) saturate(1.28) !important;
+}
+
+.viva-card-frame [class*="1x ANÚNCIOS"],
+.viva-card-frame [class*="DIAS ATIVO"] {
+  backdrop-filter: blur(10px) !important;
+  font-weight: 600 !important;
+}
+
+.viva-escala-bar {
+  position: absolute !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  height: 4px !important;
+  border-radius: 0 0 14px 14px !important;
+  opacity: 0.9 !important;
+  pointer-events: none !important;
+  z-index: 3 !important;
+}
+
+.viva-escala-bar[hidden] {
+  display: none !important;
+}
+
+.viva-card-frame.viva-stage-monstro .viva-escala-bar {
+  height: 5px !important;
+  background: linear-gradient(90deg, #AF52DE, #7D2AE8) !important;
+  box-shadow: 0 0 12px #AF52DE !important;
+}
+
+.viva-card-frame.viva-stage-bruta .viva-escala-bar {
+  height: 5px !important;
+  background: linear-gradient(90deg, #FF453A, #FF3B30) !important;
+  box-shadow: 0 0 10px #FF3B30 !important;
+}
+
+.viva-card-frame.viva-stage-validando .viva-escala-bar {
+  background: linear-gradient(90deg, #0A84FF, #007AFF) !important;
+}
+
+.viva-card-frame.viva-stage-potencial .viva-escala-bar {
+  background: linear-gradient(90deg, #FF9F0A, #FF9500) !important;
+}
+
+.viva-card-frame.viva-stage-monstro [class*="play"],
+.viva-card-frame.viva-stage-bruta [class*="play"] {
+  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.8)) !important;
+  transform: scale(1.1) !important;
+}
+
+@keyframes viva-pulse-monstro {
+  from { box-shadow: 0 0 22px rgba(175, 82, 222, 0.65), 0 4px 14px rgba(175, 82, 222, 0.45); transform: scale(1); }
+  to { box-shadow: 0 0 36px rgba(175, 82, 222, 0.95), 0 8px 24px rgba(175, 82, 222, 0.65); transform: scale(1.04); }
+}
+
+@keyframes viva-border-glow {
+  from { opacity: 0.18; }
+  to { opacity: 0.38; }
+}
+
+@keyframes viva-pulse-bruta {
+  from { box-shadow: 0 0 20px rgba(255, 59, 48, 0.6); }
+  to { box-shadow: 0 0 32px rgba(255, 59, 48, 0.85); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viva-card-frame,
+  .viva-card-frame::after,
+  .viva-card-frame .viva-escala-chip-monstro,
+  .viva-card-frame .viva-escala-chip-bruta {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 .viva-busca-sidebar-hidden {
   transform: translateX(120%) !important;
 }
 
-.viva-footer-dock {
-  left: 50% !important;
-  right: auto !important;
-  bottom: 16px !important;
-  width: max-content !important;
-  max-width: calc(100vw - 32px) !important;
-  height: auto !important;
-  min-height: 0 !important;
-  padding: 8px 16px !important;
-  justify-content: center !important;
-  gap: 16px !important;
-  background: rgba(255, 255, 255, 0.92) !important;
-  border: 1px solid rgba(0, 0, 0, 0.08) !important;
-  border-radius: 16px !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
-  transform: translateX(-50%) !important;
-  z-index: 9999 !important;
-}
-
-.viva-footer-dock .viva-dock-engine {
-  margin-left: 0 !important;
-}
-
-.viva-footer-dock,
 .viva-motor-viva {
   contain: layout style paint !important;
-}
-
-.viva-footer-dock {
-  will-change: transform;
-}
-
-.viva-footer-dock .ver-top-btn {
-  background: linear-gradient(180deg, #ff3b30 0%, #d70015 100%) !important;
-  color: #fff !important;
-  border: none !important;
-  border-radius: 10px !important;
-  padding: 10px 20px !important;
-  font-size: 13px !important;
-  font-weight: 600 !important;
-  box-shadow: 0 2px 8px rgba(255, 59, 48, 0.3) !important;
-}
-
-.viva-dock-ranking[hidden] {
-  display: none !important;
 }
 
 .viva-ranking-overlay {
@@ -1983,31 +2297,6 @@ body {
 }
 
 @media (max-width: 720px) {
-  .viva-footer-dock {
-    width: max-content !important;
-    max-width: calc(100vw - 24px) !important;
-    gap: 8px !important;
-    padding: 7px 10px !important;
-  }
-
-  .viva-footer-dock .viva-dock-engine {
-    gap: 6px !important;
-    padding: 6px 8px !important;
-  }
-
-  .viva-footer-dock .viva-dock-engine-label {
-    font-size: 8px !important;
-  }
-
-  .viva-footer-dock .viva-motor-status {
-    font-size: 10px !important;
-  }
-
-  .viva-footer-dock .ver-top-btn {
-    padding: 8px 10px !important;
-    font-size: 11px !important;
-  }
-
   .viva-ranking-overlay {
     padding: 8px !important;
   }
@@ -2092,4 +2381,12 @@ body {
   color: rgba(255, 255, 255, 0.7) !important;
   font-size: 11px !important;
   font-weight: 400 !important;
+}
+
+.viva-apple-toast {
+  bottom: 90px !important;
+}
+
+body {
+  padding-bottom: 62px !important;
 }
