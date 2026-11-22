@@ -289,6 +289,25 @@
     <div class="radar-state" id="notifyState">Depois de cada rodada do radar, manda no seu canal só os criativos em escala que ainda não foram avisados. Fica guardado só neste navegador.</div>
   </div>
 
+  <div class="radar notify" id="exportBox">
+    <div class="radar-head">
+      <span class="radar-title">Planilha automática</span>
+      <label class="apple-switch">
+        <input type="checkbox" id="exportAuto">
+        <span class="apple-slider"></span>
+      </label>
+    </div>
+    <label class="field-label" for="exportFormato">Formato</label>
+    <select id="exportFormato">
+      <option value="xlsx">Excel (.xlsx) — abas organizadas</option>
+      <option value="csv">CSV (.csv) — para importar em outros sistemas</option>
+    </select>
+    <div class="radar-actions">
+      <button class="btn btn-primary" id="exportNowBtn" type="button">Baixar acervo agora</button>
+    </div>
+    <div class="radar-state" id="exportState">Ao chegar em 10.000 criativos, baixa sozinho em Downloads/VivaSpy (e de novo a cada 5.000 novos).</div>
+  </div>
+
   <details class="advanced">
     <summary>Conexão com o monitor</summary>
     <div class="advanced-body">

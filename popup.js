@@ -274,6 +274,52 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  // ── Planilha automática (XLSX/CSV) ────────────────────────────────────────────────────────
+  const exportAuto = document.getElementById("exportAuto");
+  const exportFormato = document.getElementById("exportFormato");
+  const exportNowBtn = document.getElementById("exportNowBtn");
+  const exportState = document.getElementById("exportState");
+
+  function desenharExport(config, estado, acervo) {
+    const c = config || {};
+    exportAuto.checked = c.auto !== false;
+    exportFormato.value = c.formato === "csv" ? "csv" : "xlsx";
+    exportState.className = "radar-state";
+    const total = Array.isArray(acervo) ? acervo.length : 0;
+    const partes = [`Acervo: ${total.toLocaleString("pt-BR")} de 10.000 criativos.`];
+    if (c.auto === false) partes.push("Download automático desligado.");
+    else partes.push("Baixa sozinho ao chegar em 10.000 (pasta Downloads/VivaSpy).");
+    const e = estado || {};
+    if (e.lastError && e.lastErrorAt) { exportState.classList.add("err"); partes.push(`Falha no último download: ${e.lastError}`); }
+    else if (e.lastAt) partes.push(`Último arquivo: ${horaCurta(e.lastAt)} · ${Number(e.lastCount || 0).toLocaleString("pt-BR")} criativos.`);
+    exportState.textContent = partes.join(" ");
+  }
+  function carregarExport() {
+    chrome.storage.local.get(["viva_export_config", "viva_export_state", "viva_acervo"], (data) => {
+      desenharExport(data.viva_export_config, data.viva_export_state, data.viva_acervo);
+    });
+  }
+  function salvarExport() {
+    chrome.storage.local.set({ viva_export_config: { auto: exportAuto.checked, formato: exportFormato.value } }, carregarExport);
+  }
+  exportAuto.addEventListener("change", salvarExport);
+  exportFormato.addEventListener("change", salvarExport);
+  exportNowBtn.addEventListener("click", () => {
+    exportNowBtn.disabled = true;
+    exportState.className = "radar-state";
+    exportState.textContent = "Gerando arquivo…";
+    chrome.runtime.sendMessage({ action: "EXPORT_NOW" }, (resp) => {
+      void chrome.runtime.lastError;
+      exportNowBtn.disabled = false;
+      if (resp && resp.status === "ok") carregarExport();
+      else { exportState.className = "radar-state err"; exportState.textContent = (resp && resp.error) || "Não consegui baixar agora."; }
+    });
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && (changes.viva_export_state || changes.viva_acervo)) carregarExport();
+  });
+  carregarExport();
+
   // Abrir Meta Ad Library
   openLibraryBtn.addEventListener("click", () => {
     chrome.tabs.create({ url: "https://www.facebook.com/ads/library/?active_status=active" });

@@ -2637,7 +2637,7 @@ body {
 @media (max-width: 720px) {
   .viva-intel-thumb { flex-basis: 84px !important; width: 84px !important; min-height: 84px !important; }
   .viva-intel-score { flex-basis: 48px !important; }
-  .viva-intel-rank { display: none !important; }
+  .viva-intel-rank span { display: none !important; }
 }
 
 
@@ -3047,3 +3047,21 @@ body { padding-bottom: 0 !important; }
 .viva-intel-radar-chip { font: 700 11.5px var(--viva-font) !important; padding: 3px 9px !important; border-radius: 999px !important; background: #e8f7ee !important; color: #136c3a !important; }
 .viva-intel-radar-chip.atrasado { background: #fff4d6 !important; color: #8a5a00 !important; }
 .viva-intel-radar-chip.semsinal { background: #fde4e2 !important; color: #b3261e !important; }
+
+/* Centro: filtros avançados, seleção e download */
+.viva-intel-rank { display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; gap: 8px !important; }
+.viva-intel-sel { width: 17px !important; height: 17px !important; margin: 0 !important; cursor: pointer !important; accent-color: #0071e3 !important; }
+.viva-intel-card.is-selected { box-shadow: 0 0 0 2px #0071e3 inset !important; background: #f2f8ff !important; }
+.viva-intel-actionbar { display: flex !important; flex-direction: column !important; gap: 8px !important; padding: 8px 22px 10px !important; background: #fafafc !important; border-bottom: 1px solid rgba(0,0,0,0.07) !important; }
+.viva-intel-adv > summary { cursor: pointer !important; font: 650 12.5px var(--viva-font) !important; color: #1d1d1f !important; list-style: none !important; user-select: none !important; }
+.viva-intel-adv > summary::-webkit-details-marker { display: none !important; }
+.viva-intel-adv-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)) !important; gap: 8px 14px !important; margin: 10px 0 !important; }
+.viva-intel-adv-grid label { display: flex !important; flex-direction: column !important; gap: 3px !important; font: 600 11.5px var(--viva-font) !important; color: #515154 !important; }
+.viva-intel-adv-grid input[type="number"], .viva-intel-adv-grid input[type="text"], .viva-intel-adv-grid select { min-height: 30px !important; padding: 0 9px !important; border: 1px solid rgba(0,0,0,0.14) !important; border-radius: 8px !important; background: #fff !important; font: 500 12px var(--viva-font) !important; color: #1d1d1f !important; }
+.viva-intel-adv-grid .viva-adv-check { flex-direction: row !important; align-items: center !important; gap: 7px !important; }
+.viva-intel-presets, .viva-intel-exportbar { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 8px !important; }
+.viva-intel-presets select, .viva-intel-exportbar select { min-height: 30px !important; padding: 0 9px !important; border: 1px solid rgba(0,0,0,0.14) !important; border-radius: 8px !important; background: #fff !important; font: 500 12px var(--viva-font) !important; }
+.viva-intel-presets button, .viva-intel-exportbar button { min-height: 30px !important; padding: 0 12px !important; border: 1px solid rgba(0,0,0,0.14) !important; border-radius: 8px !important; background: #fff !important; font: 600 12px var(--viva-font) !important; color: #1d1d1f !important; cursor: pointer !important; }
+.viva-intel-exportbar button.viva-exp-btn { background: #0071e3 !important; border-color: #0071e3 !important; color: #fff !important; }
+.viva-intel-exportbar button:disabled { opacity: 0.55 !important; cursor: default !important; }
+.viva-sel-info { font: 700 12px var(--viva-font) !important; color: #0071e3 !important; margin-right: auto !important; }

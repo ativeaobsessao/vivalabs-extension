@@ -3436,7 +3436,12 @@ function setupSidebarInteractions() {
 // Mantém o mesmo mecanismo de pausa do motor da tela antiga (rankingOverlayPaused) enquanto aberto.
 let _vivaIntelRerender = null;
 let _vivaIntelRerenderTimer = null;
-const _vivaIntelUi = { tab: "criativos", filtro: "todos", fonte: "", sort: "score", busca: "", status: "ativas", termos: [], minTermos: 1 };
+const VIVA_ADV_VAZIO = { dup: 0, diasMin: 0, diasMax: 0, adv: 0, score: 0, midia: "", dominio: "", comDest: false };
+const _vivaIntelUi = { tab: "criativos", filtro: "todos", fonte: "", sort: "score", busca: "", status: "ativas", termos: [], minTermos: 1, adv: { ...VIVA_ADV_VAZIO } };
+// Seleção de criativos para baixar (chaves do acervo). Vale só enquanto o Centro estiver aberto.
+const _vivaIntelSel = new Set();
+let _vivaIntelOnSel = null;
+const VIVA_PRESETS_KEY = "viva_filtros_salvos";
 // Cofre da equipe (preenchido pelo background): quem achou, etiqueta de trabalho e estado do sync.
 let latestTeamMeta = {};
 let latestSyncState = null;
@@ -3536,7 +3541,25 @@ async function intelMonitorar(button, nome, pageId, adsCount) {
 
 function intelBuildCreativeCard(c, posicao) {
   const card = intelEl("article", `viva-intel-card${c._emEscala ? " is-hot" : ""}`);
-  card.appendChild(intelEl("div", "viva-intel-rank", `#${posicao}`));
+  const rank = intelEl("div", "viva-intel-rank");
+  const chave = acervoKey(c);
+  if (chave) {
+    const sel = document.createElement("input");
+    sel.type = "checkbox";
+    sel.className = "viva-intel-sel";
+    sel.title = "Selecionar para baixar";
+    sel.setAttribute("aria-label", "Selecionar criativo para baixar");
+    sel.checked = _vivaIntelSel.has(chave);
+    sel.addEventListener("change", () => {
+      if (sel.checked) _vivaIntelSel.add(chave); else _vivaIntelSel.delete(chave);
+      card.classList.toggle("is-selected", sel.checked);
+      if (_vivaIntelOnSel) _vivaIntelOnSel();
+    });
+    card.classList.toggle("is-selected", sel.checked);
+    rank.appendChild(sel);
+  }
+  rank.appendChild(intelEl("span", null, `#${posicao}`));
+  card.appendChild(rank);
 
   const adUrl = c.url || (c.id ? `https://www.facebook.com/ads/library/?id=${encodeURIComponent(c.id)}` : "");
   const thumb = intelEl("a", "viva-intel-thumb");
@@ -3819,6 +3842,39 @@ function showIntelCenter() {
         </select>
         <input id="viva-intel-search" type="search" placeholder="Filtrar por anunciante, texto ou domínio" aria-label="Filtrar">
       </div>
+      <div class="viva-intel-actionbar" id="viva-intel-actionbar">
+        <details class="viva-intel-adv" id="viva-intel-adv">
+          <summary id="viva-intel-adv-sum">⚙ Filtros avançados</summary>
+          <div class="viva-intel-adv-grid">
+            <label>Duplicados ≥ <input type="number" min="0" id="viva-adv-dup" placeholder="ex.: 8"></label>
+            <label>Dias no ar ≥ <input type="number" min="0" id="viva-adv-diasmin" placeholder="ex.: 3"></label>
+            <label>Dias no ar ≤ <input type="number" min="0" id="viva-adv-diasmax" placeholder="ex.: 14"></label>
+            <label>Anúncios da página ≥ <input type="number" min="0" id="viva-adv-adv" placeholder="ex.: 20"></label>
+            <label>Score ≥ <input type="number" min="0" id="viva-adv-score" placeholder="ex.: 100"></label>
+            <label>Mídia <select id="viva-adv-midia"><option value="">Todas</option><option value="video">Vídeo</option><option value="imagem">Imagem</option></select></label>
+            <label>Oferta (domínio contém) <input type="text" id="viva-adv-dominio" placeholder="ex.: glyco"></label>
+            <label class="viva-adv-check"><input type="checkbox" id="viva-adv-comdest"> Só com página de destino</label>
+          </div>
+          <div class="viva-intel-presets">
+            <select id="viva-intel-preset" aria-label="Filtros salvos"><option value="">📂 Filtros salvos…</option></select>
+            <button type="button" id="viva-preset-save">💾 Salvar filtro atual</button>
+            <button type="button" id="viva-preset-del" title="Apagar o filtro salvo selecionado">🗑</button>
+            <button type="button" id="viva-adv-clear">↺ Limpar todos os filtros</button>
+          </div>
+        </details>
+        <div class="viva-intel-exportbar">
+          <span id="viva-sel-info" class="viva-sel-info"></span>
+          <button type="button" id="viva-sel-all">☑ Selecionar os filtrados</button>
+          <button type="button" id="viva-sel-clear">☐ Limpar seleção</button>
+          <select id="viva-exp-escopo" aria-label="O que baixar">
+            <option value="selecionados">Baixar: selecionados</option>
+            <option value="filtro">Baixar: filtro atual</option>
+            <option value="tudo">Baixar: acervo inteiro</option>
+          </select>
+          <button type="button" id="viva-exp-xlsx" class="viva-exp-btn">⬇ Excel</button>
+          <button type="button" id="viva-exp-csv" class="viva-exp-btn">⬇ CSV</button>
+        </div>
+      </div>
       <div id="viva-intel-termos" class="viva-intel-termos" aria-label="Termos-chave (clique para exigir o termo)"></div>
       <div id="viva-intel-list" class="viva-intel-list" role="list"></div>
     </section>
@@ -3875,6 +3931,16 @@ function showIntelCenter() {
       if (_vivaIntelUi.fonte && !(c.fontes || []).includes(_vivaIntelUi.fonte)) return false;
       if (_vivaIntelUi.minTermos > 1 && c._nTermos < _vivaIntelUi.minTermos) return false;
       if (_vivaIntelUi.termos.length && !_vivaIntelUi.termos.every(t => (c.fontes || []).includes(t))) return false;
+      const A = _vivaIntelUi.adv;
+      if (A.dup > 0 && (Number(c.dup) || 1) < A.dup) return false;
+      if (A.diasMin > 0 && (c._dias === null || c._dias < A.diasMin)) return false;
+      if (A.diasMax > 0 && (c._dias === null || c._dias > A.diasMax)) return false;
+      if (A.adv > 0 && (Number(c.adv) || 0) < A.adv) return false;
+      if (A.score > 0 && c._score < A.score) return false;
+      if (A.midia === "video" && !c.video) return false;
+      if (A.midia === "imagem" && c.video) return false;
+      if (A.dominio && !String(c.dom || "").toLowerCase().includes(A.dominio.toLowerCase())) return false;
+      if (A.comDest && !(c.dest || c.dom)) return false;
       if (_vivaIntelUi.status === "ativas" && c._status === "descartada") return false;
       if (["nova", "analise", "minerada", "descartada"].includes(_vivaIntelUi.status) && c._status !== _vivaIntelUi.status) return false;
       if (termo && !`${c.nome} ${c.copy} ${c.dom}`.toLowerCase().includes(termo)) return false;
@@ -4027,6 +4093,7 @@ function showIntelCenter() {
       mostrarMais();
     }
     console.info(`[VIVA][DIAG-C1] centro renderizado: aba=${_vivaIntelUi.tab} · ${itensVisiveis.length}/${latestAcervo.length} itens`);
+    if (_vivaIntelOnSel) _vivaIntelOnSel();
   };
 
   overlay.querySelectorAll(".viva-intel-tabs button").forEach(btn => {
@@ -4072,6 +4139,194 @@ function showIntelCenter() {
     if (event.key === "Escape") closeRankingOverlay();
   });
 
+  // ── Filtros avançados, presets, seleção e download (XLSX/CSV) ──
+  const advRefs = {
+    dup: $("#viva-adv-dup"), diasMin: $("#viva-adv-diasmin"), diasMax: $("#viva-adv-diasmax"), adv: $("#viva-adv-adv"),
+    score: $("#viva-adv-score"), midia: $("#viva-adv-midia"), dominio: $("#viva-adv-dominio"), comDest: $("#viva-adv-comdest"),
+  };
+  const advSum = $("#viva-intel-adv-sum");
+  const presetSel = $("#viva-intel-preset");
+  const selInfo = $("#viva-sel-info");
+  const escopoSel = $("#viva-exp-escopo");
+  const btnXlsx = $("#viva-exp-xlsx");
+  const btnCsv = $("#viva-exp-csv");
+  let presets = [];
+  let escopoManual = false;
+
+  const contarAdvAtivos = () => {
+    const A = _vivaIntelUi.adv;
+    return [A.dup > 0, A.diasMin > 0, A.diasMax > 0, A.adv > 0, A.score > 0, !!A.midia, !!A.dominio, A.comDest].filter(Boolean).length;
+  };
+  const lerAdvDoForm = () => {
+    const num = el => Math.max(0, Math.floor(Number(el.value) || 0));
+    _vivaIntelUi.adv = {
+      dup: num(advRefs.dup), diasMin: num(advRefs.diasMin), diasMax: num(advRefs.diasMax), adv: num(advRefs.adv), score: num(advRefs.score),
+      midia: advRefs.midia.value, dominio: advRefs.dominio.value.trim(), comDest: advRefs.comDest.checked,
+    };
+  };
+  const escreverAdvNoForm = () => {
+    const A = _vivaIntelUi.adv;
+    advRefs.dup.value = A.dup || ""; advRefs.diasMin.value = A.diasMin || ""; advRefs.diasMax.value = A.diasMax || "";
+    advRefs.adv.value = A.adv || ""; advRefs.score.value = A.score || ""; advRefs.midia.value = A.midia || "";
+    advRefs.dominio.value = A.dominio || ""; advRefs.comDest.checked = !!A.comDest;
+    const n = contarAdvAtivos();
+    advSum.textContent = `⚙ Filtros avançados${n ? ` (${n} ativo${n > 1 ? "s" : ""})` : ""}`;
+  };
+  let advTimer = null;
+  Object.values(advRefs).forEach(el => {
+    const evento = el.tagName === "SELECT" || el.type === "checkbox" ? "change" : "input";
+    el.addEventListener(evento, () => {
+      clearTimeout(advTimer);
+      advTimer = setTimeout(() => { lerAdvDoForm(); escreverAdvNoForm(); renderTudo(); }, evento === "input" ? 250 : 0);
+    });
+  });
+
+  const limparTudo = () => {
+    Object.assign(_vivaIntelUi, { filtro: "todos", fonte: "", sort: "score", busca: "", status: "ativas", termos: [], minTermos: 1, adv: { ...VIVA_ADV_VAZIO } });
+    searchInput.value = "";
+    escreverAdvNoForm();
+    renderTudo();
+  };
+  $("#viva-adv-clear").addEventListener("click", limparTudo);
+
+  // presets (guardados no navegador)
+  const instantaneoFiltros = () => ({ filtro: _vivaIntelUi.filtro, fonte: _vivaIntelUi.fonte, sort: _vivaIntelUi.sort, busca: _vivaIntelUi.busca, status: _vivaIntelUi.status, termos: [..._vivaIntelUi.termos], minTermos: _vivaIntelUi.minTermos, adv: { ..._vivaIntelUi.adv } });
+  const desenharPresets = (selecionado = "") => {
+    presetSel.textContent = "";
+    const ph = document.createElement("option"); ph.value = ""; ph.textContent = presets.length ? "📂 Filtros salvos…" : "📂 Nenhum filtro salvo ainda"; presetSel.appendChild(ph);
+    presets.forEach((pr, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = pr.nome; presetSel.appendChild(o); });
+    presetSel.value = selecionado;
+  };
+  const gravarPresets = () => { try { chrome.storage.local.set({ [VIVA_PRESETS_KEY]: presets }); } catch (_) { /* sem storage */ } };
+  try {
+    chrome.storage.local.get(VIVA_PRESETS_KEY).then(d => {
+      presets = Array.isArray(d[VIVA_PRESETS_KEY]) ? d[VIVA_PRESETS_KEY].filter(x => x && typeof x.nome === "string" && x.ui).slice(0, 30) : [];
+      desenharPresets();
+    }).catch(() => desenharPresets());
+  } catch (_) { desenharPresets(); }
+  presetSel.addEventListener("change", () => {
+    const pr = presets[Number(presetSel.value)];
+    if (!pr) return;
+    const ui = pr.ui || {};
+    Object.assign(_vivaIntelUi, {
+      filtro: ui.filtro || "todos", fonte: ui.fonte || "", sort: ui.sort || "score", busca: ui.busca || "", status: ui.status || "ativas",
+      termos: Array.isArray(ui.termos) ? ui.termos.slice(0, 20) : [], minTermos: Number(ui.minTermos) || 1, adv: { ...VIVA_ADV_VAZIO, ...(ui.adv || {}) }, tab: "criativos",
+    });
+    searchInput.value = _vivaIntelUi.busca;
+    escreverAdvNoForm();
+    renderTudo();
+  });
+  $("#viva-preset-save").addEventListener("click", () => {
+    const nome = String(window.prompt("Nome para este filtro (ex.: Escala nova, 8+ dup):", "") || "").trim().slice(0, 40);
+    if (!nome) return;
+    const i = presets.findIndex(pr => pr.nome.toLowerCase() === nome.toLowerCase());
+    const novo = { nome, ui: instantaneoFiltros() };
+    if (i >= 0) presets[i] = novo; else presets.push(novo);
+    presets = presets.slice(-30);
+    gravarPresets();
+    desenharPresets(String(presets.findIndex(pr => pr.nome === nome)));
+    showAppleToast("Filtro salvo", nome);
+  });
+  $("#viva-preset-del").addEventListener("click", () => {
+    const i = Number(presetSel.value);
+    if (!presets[i]) return;
+    const nome = presets[i].nome;
+    presets.splice(i, 1);
+    gravarPresets();
+    desenharPresets();
+    showAppleToast("Filtro apagado", nome);
+  });
+
+  // seleção
+  const filtradosAgora = () => aplicarFiltros(montarCriativos());
+  const atualizarBarraSelecao = () => {
+    const n = _vivaIntelSel.size;
+    const filtrados = filtradosAgora().length;
+    selInfo.textContent = n ? `${n} selecionado${n > 1 ? "s" : ""}` : `${filtrados} no filtro atual`;
+    escopoSel.options[0].textContent = `Baixar: selecionados (${n})`;
+    escopoSel.options[1].textContent = `Baixar: filtro atual (${filtrados})`;
+    escopoSel.options[2].textContent = `Baixar: acervo inteiro (${latestAcervo.length})`;
+    if (!escopoManual) escopoSel.value = n ? "selecionados" : (_vivaIntelUi.tab === "criativos" ? "filtro" : "tudo");
+    btnXlsx.disabled = btnCsv.disabled = latestAcervo.length === 0;
+  };
+  _vivaIntelOnSel = atualizarBarraSelecao;
+  escopoSel.addEventListener("change", () => { escopoManual = true; });
+  $("#viva-sel-all").addEventListener("click", () => {
+    aplicarFiltros(montarCriativos()).forEach(c => { const k = acervoKey(c); if (k) _vivaIntelSel.add(k); });
+    escopoManual = false;
+    renderTudo();
+  });
+  $("#viva-sel-clear").addEventListener("click", () => { _vivaIntelSel.clear(); escopoManual = false; renderTudo(); });
+
+  const descreverFiltros = () => {
+    const U = _vivaIntelUi, A = U.adv, partes = [];
+    if (U.filtro !== "todos") partes.push(`Aba rápida: ${(CHIPS.find(c => c.id === U.filtro) || {}).label || U.filtro}`);
+    if (U.fonte) partes.push(`Busca: ${U.fonte}`);
+    if (U.termos.length) partes.push(`Termos exigidos: ${U.termos.join(" + ")}`);
+    if (U.minTermos > 1) partes.push(`Mín. ${U.minTermos} termos`);
+    if (U.busca.trim()) partes.push(`Texto: “${U.busca.trim()}”`);
+    partes.push(`Status: ${statusSelectBar.options[statusSelectBar.selectedIndex] ? statusSelectBar.options[statusSelectBar.selectedIndex].textContent : U.status}`);
+    if (A.dup) partes.push(`Duplicados ≥ ${A.dup}`);
+    if (A.diasMin) partes.push(`Dias no ar ≥ ${A.diasMin}`);
+    if (A.diasMax) partes.push(`Dias no ar ≤ ${A.diasMax}`);
+    if (A.adv) partes.push(`Anúncios da página ≥ ${A.adv}`);
+    if (A.score) partes.push(`Score ≥ ${A.score}`);
+    if (A.midia) partes.push(`Mídia: ${A.midia === "video" ? "vídeo" : "imagem"}`);
+    if (A.dominio) partes.push(`Domínio contém “${A.dominio}”`);
+    if (A.comDest) partes.push("Só com página de destino");
+    return partes.join(" · ");
+  };
+
+  const baixarPlanilha = async formato => {
+    const escopo = escopoSel.value;
+    let registros;
+    let recorte;
+    let rotulo;
+    if (escopo === "selecionados") {
+      registros = latestAcervo.filter(c => _vivaIntelSel.has(acervoKey(c)));
+      recorte = `Selecionados à mão (${registros.length})`;
+      rotulo = "selecionados";
+    } else if (escopo === "filtro") {
+      const chaves = new Set(aplicarFiltros(montarCriativos()).map(acervoKey));
+      registros = latestAcervo.filter(c => chaves.has(acervoKey(c)));
+      recorte = `Filtro atual (${registros.length})`;
+      rotulo = _vivaIntelUi.fonte || _vivaIntelUi.busca.trim() || "filtro";
+    } else {
+      registros = latestAcervo.slice();
+      recorte = `Acervo inteiro (${registros.length})`;
+      rotulo = "acervo-completo";
+    }
+    if (registros.length === 0) { showAppleToast("Nada para baixar", "Selecione criativos ou ajuste o filtro", "error"); return; }
+    const botoes = [btnXlsx, btnCsv];
+    const textos = botoes.map(b => b.textContent);
+    botoes.forEach(b => { b.disabled = true; b.textContent = "Gerando…"; });
+    try {
+      const arquivo = await exportGerar(formato, registros, latestTeamMeta, {
+        origem: "Download manual (Centro de Inteligência)",
+        recorte,
+        filtros: escopo === "filtro" ? descreverFiltros() : "",
+        versao: chrome.runtime.getManifest ? chrome.runtime.getManifest().version : "",
+      }, rotulo);
+      const url = URL.createObjectURL(new Blob([arquivo.dados], { type: arquivo.mime }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = arquivo.nome;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      showAppleToast("Planilha baixada", `${arquivo.linhas} criativos · ${arquivo.nome}`);
+    } catch (error) {
+      showAppleToast("Não foi possível gerar a planilha", error.message, "error");
+    } finally {
+      botoes.forEach((b, i) => { b.textContent = textos[i]; b.disabled = false; });
+    }
+  };
+  btnXlsx.addEventListener("click", () => baixarPlanilha("xlsx"));
+  btnCsv.addEventListener("click", () => baixarPlanilha("csv"));
+  escreverAdvNoForm();
+
   _vivaIntelRerender = renderTudo;
   renderTudo();
   // Garante o dado mais novo mesmo que o evento de storage tenha chegado antes de abrir.
@@ -4080,6 +4335,8 @@ function showIntelCenter() {
 
 function closeRankingOverlay(resumeEngine = true) {
   _vivaIntelRerender = null;
+  _vivaIntelOnSel = null;
+  _vivaIntelSel.clear();
   clearTimeout(_vivaIntelRerenderTimer);
   const overlay = document.getElementById("viva-ranking-overlay");
   const state = _vivaRankingOverlayState;
@@ -5503,7 +5760,7 @@ async function init() {
   _vivaInitialized = true;
 
   console.log("[VIVA] Motor otimizado O(1) + 5 cores Apple aplicadas");
-  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v14.0-ofertas-radar-avisos (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
+  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v15.0-planilha-export (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
   console.log("[VIVA] Highlight preto baixo volume aplicado");
   await loadLocalApiUrl();
   // Esta aba é uma janela de mineração da Busca Inteligente Turbo? (resposta vem do background

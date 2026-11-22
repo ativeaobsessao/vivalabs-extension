@@ -1,6 +1,6 @@
 // Viva Spy - Background Service Worker
 
-importScripts("intelligent_parser.js", "ranking_engine.js", "team_sync.js", "notify.js", "radar.js");
+importScripts("intelligent_parser.js", "ranking_engine.js", "export_data.js", "team_sync.js", "notify.js", "auto_export.js", "radar.js");
 console.info("[VIVA] Infra inteligente instalada - parser + fila + ranking");
 
 // Regra dinâmica ID para declarativeNetRequest (Mobile User-Agent)
@@ -853,6 +853,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  else if (message.action === "EXPORT_NOW") {
+    aexpBaixarAgora()
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
   else if (message.action === "NOTIFY_TEST") {
     notifTestar()
       .then(sendResponse)
@@ -941,6 +948,8 @@ radarInit({
   notificar: dados => notifRadarRodada(dados),
 });
 radarRegistrarEventos();
+aexpRegistrarEventos();
+aexpAgendarVerificacao();   // ao acordar, confere se já está na hora do download automático
 
 // FIX ITEM 9: retoma automaticamente qualquer fila deixada pendente por uma suspensão anterior
 // do service worker — roda toda vez que este script acorda, seja por qual evento for.
