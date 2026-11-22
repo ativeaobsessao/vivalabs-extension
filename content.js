@@ -3434,7 +3434,7 @@ function setupSidebarInteractions() {
 // Mantém o mesmo mecanismo de pausa do motor da tela antiga (rankingOverlayPaused) enquanto aberto.
 let _vivaIntelRerender = null;
 let _vivaIntelRerenderTimer = null;
-const _vivaIntelUi = { tab: "criativos", filtro: "todos", fonte: "", sort: "score", busca: "", status: "ativas" };
+const _vivaIntelUi = { tab: "criativos", filtro: "todos", fonte: "", sort: "score", busca: "", status: "ativas", termos: [], minTermos: 1 };
 // Cofre da equipe (preenchido pelo background): quem achou, etiqueta de trabalho e estado do sync.
 let latestTeamMeta = {};
 let latestSyncState = null;
@@ -3553,6 +3553,7 @@ function intelBuildCreativeCard(c, posicao) {
   const top = intelEl("div", "viva-intel-topline");
   top.appendChild(intelEl("strong", "viva-intel-name", c.nome || "Anunciante sem nome"));
   const stageInfo = STAGE_INFO[c.stage];
+  if (c._nTermos >= 2) top.appendChild(intelEl("span", "viva-intel-chip termos", `🎯 ${c._nTermos} TERMOS`));
   if (c._novo24) top.appendChild(intelEl("span", "viva-intel-chip novo", "🆕 NOVO"));
   if (c._tend && c._tend.sobe) top.appendChild(intelEl("span", "viva-intel-chip subindo", `📈 SUBINDO +${c._tend.delta}`));
   if (c._emEscala) top.appendChild(intelEl("span", "viva-intel-chip hot", "🚀 EM ESCALA"));
@@ -3567,7 +3568,11 @@ function intelBuildCreativeCard(c, posicao) {
   if (c.adv > 1) pills.appendChild(intelEl("span", "viva-intel-pill", `📚 ${c.adv} ads na biblioteca`));
   if (c._tend && c._tend.sobe) pills.appendChild(intelEl("span", "viva-intel-pill strong", `📈 ${c._tend.delta > 0 ? "+" : ""}${c._tend.delta} ads em ${c._tend.dias}d`));
   if (c.dom) pills.appendChild(intelEl("span", "viva-intel-pill", `🔗 ${c.dom}`));
-  if (c.fontes && c.fontes.length) pills.appendChild(intelEl("span", "viva-intel-pill muted", `🔎 ${c.fontes[c.fontes.length - 1]}`));
+  if (c._nTermos >= 2) {
+    const pillTermos = intelEl("span", "viva-intel-pill strong", `🎯 ${c._nTermos} termos`);
+    pillTermos.title = c.fontes.join(" · ");
+    pills.appendChild(pillTermos);
+  } else if (c.fontes && c.fontes.length) pills.appendChild(intelEl("span", "viva-intel-pill muted", `🔎 ${c.fontes[c.fontes.length - 1]}`));
   if (c._by) pills.appendChild(intelEl("span", "viva-intel-pill muted", `👤 ${c._by}`));
   body.appendChild(pills);
 
@@ -3738,14 +3743,23 @@ function showIntelCenter() {
           <option value="descartada">Descartadas</option>
         </select>
         <select id="viva-intel-fonte" aria-label="Filtrar por busca"></select>
+        <select id="viva-intel-minterms" aria-label="Mínimo de termos que acharam o criativo">
+          <option value="1">Qualquer nº de termos</option>
+          <option value="2">🎯 2+ termos</option>
+          <option value="3">🎯 3+ termos</option>
+          <option value="4">🎯 4+ termos</option>
+          <option value="5">🎯 5+ termos</option>
+        </select>
         <select id="viva-intel-sort" aria-label="Ordenar">
           <option value="score">Maior score</option>
           <option value="dup">Mais duplicados</option>
           <option value="dias">Mais dias no ar</option>
           <option value="novos">Mais novos</option>
+          <option value="termos">Mais termos-chave</option>
         </select>
         <input id="viva-intel-search" type="search" placeholder="Filtrar por anunciante, texto ou domínio" aria-label="Filtrar">
       </div>
+      <div id="viva-intel-termos" class="viva-intel-termos" aria-label="Termos-chave (clique para exigir o termo)"></div>
       <div id="viva-intel-list" class="viva-intel-list" role="list"></div>
     </section>
   `;
@@ -3755,6 +3769,8 @@ function showIntelCenter() {
   const list = $("#viva-intel-list");
   const chipsBox = $("#viva-intel-chips");
   const fonteSelect = $("#viva-intel-fonte");
+  const minTermsSelect = $("#viva-intel-minterms");
+  const termosBox = $("#viva-intel-termos");
   const sortSelect = $("#viva-intel-sort");
   const statusSelectBar = $("#viva-intel-status");
   const searchInput = $("#viva-intel-search");
@@ -3777,12 +3793,13 @@ function showIntelCenter() {
     const agora = Date.now();
     return latestAcervo.map(c => {
       const dias = diasNoAr(c, agora);
-      const calc = scoreCriativo({ dup: c.dup, dias, adv: c.adv });
+      const nTermos = Array.isArray(c.fontes) ? c.fontes.length : 0;
+      const calc = scoreCriativo({ dup: c.dup, dias, adv: c.adv, termos: nTermos });
       const meta = latestTeamMeta[acervoKey(c)] || {};
       const status = VIVA_TEAM_STATUS_LABELS[meta.status] ? meta.status : "nova";
       const tend = tendenciaCriativo(c, agora);
       const novo24 = (Number(c.firstSeen) || 0) >= agora - 24 * 3600 * 1000;
-      return { ...c, _dias: dias, _score: calc.score, _emEscala: calc.emEscala, _by: meta.by || "", _status: status, _statusBy: meta.statusBy || "", _tend: tend, _novo24: novo24 };
+      return { ...c, _dias: dias, _score: calc.score, _emEscala: calc.emEscala, _by: meta.by || "", _status: status, _statusBy: meta.statusBy || "", _tend: tend, _novo24: novo24, _nTermos: nTermos };
     });
   };
 
@@ -3795,6 +3812,8 @@ function showIntelCenter() {
       if (_vivaIntelUi.filtro === "novos24" && !c._novo24) return false;
       if (_vivaIntelUi.filtro === "subindo" && !c._tend.sobe) return false;
       if (_vivaIntelUi.fonte && !(c.fontes || []).includes(_vivaIntelUi.fonte)) return false;
+      if (_vivaIntelUi.minTermos > 1 && c._nTermos < _vivaIntelUi.minTermos) return false;
+      if (_vivaIntelUi.termos.length && !_vivaIntelUi.termos.every(t => (c.fontes || []).includes(t))) return false;
       if (_vivaIntelUi.status === "ativas" && c._status === "descartada") return false;
       if (["nova", "analise", "minerada", "descartada"].includes(_vivaIntelUi.status) && c._status !== _vivaIntelUi.status) return false;
       if (termo && !`${c.nome} ${c.copy} ${c.dom}`.toLowerCase().includes(termo)) return false;
@@ -3805,6 +3824,7 @@ function showIntelCenter() {
       dup: (a, b) => (b.dup - a.dup) || (b._score - a._score),
       dias: (a, b) => ((b._dias ?? -1) - (a._dias ?? -1)) || (b._score - a._score),
       novos: (a, b) => ((a._dias ?? 9999) - (b._dias ?? 9999)) || (b._score - a._score),
+      termos: (a, b) => (b._nTermos - a._nTermos) || (b._score - a._score),
     }[_vivaIntelUi.sort] || ((a, b) => b._score - a._score);
     itens = itens.sort(ordenar);
     return itens;
@@ -3873,6 +3893,33 @@ function showIntelCenter() {
     if (_vivaIntelUi.fonte && !contagemFontes.has(_vivaIntelUi.fonte)) _vivaIntelUi.fonte = "";
     fonteSelect.value = _vivaIntelUi.fonte;
     sortSelect.value = _vivaIntelUi.sort;
+    minTermsSelect.value = String(_vivaIntelUi.minTermos);
+    minTermsSelect.hidden = _vivaIntelUi.tab !== "criativos";
+
+    // Termos-chave: clique em um ou mais termos para exigir que o criativo tenha sido achado por TODOS eles.
+    _vivaIntelUi.termos = _vivaIntelUi.termos.filter(t => contagemFontes.has(t));
+    termosBox.textContent = "";
+    termosBox.hidden = _vivaIntelUi.tab !== "criativos" || contagemFontes.size < 2;
+    if (!termosBox.hidden) {
+      termosBox.appendChild(intelEl("span", "viva-intel-termos-label", "Termos:"));
+      Array.from(contagemFontes.entries()).sort((a, b) => b[1] - a[1]).slice(0, 16).forEach(([termo, qtd]) => {
+        const ativo = _vivaIntelUi.termos.includes(termo);
+        const btn = intelEl("button", `viva-intel-termo${ativo ? " is-active" : ""}`, `${termo} · ${qtd}`);
+        btn.type = "button";
+        btn.title = ativo ? "Tirar este termo do filtro" : "Mostrar só criativos achados por este termo (combine vários)";
+        btn.addEventListener("click", () => {
+          _vivaIntelUi.termos = ativo ? _vivaIntelUi.termos.filter(t => t !== termo) : [..._vivaIntelUi.termos, termo];
+          renderTudo();
+        });
+        termosBox.appendChild(btn);
+      });
+      if (_vivaIntelUi.termos.length) {
+        const limpar = intelEl("button", "viva-intel-termo limpar", "✕ limpar termos");
+        limpar.type = "button";
+        limpar.addEventListener("click", () => { _vivaIntelUi.termos = []; renderTudo(); });
+        termosBox.appendChild(limpar);
+      }
+    }
 
     if (_vivaIntelUi.tab === "paginas") {
       const termo = _vivaIntelUi.busca.trim().toLowerCase();
@@ -3907,6 +3954,7 @@ function showIntelCenter() {
   });
   fonteSelect.addEventListener("change", () => { _vivaIntelUi.fonte = fonteSelect.value; renderTudo(); });
   sortSelect.addEventListener("change", () => { _vivaIntelUi.sort = sortSelect.value; renderTudo(); });
+  minTermsSelect.addEventListener("change", () => { _vivaIntelUi.minTermos = Number(minTermsSelect.value) || 1; renderTudo(); });
   statusSelectBar.addEventListener("change", () => { _vivaIntelUi.status = statusSelectBar.value; renderTudo(); });
   let buscaTimer = null;
   searchInput.value = _vivaIntelUi.busca;
@@ -4676,13 +4724,33 @@ function injectTopBar() {
       <span>⚡ Busca Inteligente em Massa</span>
       <button id="viva-busca-fechar" class="viva-busca-close" type="button" aria-label="Fechar">✕</button>
     </div>
-    <textarea id="viva-mass-keywords" maxlength="5000" placeholder='Uma linha: busca normal nesta aba.&#10;Duas ou mais: Turbo (lê várias buscas sozinho).&#10;Linha entre aspas = frase exata.&#10;Ex.: emagrecimento truque&#10;"ansiedade controle"' aria-label="Termos para busca, um por linha"></textarea>
+    <textarea id="viva-mass-keywords" maxlength="5000" placeholder='Uma linha: busca normal nesta aba.&#10;Duas ou mais: sessão única (1 janela lê um termo depois do outro).&#10;Linha entre aspas = frase exata.&#10;Ex.: emagrecimento truque&#10;"ansiedade controle"' aria-label="Termos para busca, um por linha"></textarea>
+    <div class="viva-busca-filtros">
+      <label>País
+        <select id="viva-busca-pais" aria-label="País dos anúncios">
+          <option value="US">Estados Unidos</option>
+          <option value="CA">Canadá</option>
+          <option value="GB">Reino Unido</option>
+          <option value="AU">Austrália</option>
+          <option value="BR">Brasil</option>
+          <option value="ALL">Todos</option>
+        </select>
+      </label>
+      <label>Idioma
+        <select id="viva-busca-lang" aria-label="Idioma dos anúncios">
+          <option value="en">Inglês</option>
+          <option value="es">Espanhol</option>
+          <option value="pt">Português</option>
+          <option value="all">Todos</option>
+        </select>
+      </label>
+    </div>
     <div id="viva-busca-info" class="viva-busca-info" aria-live="polite"></div>
     <div id="viva-turbo-controls" class="viva-turbo-controls" hidden>
       <label class="viva-timer-row" for="viva-timer-slider">
         Tempo por busca: <strong id="viva-timer-val">60s</strong>
         <input type="range" id="viva-timer-slider" min="20" max="180" value="60" step="10">
-        <small id="viva-timer-hint">Coleta completa (até 2 janelas)</small>
+        <small id="viva-timer-hint">Coleta completa (1 janela, um termo por vez)</small>
       </label>
       <div id="viva-progress-wrap" class="viva-progress-wrap" hidden>
         <div class="viva-progress-bar"><div id="viva-progress-fill"></div></div>
@@ -4720,6 +4788,25 @@ function injectTopBar() {
   const pauseButton = dropdown.querySelector("#viva-btn-pausar");
   const cancelButton = dropdown.querySelector("#viva-btn-cancelar");
   const openCenterButton = dropdown.querySelector("#viva-btn-abrir-centro");
+  const paisSelect = dropdown.querySelector("#viva-busca-pais");
+  const langSelect = dropdown.querySelector("#viva-busca-lang");
+  // País/idioma da busca: valem para a busca normal e para a sessão de várias linhas (padrão EUA/inglês).
+  const filtrosBusca = () => ({ country: paisSelect.value || "US", language: langSelect.value || "en" });
+  try {
+    chrome.storage.local.get("viva_busca_filtros", data => {
+      const f = data && data.viva_busca_filtros;
+      if (f && f.country) paisSelect.value = f.country;
+      if (f && f.language) langSelect.value = f.language;
+    });
+  } catch (error) {
+    console.warn("[VIVA] Não foi possível ler os filtros da busca:", error.message);
+  }
+  const salvarFiltrosBusca = () => {
+    try { chrome.storage.local.set({ viva_busca_filtros: filtrosBusca() }); } catch (error) { /* só conveniência */ }
+    if (buscaState.modo === "turbo") updateInputMode();
+  };
+  paisSelect.addEventListener("change", salvarFiltrosBusca);
+  langSelect.addEventListener("change", salvarFiltrosBusca);
   let buscaState = {
     awaitingConfirm: false,
     modo: "vazio",
@@ -4788,7 +4875,8 @@ function injectTopBar() {
       primaryButton.className = "viva-btn-minerar viva-btn-normal";
     } else {
       const seconds = Number(timerSlider.value) || 60;
-      info.textContent = `Modo Turbo: ${parsed.linhasReais} buscas, até 2 janelas pequenas, ~${Math.ceil(parsed.linhasReais * seconds / 120)}–${Math.ceil(parsed.linhasReais * seconds / 60)} min. Os criativos escalados vão direto para o Centro de Inteligência.`;
+      const f = filtrosBusca();
+      info.textContent = `Sessão de ${parsed.linhasReais} termos · 1 janela só · ${f.country === "ALL" ? "todos os países" : f.country}/${f.language === "all" ? "todos os idiomas" : f.language.toUpperCase()} · ~${Math.ceil(parsed.linhasReais * (seconds + 10) / 60)} min. Quem aparece em vários termos ganha o selo 🎯 no Centro de Inteligência.`;
       turboControls.hidden = false;
       primaryButton.disabled = false;
       primaryButton.textContent = `🚀 Iniciar Turbo (${parsed.linhasReais} buscas)`;
@@ -4804,7 +4892,7 @@ function injectTopBar() {
       timerHint.textContent = "Modo rápido: lê menos anúncios por busca.";
       timerHint.dataset.mode = "fast";
     } else {
-      timerHint.textContent = "Coleta completa (até 2 janelas).";
+      timerHint.textContent = "Coleta completa (1 janela, um termo por vez).";
       timerHint.dataset.mode = "complete";
     }
     if (buscaState.modo === "turbo") updateInputMode();
@@ -4815,8 +4903,11 @@ function injectTopBar() {
   // então a busca simplesmente não acontecia.) Mantém país/filtros já escolhidos na URL atual.
   const startNormalSearch = async parsed => {
     const atual = new URLSearchParams(window.location.search);
-    const filtros = {};
-    ["active_status", "ad_type", "country", "is_targeted_country", "media_type"].forEach(chave => {
+    // Herda só status e mídia da página atual. Tipo de anúncio é SEMPRE "todos" (herdar "políticas/
+    // temas sociais" de uma página aberta antes fazia a busca abrir na categoria errada); país e
+    // idioma vêm do painel da Busca Inteligente.
+    const filtros = { ad_type: "all", ...filtrosBusca() };
+    ["active_status", "media_type"].forEach(chave => {
       if (atual.get(chave)) filtros[chave] = atual.get(chave);
     });
     const url = buildAdLibraryUrl(parsed.termoBusca, {
@@ -4851,7 +4942,7 @@ function injectTopBar() {
     // arma o botão, 2º clique inicia. Qualquer edição no texto desarma de novo.
     if (!buscaState.awaitingConfirm) {
       buscaState.awaitingConfirm = true;
-      info.textContent = `Vai abrir até 2 janelas pequenas da Biblioteca para ler ${parsed.linhasReais} buscas (~${estimate} min no máximo). Elas fecham sozinhas — deixe-as visíveis, sem minimizar.`;
+      info.textContent = `Vai abrir 1 janela pequena da Biblioteca e ler os ${parsed.linhasReais} termos, um depois do outro (~${estimate} min no máximo). Ela fecha sozinha — deixe-a visível, sem minimizar.`;
       primaryButton.textContent = "✅ Confirmar e iniciar";
       return;
     }
@@ -4870,6 +4961,7 @@ function injectTopBar() {
         options: {
           tempoPorBusca: seconds,
           modoRapido: seconds < 30,
+          ...filtrosBusca(),
         },
       });
       if (!response || response.status !== "fila_iniciada") {
@@ -4888,7 +4980,7 @@ function injectTopBar() {
         return;
       }
       setRunState(true);
-      progress.textContent = `Autorizado · 0/${response.total} buscas · até 2 janelas`;
+      progress.textContent = `Autorizado · 0/${response.total} termos · 1 janela`;
     } catch (error) {
       buscaState.isStarting = false;
       progress.textContent = error.message;
@@ -5296,7 +5388,7 @@ async function init() {
   _vivaInitialized = true;
 
   console.log("[VIVA] Motor otimizado O(1) + 5 cores Apple aplicadas");
-  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v11.0-radar (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
+  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v12.0-sessao-unica (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
   console.log("[VIVA] Highlight preto baixo volume aplicado");
   await loadLocalApiUrl();
   // Esta aba é uma janela de mineração da Busca Inteligente Turbo? (resposta vem do background

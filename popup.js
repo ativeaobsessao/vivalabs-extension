@@ -140,6 +140,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const radarKeywords = document.getElementById("radarKeywords");
   const radarCountry = document.getElementById("radarCountry");
   const radarEvery = document.getElementById("radarEvery");
+  const radarLang = document.getElementById("radarLang");
   const radarRunBtn = document.getElementById("radarRunBtn");
   const radarStopBtn = document.getElementById("radarStopBtn");
   const radarState = document.getElementById("radarState");
@@ -158,6 +159,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (document.activeElement !== radarKeywords) radarKeywords.value = c.keywords || "";
     radarCountry.value = c.country || "US";
     radarEvery.value = String(c.everyH || 6);
+    radarLang.value = c.language || "en";
     radarState.className = "radar-state";
     radarStopBtn.hidden = s.status !== "running";
     radarRunBtn.disabled = s.status === "running";
@@ -185,6 +187,7 @@ document.addEventListener("DOMContentLoaded", () => {
       on: radarToggle.checked,
       keywords: radarKeywords.value,
       country: radarCountry.value,
+      language: radarLang.value,
       everyH: Number(radarEvery.value) || 6,
     };
     chrome.storage.local.set({ viva_radar_config: config }, () => {
@@ -204,6 +207,7 @@ document.addEventListener("DOMContentLoaded", () => {
   radarKeywords.addEventListener("blur", salvarRadar);
   radarCountry.addEventListener("change", salvarRadar);
   radarEvery.addEventListener("change", salvarRadar);
+  radarLang.addEventListener("change", salvarRadar);
   radarRunBtn.addEventListener("click", () => {
     if (!radarKeywords.value.trim()) {
       radarState.className = "radar-state err";
@@ -212,7 +216,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (!radarToggle.checked) radarToggle.checked = true;
     chrome.storage.local.set({
-      viva_radar_config: { on: true, keywords: radarKeywords.value, country: radarCountry.value, everyH: Number(radarEvery.value) || 6 },
+      viva_radar_config: { on: true, keywords: radarKeywords.value, country: radarCountry.value, language: radarLang.value, everyH: Number(radarEvery.value) || 6 },
     }, () => {
       chrome.runtime.sendMessage({ action: "RADAR_RUN_NOW" }, () => { void chrome.runtime.lastError; carregarRadar(); });
     });

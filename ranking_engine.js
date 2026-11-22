@@ -46,7 +46,10 @@ const VIVA_DAY_MS = 24 * 60 * 60 * 1000;
 //  - tamanho da biblioteca (anúncios do anunciante) mostra operação grande;
 //  - "em escala agora": criativo NOVO que já tem muitos duplicados = está sendo escalado agora.
 // Retorna { score, emEscala }.
-function scoreCriativo({ dup, dias, adv }) {
+const VIVA_FONTES_MAX = 20;       // termos de busca lembrados por criativo
+const VIVA_TERMOS_BONUS = 8;      // pontos por termo EXTRA que também achou o criativo (máx. 6 extras)
+
+function scoreCriativo({ dup, dias, adv, termos }) {
   const d = Math.max(1, Number(dup) || 1);
   const known = dias !== null && dias !== undefined && Number.isFinite(Number(dias));
   const days = known ? Math.max(0, Number(dias)) : 0;
@@ -61,6 +64,8 @@ function scoreCriativo({ dup, dias, adv }) {
     emEscala = true;
     score += 60;
   }
+  // Assertividade: quem aparece em vários dos seus termos-chave provavelmente é a oferta do nicho.
+  score += Math.min(Math.max(0, (Number(termos) || 1) - 1), 6) * VIVA_TERMOS_BONUS;
   return { score: Math.round(score), emEscala };
 }
 
@@ -135,7 +140,7 @@ function mesclarAcervo(existente, novos, agora = Date.now(), max = VIVA_ACERVO_M
     const atual = mapa.get(key);
     const fontes = new Set(atual && Array.isArray(atual.fontes) ? atual.fontes : []);
     if (novo.fonte) fontes.add(novo.fonte);
-    const fontesLista = Array.from(fontes).slice(-6);
+    const fontesLista = Array.from(fontes).slice(-VIVA_FONTES_MAX);
 
     const dup = Math.max(atual ? atual.dup : 1, novo.dup);
     const inicio = novo.inicio || (atual ? atual.inicio : 0) || 0;
@@ -224,7 +229,7 @@ function mesclarRemotos(existente, remotos, agora = Date.now(), max = VIVA_ACERV
       inicio: base.inicio || A.inicio || 0,
       adv: Math.max(A.adv || 0, base.adv),
       stage: pick(base.stage, A.stage) || "",
-      fontes: Array.from(fontes).slice(-6),
+      fontes: Array.from(fontes).slice(-VIVA_FONTES_MAX),
       firstSeen: Math.min(Number(A.firstSeen) || firstRemoto, firstRemoto),
       lastSeen: Math.max(Number(A.lastSeen) || 0, lastRemoto),
     };

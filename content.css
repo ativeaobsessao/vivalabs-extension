@@ -3017,3 +3017,19 @@ body { padding-bottom: 0 !important; }
 /* Radar: selos "novo" e "subindo" no Centro */
 .viva-intel-chip.novo { background: #e3f1ff !important; color: #0a5bd3 !important; }
 .viva-intel-chip.subindo { background: #e4f8ea !important; color: #1b7a34 !important; }
+
+/* Busca Inteligente: país e idioma */
+.viva-busca-filtros { display: flex !important; gap: 8px !important; margin: 8px 0 !important; }
+.viva-busca-filtros label { flex: 1 1 0 !important; display: flex !important; flex-direction: column !important; gap: 3px !important; font-size: 11px !important; color: #6e6e73 !important; }
+.viva-busca-filtros select { font: inherit !important; font-size: 12.5px !important; color: #1d1d1f !important; background: #f5f5f7 !important; border: 1px solid transparent !important; border-radius: 9px !important; padding: 7px 8px !important; }
+
+/* Centro: filtro por termos-chave */
+.viva-intel-termos { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 6px !important; padding: 0 20px 10px !important; }
+.viva-intel-termos[hidden] { display: none !important; }
+.viva-intel-termos-label { font-size: 11.5px !important; color: #6e6e73 !important; }
+.viva-intel-termo { font: inherit !important; font-size: 12px !important; color: #1d1d1f !important; background: #f5f5f7 !important; border: 1px solid transparent !important; border-radius: 980px !important; padding: 4px 10px !important; cursor: pointer !important; }
+.viva-intel-termo:hover { background: #e8e8ed !important; }
+.viva-intel-termo.is-active { color: #fff !important; background: #0071e3 !important; }
+.viva-intel-termo.limpar { color: #6e6e73 !important; background: transparent !important; border-color: #d2d2d7 !important; }
+.viva-intel-chip.termos { background: #fff1d6 !important; color: #9a5b00 !important; }
+.viva-intel-toolbar select[hidden] { display: none !important; }

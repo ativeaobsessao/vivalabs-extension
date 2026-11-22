@@ -418,6 +418,7 @@ function limparAcervo() {
 }
 
 async function finalizarMineracao(queue, state) {
+  if (state.janela) await fecharTarefaMineracao(state.janela);
   await acervoWriteChain;
   const data = await chrome.storage.local.get(VIVA_ACERVO_KEY);
   const acervo = Array.isArray(data[VIVA_ACERVO_KEY]) ? data[VIVA_ACERVO_KEY] : [];
@@ -473,6 +474,7 @@ async function processarFilaInteligente() {
       const durationMs = Math.max(20, Number(state.tempoPorBusca) || 60) * 1000 + MINER_GRACE_MS;
       let changed = false;
       const completedTabIds = [];
+      let janelaLivre = null;
 
       for (const task of active) {
         let tabExists = true;
@@ -485,7 +487,12 @@ async function processarFilaInteligente() {
 
         // Termina quando: a aba avisou que acabou (MINER_DONE), o tempo estourou ou a aba sumiu.
         if (!tabExists || task.done || Date.now() - task.startedAt >= durationMs) {
-          if (tabExists) await fecharTarefaMineracao(task);
+          const haMais = Number(state.nextIndex) < queue.length;
+          if (tabExists && state.reutilizarJanela && haMais) {
+            janelaLivre = { tabId: task.tabId, windowId: task.windowId };   // fica aberta para a próxima busca
+          } else if (tabExists) {
+            await fecharTarefaMineracao(task);
+          }
           active = active.filter(item => item.tabId !== task.tabId);
           completedTabIds.push(task.tabId);
           completedCount += 1;
@@ -502,6 +509,7 @@ async function processarFilaInteligente() {
           ...latestState,
           active: latestActive.filter(task => !completedTabIds.includes(task.tabId)),
           idx: (Number(latestState.idx) || 0) + completedNow,
+          janela: janelaLivre || latestState.janela || null,
         };
         completedCount = state.idx;
         active = state.active;
@@ -537,7 +545,17 @@ async function processarFilaInteligente() {
         const usedSlots = new Set(active.map(task => task.slot));
         let slot = 0;
         while (usedSlots.has(slot)) slot += 1;
-        const handle = await criarJanelaMineracao(searchUrl.toString(), slot);
+        let handle = null;
+        if (beforeCreate.janela) {
+          try {
+            await chrome.tabs.get(beforeCreate.janela.tabId);
+            await chrome.tabs.update(beforeCreate.janela.tabId, { url: searchUrl.toString() });
+            handle = beforeCreate.janela;
+          } catch (error) {
+            console.warn(`[BG] Janela da sessão não está mais disponível, abrindo outra: ${error.message}`);
+          }
+        }
+        if (!handle) handle = await criarJanelaMineracao(searchUrl.toString(), slot);
 
         const latestState = await getInteligenteState();
         if (!latestState || latestState.runId !== state.runId || latestState.status !== "running" || latestState.paused) {
@@ -553,6 +571,7 @@ async function processarFilaInteligente() {
           ...latestState,
           active,
           nextIndex,
+          janela: null,
           tempoPorBusca: Math.max(20, Number(latestState.tempoPorBusca) || 60),
         };
         await setInteligenteState(state);
@@ -573,7 +592,8 @@ async function processarFilaInteligente() {
       for (const task of listarTarefasAtivas(state)) {
         await fecharTarefaMineracao(task);
       }
-      await setInteligenteState({ ...state, status: "failed", active: [], error: err.message });
+      if (state.janela) await fecharTarefaMineracao(state.janela);
+      await setInteligenteState({ ...state, status: "failed", active: [], janela: null, error: err.message });
       if (state.origem === "radar") await radarRodadaInterrompida("failed").catch(() => {});
     }
     console.error(`[BG] Falha na mineração inteligente: ${err.message}`);
@@ -604,7 +624,7 @@ async function iniciarMineracaoInteligente(linhas, options, consentGranted) {
       }
     }
     const queue = origemRadar
-      ? gerarFilaRadar(linhas.join("\n"), { country: options?.country, maximo: options?.maximo })
+      ? gerarFilaRadar(linhas.join("\n"), { country: options?.country, language: options?.language, maximo: options?.maximo })
       : gerarFilaInteligente(linhas, options);
     if (queue.length === 0) throw new Error("Nenhuma consulta válida foi informada.");
 
@@ -624,9 +644,12 @@ async function iniciarMineracaoInteligente(linhas, options, consentGranted) {
       consentGranted: true,
       startedAt: new Date().toISOString(),
       origem: origemRadar ? "radar" : "manual",
-      maxParallel: origemRadar ? 1 : MINER_MAX_PARALLEL,
-      pausaMinMs: origemRadar ? Math.max(0, Number(options?.pausaMinMs) || 0) : 0,
-      pausaMaxMs: origemRadar ? Math.max(0, Number(options?.pausaMaxMs) || 0) : 0,
+      // Sessão única: uma janela só, reaproveitada termo a termo (nunca uma janela por linha).
+      maxParallel: 1,
+      reutilizarJanela: true,
+      janela: null,
+      pausaMinMs: Math.max(0, Number(options?.pausaMinMs) || (origemRadar ? 0 : 3000)),
+      pausaMaxMs: Math.max(0, Number(options?.pausaMaxMs) || (origemRadar ? 0 : 7000)),
       proximaAbertura: 0,
     };
     await setInteligenteQueue(queue);
@@ -676,10 +699,11 @@ async function cancelarMineracaoInteligente(runId) {
   }
 
   const active = listarTarefasAtivas(state);
-  await setInteligenteState({ ...state, status: "cancelled", active: [], paused: false });
+  await setInteligenteState({ ...state, status: "cancelled", active: [], paused: false, janela: null });
   for (const task of active) {
     await fecharTarefaMineracao(task);
   }
+  if (state.janela) await fecharTarefaMineracao(state.janela);
   await setInteligenteQueue([]);
   await setInteligenteIdx(0);
   if (state.origem === "radar") await radarRodadaInterrompida("cancelled").catch(() => {});

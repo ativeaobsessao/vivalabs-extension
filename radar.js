@@ -33,7 +33,9 @@ function radarNormalizarConfig(raw) {
   const everyH = RADAR_INTERVALOS_H.includes(Number(c.everyH)) ? Number(c.everyH) : 6;
   const country = /^[A-Za-z]{2}$|^ALL$/i.test(String(c.country || "")) ? String(c.country).toUpperCase() : "US";
   const tempo = Math.max(20, Math.min(120, Number(c.tempoPorBusca) || 50));
+  const language = /^all$/i.test(String(c.language || "")) ? "all" : (/^[A-Za-z]{2}$/.test(String(c.language || "")) ? String(c.language).toLowerCase() : "en");
   return {
+    language,
     on: c.on === true,
     keywords: String(c.keywords || "").slice(0, 6000),
     country,
@@ -61,7 +63,7 @@ async function radarGravarEstado(patch) {
 }
 
 function radarFila(config) {
-  return gerarFilaRadar(config.keywords, { country: config.country, maximo: RADAR_MAX_KEYWORDS });
+  return gerarFilaRadar(config.keywords, { country: config.country, language: config.language, maximo: RADAR_MAX_KEYWORDS });
 }
 
 // Liga/desliga o alarme conforme a configuração. Chamado ao acordar, ao instalar e ao salvar.
@@ -124,6 +126,7 @@ async function radarTick({ force = false } = {}) {
       {
         origem: "radar",
         country: config.country,
+        language: config.language,
         maximo: RADAR_MAX_KEYWORDS,
         tempoPorBusca: config.tempoPorBusca,
         modoRapido: false,
