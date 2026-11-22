@@ -3440,16 +3440,19 @@ const _vivaIntelUi = { tab: "criativos", filtro: "todos", fonte: "", sort: "scor
 // Cofre da equipe (preenchido pelo background): quem achou, etiqueta de trabalho e estado do sync.
 let latestTeamMeta = {};
 let latestSyncState = null;
+let latestRadarTeam = null;
+const VIVA_TEAM_RADAR_KEY = "viva_team_radar";
 const VIVA_TEAM_META_KEY = "viva_team_meta";
 const VIVA_SYNC_STATE_KEY = "viva_sync_state";
 const VIVA_TEAM_STATUS_LABELS = { nova: "Nova", analise: "Em análise", minerada: "Minerada", descartada: "Descartada" };
 
 function carregarAcervoLocal() {
   try {
-    return chrome.storage.local.get([VIVA_ACERVO_KEY, VIVA_TEAM_META_KEY, VIVA_SYNC_STATE_KEY]).then(data => {
+    return chrome.storage.local.get([VIVA_ACERVO_KEY, VIVA_TEAM_META_KEY, VIVA_SYNC_STATE_KEY, VIVA_TEAM_RADAR_KEY]).then(data => {
       latestAcervo = Array.isArray(data[VIVA_ACERVO_KEY]) ? data[VIVA_ACERVO_KEY] : [];
       latestTeamMeta = data[VIVA_TEAM_META_KEY] && typeof data[VIVA_TEAM_META_KEY] === "object" ? data[VIVA_TEAM_META_KEY] : {};
       latestSyncState = data[VIVA_SYNC_STATE_KEY] || null;
+      latestRadarTeam = data[VIVA_TEAM_RADAR_KEY] || null;
       atualizarContadorDock();
     }).catch(error => console.warn("[VIVA] Não foi possível ler o acervo:", error.message));
   } catch (error) {
@@ -3471,7 +3474,7 @@ function atualizarContadorDock() {
 try {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (!changes[VIVA_ACERVO_KEY] && !changes[VIVA_TEAM_META_KEY] && !changes[VIVA_SYNC_STATE_KEY]) return;
+    if (!changes[VIVA_ACERVO_KEY] && !changes[VIVA_TEAM_META_KEY] && !changes[VIVA_SYNC_STATE_KEY] && !changes[VIVA_TEAM_RADAR_KEY]) return;
     if (changes[VIVA_ACERVO_KEY]) {
       const novo = changes[VIVA_ACERVO_KEY].newValue;
       latestAcervo = Array.isArray(novo) ? novo : [];
@@ -3481,6 +3484,7 @@ try {
       latestTeamMeta = meta && typeof meta === "object" ? meta : {};
     }
     if (changes[VIVA_SYNC_STATE_KEY]) latestSyncState = changes[VIVA_SYNC_STATE_KEY].newValue || null;
+    if (changes[VIVA_TEAM_RADAR_KEY]) latestRadarTeam = changes[VIVA_TEAM_RADAR_KEY].newValue || null;
     atualizarContadorDock();
     if (_vivaIntelRerender) {
       clearTimeout(_vivaIntelRerenderTimer);
@@ -3685,6 +3689,58 @@ function intelBuildPageCard(p, posicao, onVerCriativos) {
   return card;
 }
 
+function intelBuildOfferCard(o, posicao, onVerCriativos) {
+  const card = intelEl("article", `viva-intel-card viva-intel-page viva-intel-offer${o.emEscala > 0 ? " is-hot" : ""}`);
+  card.appendChild(intelEl("div", "viva-intel-rank", `#${posicao}`));
+  const thumb = intelEl("div", "viva-intel-thumb");
+  if (o.topThumb) {
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.referrerPolicy = "no-referrer";
+    img.alt = "";
+    img.src = o.topThumb;
+    img.addEventListener("error", () => { thumb.textContent = ""; thumb.appendChild(intelEl("span", "viva-intel-thumb-ph", "🖼️")); }, { once: true });
+    thumb.appendChild(img);
+  } else {
+    thumb.appendChild(intelEl("span", "viva-intel-thumb-ph", "🖼️"));
+  }
+  card.appendChild(thumb);
+  const body = intelEl("div", "viva-intel-body");
+  const top = intelEl("div", "viva-intel-topline");
+  top.appendChild(intelEl("strong", "viva-intel-name", o.dominio));
+  if (o.paginas >= 2) top.appendChild(intelEl("span", "viva-intel-chip termos", `👥 ${o.paginas} PÁGINAS`));
+  if (o.novos24 > 0) top.appendChild(intelEl("span", "viva-intel-chip novo", `🆕 ${o.novos24} novo(s) 24h`));
+  if (o.subindo > 0) top.appendChild(intelEl("span", "viva-intel-chip subindo", `📈 ${o.subindo} subindo`));
+  if (o.emEscala > 0) top.appendChild(intelEl("span", "viva-intel-chip hot", `🚀 ${o.emEscala} em escala`));
+  body.appendChild(top);
+  const pills = intelEl("div", "viva-intel-pills");
+  pills.appendChild(intelEl("span", "viva-intel-pill strong", `🎯 ${o.criativos} criativos`));
+  pills.appendChild(intelEl("span", "viva-intel-pill", `📣 ${o.paginas} página(s) anunciando`));
+  pills.appendChild(intelEl("span", "viva-intel-pill", `🔁 maior: ${o.maxDup}x`));
+  pills.appendChild(intelEl("span", "viva-intel-pill", `📅 média ${Math.round(o.mediaDias)} dias`));
+  if (o.fontes.length) pills.appendChild(intelEl("span", "viva-intel-pill muted", `🔎 ${o.fontes.slice(-2).join(" · ")}`));
+  body.appendChild(pills);
+  if (o.nomesPaginas.length) body.appendChild(intelEl("div", "viva-intel-copy", `Páginas: ${o.nomesPaginas.join(" · ")}${o.paginas > o.nomesPaginas.length ? " …" : ""}`));
+  const actions = intelEl("div", "viva-intel-actions");
+  const ver = intelEl("button", "viva-ver-ads-btn", "Ver criativos");
+  ver.type = "button";
+  ver.addEventListener("click", () => onVerCriativos(o.dominio));
+  actions.appendChild(ver);
+  if (o.dest && /^https?:\/\//i.test(o.dest)) {
+    const pagina = intelEl("button", "viva-ver-ads-btn", "Abrir página da oferta");
+    pagina.type = "button";
+    pagina.addEventListener("click", () => window.open(o.dest, "_blank", "noopener"));
+    actions.appendChild(pagina);
+  }
+  body.appendChild(actions);
+  card.appendChild(body);
+  const score = intelEl("div", "viva-intel-score");
+  score.appendChild(intelEl("strong", null, String(o.score)));
+  score.appendChild(intelEl("small", null, "score"));
+  card.appendChild(score);
+  return card;
+}
+
 function showIntelCenter() {
   closeRankingOverlay(false);
 
@@ -3724,6 +3780,7 @@ function showIntelCenter() {
         <div>
           <h2 id="viva-intel-title">🧠 Centro de Inteligência</h2>
           <p id="viva-intel-summary"></p>
+          <div id="viva-intel-radar" class="viva-intel-radar" hidden></div>
         </div>
         <div class="viva-intel-header-actions">
           <button id="viva-intel-clear" class="viva-intel-ghost" type="button" title="Apaga só a sua cópia local; o cofre da equipe não é afetado">🗑 Limpar acervo</button>
@@ -3733,6 +3790,7 @@ function showIntelCenter() {
       <div class="viva-intel-toolbar">
         <div class="viva-intel-tabs" role="tablist">
           <button type="button" data-tab="criativos" role="tab">Criativos</button>
+          <button type="button" data-tab="ofertas" role="tab">Ofertas</button>
           <button type="button" data-tab="paginas" role="tab">Bibliotecas</button>
         </div>
         <div class="viva-intel-chips" id="viva-intel-chips"></div>
@@ -3777,6 +3835,7 @@ function showIntelCenter() {
   const statusSelectBar = $("#viva-intel-status");
   const searchInput = $("#viva-intel-search");
   const summary = $("#viva-intel-summary");
+  const radarBox = $("#viva-intel-radar");
   const clearBtn = $("#viva-intel-clear");
   const CHIPS = [
     { id: "todos", label: "Todos" },
@@ -3837,15 +3896,18 @@ function showIntelCenter() {
     const fragment = document.createDocumentFragment();
     for (let i = renderizados; i < fim; i += 1) {
       const item = itensVisiveis[i];
+      const irParaCriativos = termoBusca => {
+        _vivaIntelUi.tab = "criativos";
+        _vivaIntelUi.filtro = "todos";
+        _vivaIntelUi.busca = termoBusca;
+        searchInput.value = termoBusca;
+        renderTudo();
+      };
       fragment.appendChild(_vivaIntelUi.tab === "paginas"
-        ? intelBuildPageCard(item, i + 1, nome => {
-          _vivaIntelUi.tab = "criativos";
-          _vivaIntelUi.filtro = "todos";
-          _vivaIntelUi.busca = nome;
-          searchInput.value = nome;
-          renderTudo();
-        })
-        : intelBuildCreativeCard(item, i + 1));
+        ? intelBuildPageCard(item, i + 1, irParaCriativos)
+        : _vivaIntelUi.tab === "ofertas"
+          ? intelBuildOfferCard(item, i + 1, irParaCriativos)
+          : intelBuildCreativeCard(item, i + 1));
     }
     list.appendChild(fragment);
     renderizados = fim;
@@ -3863,6 +3925,16 @@ function showIntelCenter() {
     summary.textContent = latestAcervo.length === 0
       ? `Nenhum criativo coletado ainda${equipeTxt}`
       : `${latestAcervo.length} criativos · ${emEscalaTotal} em escala agora · ${paginasTodas.length} bibliotecas${idade ? ` · atualizado ${new Date(idade).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : ""}${equipeTxt}`;
+    const sinais = radarSinais(latestRadarTeam);
+    radarBox.textContent = "";
+    radarBox.hidden = sinais.length === 0;
+    sinais.slice(0, 4).forEach(sg => {
+      const icone = sg.nivel === "ok" ? "📡" : "⚠";
+      const rotulo = sg.nivel === "ok" ? "Radar OK" : (sg.nivel === "semsinal" ? "Radar SEM SINAL" : "Radar atrasado");
+      const chip = intelEl("span", `viva-intel-radar-chip ${sg.nivel}`, `${icone} ${rotulo} · ${sg.by} · ${sg.rodando ? "rodando agora" : sg.detalhe}`);
+      chip.title = sg.detalhe;
+      radarBox.appendChild(chip);
+    });
 
     overlay.querySelectorAll(".viva-intel-tabs button").forEach(btn => {
       btn.classList.toggle("is-active", btn.dataset.tab === _vivaIntelUi.tab);
@@ -3923,7 +3995,13 @@ function showIntelCenter() {
       }
     }
 
-    if (_vivaIntelUi.tab === "paginas") {
+    if (_vivaIntelUi.tab === "ofertas") {
+      const termo = _vivaIntelUi.busca.trim().toLowerCase();
+      itensVisiveis = agruparOfertas(latestAcervo).filter(o => {
+        if (_vivaIntelUi.fonte && !o.fontes.includes(_vivaIntelUi.fonte)) return false;
+        return !termo || o.dominio.includes(termo) || o.nomesPaginas.some(n => n.toLowerCase().includes(termo));
+      });
+    } else if (_vivaIntelUi.tab === "paginas") {
       const termo = _vivaIntelUi.busca.trim().toLowerCase();
       itensVisiveis = paginasTodas.filter(p => {
         if (_vivaIntelUi.fonte && !p.fontes.includes(_vivaIntelUi.fonte)) return false;
@@ -5425,7 +5503,7 @@ async function init() {
   _vivaInitialized = true;
 
   console.log("[VIVA] Motor otimizado O(1) + 5 cores Apple aplicadas");
-  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v13.0-busca-combinada (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
+  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v14.0-ofertas-radar-avisos (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
   console.log("[VIVA] Highlight preto baixo volume aplicado");
   await loadLocalApiUrl();
   // Esta aba é uma janela de mineração da Busca Inteligente Turbo? (resposta vem do background

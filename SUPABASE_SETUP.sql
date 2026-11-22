@@ -187,7 +187,61 @@ as $$
   select public._viva_ok(p_token);
 $$;
 
--- 8) Permissões: só estas 4 funções ficam abertas (e todas exigem o código)
+-- 7b) Sinal de vida do radar (cada máquina com radar ligado avisa "estou viva" a cada ~5 min)
+create table if not exists public.viva_heartbeat (
+  by   text primary key,
+  ms   bigint not null,          -- hora do SERVIDOR (evita erro de relógio do PC)
+  info jsonb  not null default '{}'::jsonb
+);
+alter table public.viva_heartbeat enable row level security;
+revoke all on public.viva_heartbeat from anon, authenticated;
+
+create or replace function public.viva_ping(p_token text, p_by text, p_info jsonb)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_by text := left(coalesce(nullif(trim(p_by), ''), 'Minerador'), 40);
+  v_info jsonb := coalesce(p_info, '{}'::jsonb);
+begin
+  if not public._viva_ok(p_token) then
+    raise exception 'codigo_invalido';
+  end if;
+  if jsonb_typeof(v_info) <> 'object' or length(v_info::text) > 2000 then
+    v_info := '{}'::jsonb;
+  end if;
+  insert into public.viva_heartbeat (by, ms, info)
+  values (v_by, (extract(epoch from clock_timestamp()) * 1000)::bigint, v_info)
+  on conflict (by) do update set ms = excluded.ms, info = excluded.info;
+  return true;
+end;
+$$;
+
+create or replace function public.viva_status(p_token text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if not public._viva_ok(p_token) then
+    raise exception 'codigo_invalido';
+  end if;
+  return jsonb_build_object(
+    'now', (extract(epoch from clock_timestamp()) * 1000)::bigint,
+    'items', coalesce((
+      select jsonb_agg(jsonb_build_object('by', by, 'ms', ms, 'info', info) order by ms desc)
+      from public.viva_heartbeat
+      where ms > (extract(epoch from clock_timestamp()) * 1000)::bigint - 7 * 86400000
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
+-- 8) Permissões: só estas 6 funções ficam abertas (e todas exigem o código)
 revoke all on function public.viva_push(text, text, jsonb) from public;
 revoke all on function public.viva_pull(text, bigint, integer) from public;
 revoke all on function public.viva_set_status(text, text, text, text, bigint) from public;
@@ -196,3 +250,7 @@ grant execute on function public.viva_push(text, text, jsonb) to anon, authentic
 grant execute on function public.viva_pull(text, bigint, integer) to anon, authenticated;
 grant execute on function public.viva_set_status(text, text, text, text, bigint) to anon, authenticated;
 grant execute on function public.viva_check(text) to anon, authenticated;
+revoke all on function public.viva_ping(text, text, jsonb) from public;
+revoke all on function public.viva_status(text) from public;
+grant execute on function public.viva_ping(text, text, jsonb) to anon, authenticated;
+grant execute on function public.viva_status(text) to anon, authenticated;

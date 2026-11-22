@@ -229,6 +229,51 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   carregarRadar();
 
+  // ── Aviso de oferta nova (Discord / Telegram) ───────────────────────────────────────────────
+  const notifyTipo = document.getElementById("notifyTipo");
+  const notifyWebhook = document.getElementById("notifyWebhook");
+  const notifyToken = document.getElementById("notifyToken");
+  const notifyChat = document.getElementById("notifyChat");
+  const notifyDiscord = document.getElementById("notifyDiscord");
+  const notifyTelegram = document.getElementById("notifyTelegram");
+  const notifyTestBtn = document.getElementById("notifyTestBtn");
+  const notifyState = document.getElementById("notifyState");
+
+  function mostrarCamposNotify() {
+    notifyDiscord.hidden = notifyTipo.value !== "discord";
+    notifyTelegram.hidden = notifyTipo.value !== "telegram";
+    notifyTestBtn.hidden = notifyTipo.value === "off";
+  }
+  function lerFormNotify() {
+    return { tipo: notifyTipo.value, webhook: notifyWebhook.value.trim(), botToken: notifyToken.value.trim(), chatId: notifyChat.value.trim() };
+  }
+  function salvarNotify(depois) {
+    chrome.storage.local.set({ viva_notify_config: lerFormNotify() }, () => { if (depois) depois(); });
+  }
+  chrome.storage.local.get(["viva_notify_config"], (data) => {
+    const c = data.viva_notify_config || {};
+    notifyTipo.value = ["discord", "telegram"].includes(c.tipo) ? c.tipo : "off";
+    notifyWebhook.value = c.webhook || "";
+    notifyToken.value = c.botToken || "";
+    notifyChat.value = c.chatId || "";
+    mostrarCamposNotify();
+  });
+  notifyTipo.addEventListener("change", () => { mostrarCamposNotify(); salvarNotify(); });
+  [notifyWebhook, notifyToken, notifyChat].forEach(el => el.addEventListener("blur", () => salvarNotify()));
+  notifyTestBtn.addEventListener("click", () => {
+    notifyState.className = "radar-state";
+    notifyState.textContent = "Enviando teste…";
+    notifyTestBtn.disabled = true;
+    salvarNotify(() => {
+      chrome.runtime.sendMessage({ action: "NOTIFY_TEST" }, (resp) => {
+        void chrome.runtime.lastError;
+        notifyTestBtn.disabled = false;
+        if (resp && resp.status === "ok") notifyState.textContent = "✓ Mensagem de teste enviada. Confira no seu canal.";
+        else { notifyState.className = "radar-state err"; notifyState.textContent = (resp && resp.error) || "Não consegui enviar o teste."; }
+      });
+    });
+  });
+
   // Abrir Meta Ad Library
   openLibraryBtn.addEventListener("click", () => {
     chrome.tabs.create({ url: "https://www.facebook.com/ads/library/?active_status=active" });

@@ -3037,3 +3037,13 @@ body { padding-bottom: 0 !important; }
 .viva-busca-modo { display: flex !important; flex-direction: column !important; gap: 3px !important; font-size: 11px !important; color: #6e6e73 !important; margin: 0 0 8px !important; }
 .viva-busca-modo[hidden] { display: none !important; }
 .viva-busca-modo select { font: inherit !important; font-size: 12.5px !important; color: #1d1d1f !important; background: #f5f5f7 !important; border: 1px solid transparent !important; border-radius: 9px !important; padding: 7px 8px !important; }
+
+/* Aba Ofertas (agrupa por domínio de destino) */
+.viva-intel-offer .viva-intel-name { word-break: break-all !important; }
+
+/* Sinal de vida do radar no cabeçalho do Centro */
+.viva-intel-radar { display: flex !important; flex-wrap: wrap !important; gap: 6px !important; margin-top: 6px !important; }
+.viva-intel-radar[hidden] { display: none !important; }
+.viva-intel-radar-chip { font: 700 11.5px var(--viva-font) !important; padding: 3px 9px !important; border-radius: 999px !important; background: #e8f7ee !important; color: #136c3a !important; }
+.viva-intel-radar-chip.atrasado { background: #fff4d6 !important; color: #8a5a00 !important; }
+.viva-intel-radar-chip.semsinal { background: #fde4e2 !important; color: #b3261e !important; }

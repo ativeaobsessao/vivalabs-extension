@@ -36,7 +36,7 @@ function gerarRankingFinal(mapaPaginas) {
 
 // ─── Acervo de criativos (Centro de Inteligência) ────────────────────────────────────────────
 const VIVA_ACERVO_KEY = "viva_acervo";
-const VIVA_ACERVO_MAX = 2000;                       // teto de criativos guardados (cabe folgado nos 10MB do storage)
+const VIVA_ACERVO_MAX = 10000;                      // teto de criativos guardados (medido: 10k ≈ 10 MB; merge ~10 ms; storage tem unlimitedStorage)
 const VIVA_ACERVO_TTL_MS = 30 * 24 * 60 * 60 * 1000; // criativos não revistos há 30 dias saem do acervo
 const VIVA_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -261,7 +261,7 @@ function mesclarRemotos(existente, remotos, agora = Date.now(), max = VIVA_ACERV
 // hist = { [pid]: { n: nome, s: [[diaIndex, adsNaBiblioteca], ...] } } — um número por dia, 14 dias.
 const VIVA_HIST_KEY = "viva_hist";
 const VIVA_HIST_DIAS = 14;
-const VIVA_HIST_MAX_PAGINAS = 4000;
+const VIVA_HIST_MAX_PAGINAS = 8000;
 const VIVA_TEND_MIN_DELTA = 5;     // precisa ter ganhado pelo menos 5 anúncios...
 const VIVA_TEND_MIN_RAZAO = 1.3;   // ...e ao menos +30% sobre a base
 
@@ -387,4 +387,112 @@ function agruparPaginas(acervo, agora = Date.now()) {
       score: Math.round(g.topScore + Math.min(g.criativos, 20) * 3 + g.emEscala * 10),
     }))
     .sort((a, b) => b.score - a.score);
+}
+
+// ─── Ofertas (agrupa o acervo pelo DOMÍNIO de destino do anúncio) ─────────────────────────────
+// Se várias páginas/criativos mandam tráfego para o MESMO domínio, normalmente é a mesma oferta
+// sendo escalada por afiliados. Plataformas genéricas (rede social, encurtador, mensageiro) não são oferta.
+const VIVA_DOMINIOS_IGNORADOS = [
+  "facebook.com", "fb.com", "fb.me", "fb.watch", "instagram.com", "messenger.com", "whatsapp.com", "wa.me", "m.me",
+  "youtube.com", "youtu.be", "tiktok.com", "linktr.ee", "bit.ly", "tinyurl.com", "t.me", "l.facebook.com",
+  "google.com", "play.google.com", "apps.apple.com", "twitter.com", "x.com",
+];
+
+function normalizarDominioOferta(dom) {
+  let d = String(dom || "").trim().toLowerCase().replace(/^https?:\/\//, "").split(/[\/?#]/)[0].replace(/^www\./, "");
+  return d.includes(".") ? d : "";
+}
+
+function dominioIgnorado(dom) {
+  return VIVA_DOMINIOS_IGNORADOS.some(ig => dom === ig || dom.endsWith("." + ig));
+}
+
+function agruparOfertas(acervo, agora = Date.now()) {
+  const grupos = new Map();
+  for (const c of Array.isArray(acervo) ? acervo : []) {
+    const dom = normalizarDominioOferta(c && (c.dom || c.dest));
+    if (!dom || dominioIgnorado(dom)) continue;
+    let g = grupos.get(dom);
+    if (!g) {
+      g = { dominio: dom, criativos: 0, emEscala: 0, maxDup: 1, somaDias: 0, comDias: 0, topScore: 0, novos24: 0, subindo: 0,
+        paginas: new Map(), fontes: new Set(), melhor: null, melhorScore: -1, dest: "" };
+      grupos.set(dom, g);
+    }
+    const dias = diasNoAr(c, agora);
+    const calc = scoreCriativo({ dup: c.dup, dias, adv: c.adv });
+    g.criativos += 1;
+    if (calc.emEscala) g.emEscala += 1;
+    g.maxDup = Math.max(g.maxDup, c.dup || 1);
+    if (dias !== null) { g.somaDias += dias; g.comDias += 1; }
+    g.topScore = Math.max(g.topScore, calc.score);
+    if ((Number(c.firstSeen) || 0) >= agora - VIVA_DAY_MS) g.novos24 += 1;
+    if (tendenciaCriativo(c, agora).sobe) g.subindo += 1;
+    const pkey = c.pid || `n:${String(c.nome || "").toLowerCase()}`;
+    if (!g.paginas.has(pkey)) g.paginas.set(pkey, c.nome || "");
+    (c.fontes || []).forEach(f => g.fontes.add(f));
+    if (calc.score > g.melhorScore) { g.melhorScore = calc.score; g.melhor = c; }
+    if (!g.dest && c.dest) g.dest = c.dest;
+  }
+  return Array.from(grupos.values())
+    .map(g => ({
+      dominio: g.dominio,
+      dest: g.dest,
+      criativos: g.criativos,
+      paginas: g.paginas.size,
+      nomesPaginas: Array.from(g.paginas.values()).filter(Boolean).slice(0, 4),
+      emEscala: g.emEscala,
+      maxDup: g.maxDup,
+      mediaDias: g.comDias ? g.somaDias / g.comDias : 0,
+      novos24: g.novos24,
+      subindo: g.subindo,
+      fontes: Array.from(g.fontes),
+      topThumb: g.melhor ? (g.melhor.thumb || "") : "",
+      topCopy: g.melhor ? (g.melhor.copy || "") : "",
+      topUrl: g.melhor ? (g.melhor.url || "") : "",
+      score: Math.round(g.topScore + Math.min(g.criativos, 20) * 3 + g.emEscala * 10
+        + Math.min(g.paginas.size, 10) * 8 + Math.min(g.novos24, 5) * 2 + Math.min(g.subindo, 5) * 5),
+    }))
+    .sort((a, b) => (b.score - a.score) || (b.criativos - a.criativos));
+}
+
+// ─── Sinal de vida do radar (Centro) ─────────────────────────────────────────────────────────
+const VIVA_RADAR_SEM_SINAL_MS = 20 * 60 * 1000;   // sem ping há mais que isso = máquina desligada/Chrome fechado
+// radarData = { at, now (hora do servidor na leitura), items:[{by, ms, info}] }. Devolve 1 sinal por máquina com radar LIGADO.
+function radarSinais(radarData, agora = Date.now()) {
+  if (!radarData || !Array.isArray(radarData.items)) return [];
+  const decorrido = Math.max(0, agora - (Number(radarData.at) || agora));
+  const fmtH = ms => {
+    const min = Math.max(0, Math.round(ms / 60000));
+    if (min < 60) return `${min} min`;
+    const h = ms / 3600000;
+    return h < 48 ? `${h.toFixed(h < 10 ? 1 : 0).replace(".0", "")} h` : `${Math.round(h / 24)} dias`;
+  };
+  const sinais = [];
+  for (const it of radarData.items) {
+    const info = it && it.info && typeof it.info === "object" ? it.info : {};
+    if (!info.on) continue;
+    const idadePing = Math.max(0, (Number(radarData.now) || 0) - (Number(it.ms) || 0)) + decorrido;
+    const ultima = Number(info.lastRunAt) || 0;
+    const everyMs = (Number(info.everyH) || 0) * 3600 * 1000;
+    // lastRunAt vem do relógio da máquina do radar; compara com o próprio ping (mesmo relógio não é garantido,
+    // então usamos a diferença entre "agora do radar" aproximado e a última rodada só quando há dados).
+    const idadeRodada = ultima > 0 ? Math.max(0, (Number(radarData.now) || 0) - ultima) + decorrido : null;
+    let nivel = "ok";
+    let detalhe = "";
+    if (idadePing > VIVA_RADAR_SEM_SINAL_MS) {
+      nivel = "semsinal";
+      detalhe = `sem sinal há ${fmtH(idadePing)} (notebook desligado, dormindo ou Chrome fechado)`;
+    } else if (everyMs > 0 && idadeRodada !== null && idadeRodada > everyMs * 2) {
+      nivel = "atrasado";
+      detalhe = `rodada atrasada: última há ${fmtH(idadeRodada)} (era para rodar a cada ${info.everyH} h)`;
+    } else if (info.status === "error") {
+      nivel = "atrasado";
+      detalhe = "a última rodada deu erro";
+    } else {
+      detalhe = ultima > 0 ? `última rodada há ${fmtH(idadeRodada)}` : "ainda sem rodada concluída";
+    }
+    sinais.push({ by: String(it.by || "Minerador"), nivel, detalhe, rodando: info.status === "running" });
+  }
+  const ordem = { semsinal: 0, atrasado: 1, ok: 2 };
+  return sinais.sort((a, b) => ordem[a.nivel] - ordem[b.nivel]);
 }

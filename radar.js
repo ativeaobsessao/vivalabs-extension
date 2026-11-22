@@ -21,6 +21,8 @@ let radarDeps = {
   iniciar: null,        // iniciarMineracaoInteligente
   ocupado: () => false, // há mineração em andamento?
   marcarSujos: async () => {},
+  ping: async () => {},   // avisa o cofre da equipe que o radar está vivo
+  notificar: async () => {}, // Discord/Telegram: criativos em escala novos da rodada
   now: () => Date.now(),
 };
 
@@ -99,11 +101,34 @@ async function radarConfigChanged() {
   }
   await radarEnsureAlarm();
   if (config.on) radarTick({ force: false }).catch(() => {});
+  else await radarPing();   // desligou: avisa a equipe que NÃO é pane (evita alarme falso)
   return radarLerEstado();
 }
 
+// Sinal de vida: manda ao cofre o estado resumido do radar (ligado, última/próxima rodada...).
+async function radarPing() {
+  try {
+    const config = await radarLerConfig();
+    const estado = await radarLerEstado();
+    await radarDeps.ping({
+      on: Boolean(config.on),
+      status: String(estado.status || "off"),
+      lastRunAt: Number(estado.lastRunAt) || 0,
+      nextRunAt: Number(estado.nextRunAt) || 0,
+      everyH: Number(config.everyH) || 0,
+      n: radarFila(config).length,
+    });
+  } catch (_) { /* sinal de vida nunca atrapalha o radar */ }
+}
+
 // Chamado pelo alarme (e por "Rodar agora"): se for hora e nada estiver rodando, abre a rodada.
-async function radarTick({ force = false } = {}) {
+async function radarTick(opcoes) {
+  const r = await _radarTickInner(opcoes || {});
+  await radarPing();
+  return r;
+}
+
+async function _radarTickInner({ force = false } = {}) {
   const config = await radarLerConfig();
   if (!config.on) return { status: "off" };
   const estado = await radarLerEstado();
@@ -192,6 +217,8 @@ async function radarAposRodada(state, resumo) {
     runs: [linha, ...(Array.isArray(estado.runs) ? estado.runs : [])].slice(0, 10),
   });
   console.log(`[BG][RADAR] rodada concluída: ${resumo.criativos} criativos, ${resumo.emEscala} em escala, ${novos} novos, ${subindo} subindo`);
+  await radarPing();
+  try { await radarDeps.notificar({ inicio: Date.parse(state.startedAt) || 0, resumo }); } catch (error) { console.warn(`[BG][RADAR] aviso falhou: ${error.message}`); }
 }
 
 // Rodada interrompida (cancelada ou falhou) — só devolve o radar ao modo de espera.

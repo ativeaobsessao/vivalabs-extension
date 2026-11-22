@@ -25,6 +25,9 @@ Carga típica: 20 palavras × 4 rodadas/dia ≈ 80 buscas/dia; cada rodada leva 
 9. No popup: **Equipe** → nome `Radar` + código da equipe → Conectar. Depois **Radar diário** → palavras-chave, país (EUA), intervalo (comece com **6 h**) → ligar. Clique **Rodar agora** para o primeiro teste e acompanhe uma rodada inteira.
 10. Dica: janelinhas do radar abrem sem foco, mas aparecem na tela. Se for usar o notebook para outra coisa, use outro perfil/janela.
 
+10b. **Sinal de vida** (precisa do SQL novo rodado no Supabase): com a equipe conectada, o radar avisa o cofre a cada ~5 min. No Centro de Inteligência aparece "📡 Radar OK · última rodada há X h"; se o notebook desligar/dormir/Chrome fechar, vira "⚠ Radar SEM SINAL" depois de 20 min, e "Radar atrasado" se a rodada passar de 2× o intervalo.
+11. **Aviso no celular** (opcional): popup → *Aviso de oferta nova* → Discord (webhook do canal) ou Telegram (token do @BotFather + Chat ID) → **Salvar e testar**. Depois de cada rodada chega só o que é novo em escala (até 8 por mensagem). Token/webhook ficam só neste navegador.
+
 ## Limites honestos
 
 - Se a Meta limitar buscas (captcha, páginas vazias), aumente o intervalo ou reduza as palavras. Comece pequeno (10–20 palavras) e suba aos poucos.

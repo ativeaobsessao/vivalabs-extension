@@ -1,6 +1,6 @@
 // Viva Spy - Background Service Worker
 
-importScripts("intelligent_parser.js", "ranking_engine.js", "team_sync.js", "radar.js");
+importScripts("intelligent_parser.js", "ranking_engine.js", "team_sync.js", "notify.js", "radar.js");
 console.info("[VIVA] Infra inteligente instalada - parser + fila + ranking");
 
 // Regra dinâmica ID para declarativeNetRequest (Mobile User-Agent)
@@ -853,6 +853,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  else if (message.action === "NOTIFY_TEST") {
+    notifTestar()
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
   else if (message.action === "RADAR_RUN_NOW") {
     radarTick({ force: true })
       .then(result => sendResponse(result))
@@ -930,6 +937,8 @@ radarInit({
       teamAgendarSync();
     }
   },
+  ping: info => teamPing({ ...info, v: chrome.runtime.getManifest().version }),
+  notificar: dados => notifRadarRodada(dados),
 });
 radarRegistrarEventos();
 

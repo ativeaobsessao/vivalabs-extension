@@ -21,6 +21,7 @@ const TEAM_STORE = {
   state: "viva_sync_state",         // { ok, at, pushed, pulled, error, off }
   cursor: "viva_sync_cursor",       // última posição lida do cofre
   seeded: "viva_sync_seeded",       // já marcou o acervo antigo para envio?
+  radar: "viva_team_radar",         // { at, now, items:[{by,ms,info}] } — sinal de vida dos radares da equipe
 };
 const TEAM_STATUSES = ["nova", "analise", "minerada", "descartada"];
 const TEAM_PUSH_BATCH = 150;
@@ -204,6 +205,31 @@ async function teamPull(cfg, stats) {
   }
 }
 
+// Radar: avisa o cofre "estou viva" (nunca derruba nada se falhar — SQL antigo, sem internet etc.).
+async function teamPing(info) {
+  try {
+    const cfg = await teamConfig();
+    if (!cfg) return false;
+    await teamRpc("viva_ping", { p_token: cfg.code, p_by: cfg.name, p_info: info && typeof info === "object" ? info : {} });
+    return true;
+  } catch (error) {
+    console.warn(`[VIVA][TEAM] ping do radar falhou: ${teamFriendlyError(error)}`);
+    return false;
+  }
+}
+
+// Lê o sinal de vida de todos os radares da equipe e guarda para o Centro mostrar.
+async function teamPullRadar(cfg) {
+  try {
+    const r = await teamRpc("viva_status", { p_token: cfg.code });
+    const items = r && Array.isArray(r.items) ? r.items : [];
+    await chrome.storage.local.set({ [TEAM_STORE.radar]: { at: Date.now(), now: Number(r && r.now) || Date.now(), items } });
+  } catch (error) {
+    // banco ainda sem as funções novas (SQL não rodou de novo): o resto da sincronização segue normal
+    await chrome.storage.local.set({ [TEAM_STORE.radar]: { at: Date.now(), now: Date.now(), items: [], error: teamFriendlyError(error) } });
+  }
+}
+
 async function _teamSyncInner() {
   const cfg = await teamConfig();
   if (!cfg) {
@@ -224,6 +250,7 @@ async function _teamSyncInner() {
     await teamPushCreatives(cfg, stats);
     await teamPushStatuses(cfg);
     await teamPull(cfg, stats);
+    await teamPullRadar(cfg);
     stats.ok = true;
   } catch (error) {
     stats.error = teamFriendlyError(error);
@@ -255,7 +282,7 @@ function teamSyncNow(options) {
 
 // Mudou código/nome: recomeça do zero (re-envia o acervo local e relê o cofre inteiro).
 async function teamConfigChanged() {
-  await chrome.storage.local.remove([TEAM_STORE.cursor, TEAM_STORE.seeded, TEAM_STORE.dirty, TEAM_STORE.dirtyStatus]);
+  await chrome.storage.local.remove([TEAM_STORE.cursor, TEAM_STORE.seeded, TEAM_STORE.dirty, TEAM_STORE.dirtyStatus, TEAM_STORE.radar]);
   await teamEnsureAlarms();
   return teamSyncNow({ force: true });
 }

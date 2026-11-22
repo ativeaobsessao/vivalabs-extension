@@ -125,6 +125,13 @@
     .radar-state.err { color: #d70015; }
     .radar-actions { display: flex; gap: 7px; }
     .radar .btn[hidden] { display: none; }
+    .radar input[type="text"], .radar input[type="password"] {
+      width: 100%; font-family: inherit; font-size: 12.5px; background: #fff; border: 1px solid transparent;
+      border-radius: 9px; padding: 8px 10px; color: var(--text); outline: none; margin-bottom: 7px;
+      transition: border-color .18s, box-shadow .18s;
+    }
+    .radar input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.18); }
+    .notify [hidden] { display: none; }
     details.advanced { margin-top: 14px; }
     details.advanced summary {
       list-style: none;
@@ -254,6 +261,32 @@
       <button class="btn btn-secondary" id="radarStopBtn" type="button" hidden>Parar</button>
     </div>
     <div class="radar-state" id="radarState">Desligado. Ao ligar, o Chrome abre janelinhas sozinho, uma por vez.</div>
+  </div>
+
+  <div class="radar notify" id="notifyBox">
+    <div class="radar-head">
+      <span class="radar-title">Aviso de oferta nova</span>
+    </div>
+    <label class="field-label" for="notifyTipo">Avisar em</label>
+    <select id="notifyTipo">
+      <option value="off">Desligado</option>
+      <option value="discord">Discord</option>
+      <option value="telegram">Telegram</option>
+    </select>
+    <div id="notifyDiscord" hidden>
+      <label class="field-label" for="notifyWebhook">Webhook do canal (Discord → Editar canal → Integrações)</label>
+      <input type="password" id="notifyWebhook" placeholder="https://discord.com/api/webhooks/..." autocomplete="off">
+    </div>
+    <div id="notifyTelegram" hidden>
+      <label class="field-label" for="notifyToken">Token do bot (@BotFather)</label>
+      <input type="password" id="notifyToken" placeholder="123456:ABC..." autocomplete="off">
+      <label class="field-label" for="notifyChat">Chat ID (número ou @canal)</label>
+      <input type="text" id="notifyChat" placeholder="-100123456789" autocomplete="off">
+    </div>
+    <div class="radar-actions">
+      <button class="btn btn-secondary" id="notifyTestBtn" type="button" hidden>Salvar e testar</button>
+    </div>
+    <div class="radar-state" id="notifyState">Depois de cada rodada do radar, manda no seu canal só os criativos em escala que ainda não foram avisados. Fica guardado só neste navegador.</div>
   </div>
 
   <details class="advanced">
