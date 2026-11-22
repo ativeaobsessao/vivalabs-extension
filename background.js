@@ -387,13 +387,15 @@ async function relatarProgressoMineracao(message, sender) {
 // criativos ao mesmo tempo — sem a fila, um sobrescreveria o outro.
 function upsertAcervo(creatives) {
   const run = acervoWriteChain.then(async () => {
-    const data = await chrome.storage.local.get(VIVA_ACERVO_KEY);
-    const resultado = mesclarAcervo(data[VIVA_ACERVO_KEY], creatives, Date.now());
+    const data = await chrome.storage.local.get([VIVA_ACERVO_KEY, VIVA_LIXEIRA_KEY]);
+    const lixeira = lixeiraNormalizar(data[VIVA_LIXEIRA_KEY]);
+    const bloqueio = lixeiraConjuntos(lixeira);
+    const resultado = mesclarAcervo(data[VIVA_ACERVO_KEY], creatives, Date.now(), undefined, lixeira);
     await chrome.storage.local.set({ [VIVA_ACERVO_KEY]: resultado.acervo });
     // Cofre da equipe: marca o que mudou para ser enviado no próximo ciclo (só se a equipe estiver configurada).
     try {
       if (await teamConfig()) {
-        const chaves = (Array.isArray(creatives) ? creatives : []).map(c => acervoKey(sanitizarCriativo(c))).filter(Boolean);
+        const chaves = (Array.isArray(creatives) ? creatives : []).map(sanitizarCriativo).filter(c => c && !lixeiraBloqueia(bloqueio, c)).map(acervoKey).filter(Boolean);
         await teamMarkDirtyRaw(chaves);
         teamAgendarSync();
       }
@@ -414,6 +416,67 @@ function limparAcervo() {
     return { status: "ok" };
   });
   acervoWriteChain = run.catch(() => {});
+  return run;
+}
+
+// Apaga criativos / bibliotecas / ofertas (por domínio) do acervo LOCAL. Com `bloquear`, guarda o
+// que foi apagado na lixeira para o motor e a sincronização da equipe não trazerem de volta.
+// O cofre da equipe não é alterado (o lixo de um minerador pode ser ouro de outro).
+function apagarDoAcervo(pedido) {
+  const alvo = {
+    chaves: Array.isArray(pedido && pedido.chaves) ? pedido.chaves.map(String).slice(0, 20000) : [],
+    paginas: Array.isArray(pedido && pedido.paginas) ? pedido.paginas.map(String).slice(0, 5000) : [],
+    dominios: Array.isArray(pedido && pedido.dominios) ? pedido.dominios.map(String).slice(0, 3000) : [],
+  };
+  const bloquear = !pedido || pedido.bloquear !== false;
+  const run = acervoWriteChain.then(async () => {
+    const data = await chrome.storage.local.get([VIVA_ACERVO_KEY, VIVA_LIXEIRA_KEY, TEAM_STORE.dirty, TEAM_STORE.dirtyStatus, TEAM_STORE.meta]);
+    const acervo = Array.isArray(data[VIVA_ACERVO_KEY]) ? data[VIVA_ACERVO_KEY] : [];
+    const { acervo: restante, removidos } = acervoRemover(acervo, alvo);
+    const gone = new Set(removidos);
+    const escrita = { [VIVA_ACERVO_KEY]: restante };
+    let lixeira = lixeiraNormalizar(data[VIVA_LIXEIRA_KEY]);
+    if (bloquear) {
+      lixeira = lixeiraAdicionar(lixeira, alvo, Date.now());
+      escrita[VIVA_LIXEIRA_KEY] = lixeira;
+    }
+    if (gone.size) {
+      if (Array.isArray(data[TEAM_STORE.dirty])) escrita[TEAM_STORE.dirty] = data[TEAM_STORE.dirty].filter(k => !gone.has(k));
+      if (Array.isArray(data[TEAM_STORE.dirtyStatus])) escrita[TEAM_STORE.dirtyStatus] = data[TEAM_STORE.dirtyStatus].filter(k => !gone.has(k));
+      if (data[TEAM_STORE.meta] && typeof data[TEAM_STORE.meta] === "object") {
+        const meta = { ...data[TEAM_STORE.meta] };
+        gone.forEach(k => { delete meta[k]; });
+        escrita[TEAM_STORE.meta] = meta;
+      }
+    }
+    await chrome.storage.local.set(escrita);
+    return { status: "ok", removidos: removidos.length, total: restante.length, bloqueados: lixeira.chaves.length + lixeira.paginas.length + lixeira.dominios.length };
+  });
+  acervoWriteChain = run.catch(() => {});
+  return run;
+}
+
+// Esvazia a lista de bloqueio (o que foi apagado volta a ser coletado normalmente).
+function limparLixeira() {
+  const run = acervoWriteChain.then(async () => {
+    await chrome.storage.local.remove(VIVA_LIXEIRA_KEY);
+    return { status: "ok" };
+  });
+  acervoWriteChain = run.catch(() => {});
+  return run;
+}
+
+// Mapa de Instagram por biblioteca (gravação serializada: várias abas detectam ao mesmo tempo).
+let igMapWriteChain = Promise.resolve();
+function igMapSet(entrada) {
+  const run = igMapWriteChain.then(async () => {
+    const data = await chrome.storage.local.get(VIVA_IG_MAP_KEY);
+    const atual = data[VIVA_IG_MAP_KEY];
+    const novo = igMapGravar(atual, entrada || {}, Date.now());
+    if (novo !== atual) await chrome.storage.local.set({ [VIVA_IG_MAP_KEY]: novo });
+    return { status: "ok", salvo: novo !== atual };
+  });
+  igMapWriteChain = run.catch(() => {});
   return run;
 }
 
@@ -841,6 +904,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   else if (message.action === "ACERVO_CLEAR") {
     limparAcervo()
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "ACERVO_DELETE") {
+    apagarDoAcervo(message)
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "LIXEIRA_CLEAR") {
+    limparLixeira()
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "IG_MAP_SET") {
+    igMapSet({ pid: message.pid, nome: message.nome, url: message.url })
       .then(sendResponse)
       .catch(error => sendResponse({ status: "error", error: error.message }));
     return true;

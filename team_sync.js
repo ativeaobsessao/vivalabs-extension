@@ -177,8 +177,8 @@ async function teamPull(cfg, stats) {
     const rows = await teamRpc("viva_pull", { p_token: cfg.code, p_since: cursor, p_limit: TEAM_PULL_PAGE });
     if (!Array.isArray(rows) || !rows.length) break;
     await _teamSerial(async () => {
-      const data = await chrome.storage.local.get([VIVA_ACERVO_KEY, TEAM_STORE.meta]);
-      const resultado = mesclarRemotos(data[VIVA_ACERVO_KEY], rows, Date.now());
+      const data = await chrome.storage.local.get([VIVA_ACERVO_KEY, TEAM_STORE.meta, VIVA_LIXEIRA_KEY]);
+      const resultado = mesclarRemotos(data[VIVA_ACERVO_KEY], rows, Date.now(), undefined, lixeiraNormalizar(data[VIVA_LIXEIRA_KEY]));
       const meta = data[TEAM_STORE.meta] && typeof data[TEAM_STORE.meta] === "object" ? data[TEAM_STORE.meta] : {};
       for (const row of rows) {
         if (!row || !row.key) continue;

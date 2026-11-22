@@ -121,21 +121,156 @@ function sanitizarCriativo(raw) {
   };
 }
 
+// ── Lixeira: lista de bloqueio do que o operador apagou ─────────────────────────────────────────
+// Apagar do acervo sem bloquear não adianta: o motor coleta o mesmo lixo de novo na próxima rolagem
+// e o cofre da equipe devolve na próxima sincronização. A lixeira guarda O QUE foi apagado
+// (criativo, biblioteca ou domínio de oferta) e todas as portas de entrada do acervo a consultam.
+const VIVA_LIXEIRA_KEY = "viva_lixeira";
+const VIVA_LIXEIRA_LIMITES = { chaves: 20000, paginas: 5000, dominios: 3000 };
+
+function lixeiraVazia() {
+  return { chaves: [], paginas: [], dominios: [], at: 0 };
+}
+
+function lixeiraNormalizar(raw) {
+  const base = lixeiraVazia();
+  if (!raw || typeof raw !== "object") return base;
+  for (const campo of ["chaves", "paginas", "dominios"]) {
+    const vistos = new Set();
+    for (const valor of Array.isArray(raw[campo]) ? raw[campo] : []) {
+      const texto = String(valor || "").slice(0, 200);
+      if (texto && !vistos.has(texto)) { vistos.add(texto); base[campo].push(texto); }
+    }
+    base[campo] = base[campo].slice(-VIVA_LIXEIRA_LIMITES[campo]);
+  }
+  base.at = Number(raw.at) || 0;
+  return base;
+}
+
+// Chave de agrupamento por biblioteca (a mesma usada por agruparPaginas) e por domínio de oferta.
+function paginaGrupoChave(c) {
+  if (!c) return "";
+  return c.pid || `n:${String(c.nome || "").toLowerCase()}`;
+}
+function dominioGrupoChave(c) {
+  return c ? normalizarDominioOferta(c.dom || c.dest) : "";
+}
+
+function lixeiraConjuntos(lixeira) {
+  const lix = lixeiraNormalizar(lixeira);
+  return { chaves: new Set(lix.chaves), paginas: new Set(lix.paginas), dominios: new Set(lix.dominios) };
+}
+
+function lixeiraBloqueia(conj, c) {
+  if (!conj || !c) return false;
+  const chave = acervoKey(c);
+  if (chave && conj.chaves.has(chave)) return true;
+  if (conj.paginas.size && conj.paginas.has(paginaGrupoChave(c))) return true;
+  if (conj.dominios.size) {
+    const dom = dominioGrupoChave(c);
+    if (dom && conj.dominios.has(dom)) return true;
+  }
+  return false;
+}
+
+// Devolve uma lixeira nova com o alvo acrescentado (não altera a original).
+function lixeiraAdicionar(lixeira, alvo, agora = Date.now()) {
+  const lix = lixeiraNormalizar(lixeira);
+  const a = alvo && typeof alvo === "object" ? alvo : {};
+  return lixeiraNormalizar({
+    chaves: lix.chaves.concat(Array.isArray(a.chaves) ? a.chaves : []),
+    paginas: lix.paginas.concat(Array.isArray(a.paginas) ? a.paginas : []),
+    dominios: lix.dominios.concat(Array.isArray(a.dominios) ? a.dominios : []),
+    at: agora,
+  });
+}
+
+// Tira do acervo o que casar com o alvo { chaves, paginas, dominios }. Devolve { acervo, removidos }
+// (removidos = chaves dos criativos apagados, para limpar fila de envio e etiquetas da equipe).
+function acervoRemover(acervo, alvo) {
+  const a = alvo && typeof alvo === "object" ? alvo : {};
+  const conj = {
+    chaves: new Set(Array.isArray(a.chaves) ? a.chaves : []),
+    paginas: new Set(Array.isArray(a.paginas) ? a.paginas : []),
+    dominios: new Set(Array.isArray(a.dominios) ? a.dominios : []),
+  };
+  const restante = [];
+  const removidos = [];
+  for (const c of Array.isArray(acervo) ? acervo : []) {
+    if (c && lixeiraBloqueia(conj, c)) removidos.push(acervoKey(c));
+    else restante.push(c);
+  }
+  return { acervo: restante, removidos };
+}
+
+// ── Mapa de Instagram por biblioteca ────────────────────────────────────────────────────────────
+// Quando o operador entra na biblioteca de um anunciante, o link do Instagram dele é detectado e
+// guardado aqui (por ID da página e por nome). Depois o Centro usa o mapa para pré-preencher o
+// pop-up de Monitorar sem precisar abrir a biblioteca de novo.
+const VIVA_IG_MAP_KEY = "viva_ig_map";
+const VIVA_IG_MAP_MAX = 5000;
+const VIVA_IG_RESERVADOS = ["p", "reel", "reels", "explore", "accounts", "about", "stories", "tv", "direct", "web", "legal", "privacy", "developer", "instagram", "facebook", "meta", "ads"];
+
+// Aceita só perfil do Instagram (https://www.instagram.com/<usuario>) e devolve a forma canônica, ou "".
+function igUrlValida(url) {
+  const m = String(url || "").trim().match(/^https?:\/\/(?:www\.)?instagram\.com\/([A-Za-z0-9_.]{1,30})\/?(?:[?#].*)?$/i);
+  if (!m || VIVA_IG_RESERVADOS.includes(m[1].toLowerCase())) return "";
+  return `https://www.instagram.com/${m[1]}`;
+}
+
+function igMapChaves(pid, nome) {
+  const chaves = [];
+  if (/^\d{8,20}$/.test(String(pid || ""))) chaves.push(`pid:${pid}`);
+  const n = String(nome || "").trim().toLowerCase();
+  if (n && n !== "anunciante sem nome") chaves.push(`n:${n.slice(0, 120)}`);
+  return chaves;
+}
+
+// Devolve um mapa novo com o Instagram gravado para a página (por pid e por nome).
+function igMapGravar(mapa, { pid, nome, url }, agora = Date.now()) {
+  const ig = igUrlValida(url);
+  const base = mapa && typeof mapa === "object" ? mapa : {};
+  const chaves = igMapChaves(pid, nome);
+  if (!ig || !chaves.length) return base;
+  const novo = { ...base };
+  chaves.forEach(k => { novo[k] = { url: ig, at: agora }; });
+  const todas = Object.keys(novo);
+  if (todas.length > VIVA_IG_MAP_MAX) {
+    todas.sort((a, b) => (Number(novo[b].at) || 0) - (Number(novo[a].at) || 0));
+    todas.slice(VIVA_IG_MAP_MAX).forEach(k => { delete novo[k]; });
+  }
+  return novo;
+}
+
+function igMapBuscar(mapa, { pid, nome }) {
+  if (!mapa || typeof mapa !== "object") return "";
+  for (const k of igMapChaves(pid, nome)) {
+    const e = mapa[k];
+    const ig = e && igUrlValida(e.url);
+    if (ig) return ig;
+  }
+  return "";
+}
+
 // Junta os criativos novos ao acervo existente. Devolve { acervo, adicionados, atualizados }.
-function mesclarAcervo(existente, novos, agora = Date.now(), max = VIVA_ACERVO_MAX) {
+function mesclarAcervo(existente, novos, agora = Date.now(), max = VIVA_ACERVO_MAX, lixeira = null) {
+  const bloq = lixeira ? lixeiraConjuntos(lixeira) : null;
   const mapa = new Map();
   for (const item of Array.isArray(existente) ? existente : []) {
     if (!item || typeof item !== "object") continue;
     if (agora - (Number(item.lastSeen) || 0) > VIVA_ACERVO_TTL_MS) continue;
+    if (bloq && lixeiraBloqueia(bloq, item)) continue;
     const key = acervoKey(item);
     if (key) mapa.set(key, item);
   }
 
   let adicionados = 0;
   let atualizados = 0;
+  let bloqueados = 0;
   for (const bruto of Array.isArray(novos) ? novos : []) {
     const novo = sanitizarCriativo(bruto);
     if (!novo) continue;
+    if (bloq && lixeiraBloqueia(bloq, novo)) { bloqueados += 1; continue; }
     const key = acervoKey(novo);
     const atual = mapa.get(key);
     const fontes = new Set(atual && Array.isArray(atual.fontes) ? atual.fontes : []);
@@ -182,17 +317,19 @@ function mesclarAcervo(existente, novos, agora = Date.now(), max = VIVA_ACERVO_M
     acervo.sort((a, b) => (b.score - a.score) || (b.lastSeen - a.lastSeen));
     acervo = acervo.slice(0, max);
   }
-  return { acervo, adicionados, atualizados };
+  return { acervo, adicionados, atualizados, bloqueados };
 }
 
 // Junta ao acervo local os registros COMPLETOS vindos do cofre da equipe (Supabase).
 // Diferente de mesclarAcervo, NÃO "renova" o lastSeen (item antigo de outro minerador continua
 // antigo) e respeita o que já existe: dup/adv = maior, firstSeen = menor, lastSeen = maior.
-function mesclarRemotos(existente, remotos, agora = Date.now(), max = VIVA_ACERVO_MAX) {
+function mesclarRemotos(existente, remotos, agora = Date.now(), max = VIVA_ACERVO_MAX, lixeira = null) {
+  const bloq = lixeira ? lixeiraConjuntos(lixeira) : null;
   const mapa = new Map();
   for (const item of Array.isArray(existente) ? existente : []) {
     if (!item || typeof item !== "object") continue;
     if (agora - (Number(item.lastSeen) || 0) > VIVA_ACERVO_TTL_MS) continue;
+    if (bloq && lixeiraBloqueia(bloq, item)) continue;
     const key = acervoKey(item);
     if (key) mapa.set(key, item);
   }
@@ -204,6 +341,7 @@ function mesclarRemotos(existente, remotos, agora = Date.now(), max = VIVA_ACERV
     if (!base) continue;
     const key = acervoKey(base);
     if (!key) continue;
+    if (bloq && lixeiraBloqueia(bloq, base)) continue;
     const lastRemoto = Number(rec.lastSeen) || 0;
     if (agora - lastRemoto > VIVA_ACERVO_TTL_MS) continue;
     const atual = mapa.get(key);
