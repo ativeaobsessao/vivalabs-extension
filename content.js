@@ -38,6 +38,8 @@ let isAutoScrollRunning = false;
 let autoScrollTimer = null;
 let autoScrollInterval = 7000;
 let lastUrl = window.location.href;
+// Instagram já detectado para a página atual (lido pelo gatilho de auto-descoberta e preenchido pela barra lateral).
+let cachedIgUrl = null;
 let _vivaMinerMode = false;        // true quando esta aba é uma janela da Busca Inteligente Turbo
 let activeCardData = [];
 let globalDropdownListenerAdded = false;
@@ -3006,7 +3008,7 @@ function setupSidebarInteractions() {
   const igInput = document.getElementById("viva-side-instagram");
   const igHelper = document.getElementById("viva-ig-helper");
   let hasFoundIg = false;
-  let cachedIgUrl = null;
+  cachedIgUrl = null; // declarada no escopo do módulo (tryTriggerAutoDiscoverInstagram também a lê)
 
   // Set GEO once
   const geoInput = document.getElementById("viva-side-geo");
