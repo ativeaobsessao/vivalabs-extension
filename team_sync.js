@@ -301,3 +301,23 @@ function teamSetStatus(key, status) {
     return { status: "ok" };
   });
 }
+
+// Mesmo que teamSetStatus, mas para várias chaves de uma vez (descartar em lote no Centro).
+function teamSetStatusLote(keys, status) {
+  const lista = Array.isArray(keys) ? Array.from(new Set(keys.filter(Boolean))) : [];
+  if (!lista.length || !TEAM_STATUSES.includes(status)) return Promise.resolve({ status: "error", error: "lote ou status inválido" });
+  return _teamSerial(async () => {
+    const cfg = await teamConfig();
+    const data = await chrome.storage.local.get([TEAM_STORE.meta, TEAM_STORE.dirtyStatus]);
+    const meta = data[TEAM_STORE.meta] && typeof data[TEAM_STORE.meta] === "object" ? data[TEAM_STORE.meta] : {};
+    const agora = Date.now();
+    const sujos = new Set(Array.isArray(data[TEAM_STORE.dirtyStatus]) ? data[TEAM_STORE.dirtyStatus] : []);
+    lista.forEach(key => {
+      meta[key] = { ...(meta[key] || {}), status, statusBy: cfg ? cfg.name : "", statusMs: agora };
+      sujos.add(key);
+    });
+    await chrome.storage.local.set({ [TEAM_STORE.meta]: meta, [TEAM_STORE.dirtyStatus]: Array.from(sujos) });
+    if (cfg) teamAgendarSync();
+    return { status: "ok", alterados: lista.length };
+  });
+}

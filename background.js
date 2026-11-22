@@ -992,6 +992,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  else if (message.action === "TEAM_SET_STATUS_LOTE") {
+    teamSetStatusLote(message.keys, message.novoStatus)
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
   // Mensagem desconhecida: não mantém o canal aberto à toa.
   return false;
 });

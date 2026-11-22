@@ -3790,6 +3790,28 @@ function intelConfirmar({ titulo, mensagem = "", detalhes = [], confirmarTexto =
   });
 }
 
+// Liga a caixinha de um card ao conjunto de seleção. Shift + clique marca/desmarca o intervalo entre
+// a última caixinha clicada e esta (o Centro registra _vivaIntelRange; sem ele vale só o clique simples).
+let _vivaIntelRange = null;
+let _vivaIntelUltimaSel = null;
+function intelLigarCheckbox(sel, conjunto, chave, card) {
+  let comShift = false;
+  sel.addEventListener("click", ev => { comShift = !!ev.shiftKey; });
+  sel.addEventListener("change", () => {
+    const marcar = sel.checked;
+    const shift = comShift;
+    comShift = false;
+    if (shift && _vivaIntelRange && _vivaIntelUltimaSel && _vivaIntelUltimaSel !== chave && _vivaIntelRange(_vivaIntelUltimaSel, chave, marcar)) {
+      _vivaIntelUltimaSel = chave;
+      return;
+    }
+    if (marcar) conjunto.add(chave); else conjunto.delete(chave);
+    _vivaIntelUltimaSel = chave;
+    card.classList.toggle("is-selected", marcar);
+    if (_vivaIntelOnSel) _vivaIntelOnSel();
+  });
+}
+
 // Seleção (caixinha) no canto do card — vale para criativos, ofertas e bibliotecas.
 function intelRankComSelecao(posicao, conjunto, chave, card, rotuloAria) {
   const rank = intelEl("div", "viva-intel-rank");
@@ -3800,11 +3822,7 @@ function intelRankComSelecao(posicao, conjunto, chave, card, rotuloAria) {
     sel.title = "Selecionar (para apagar ou baixar em lote)";
     sel.setAttribute("aria-label", rotuloAria);
     sel.checked = conjunto.has(chave);
-    sel.addEventListener("change", () => {
-      if (sel.checked) conjunto.add(chave); else conjunto.delete(chave);
-      card.classList.toggle("is-selected", sel.checked);
-      if (_vivaIntelOnSel) _vivaIntelOnSel();
-    });
+    intelLigarCheckbox(sel, conjunto, chave, card);
     card.classList.toggle("is-selected", sel.checked);
     rank.appendChild(sel);
   }
@@ -3842,14 +3860,10 @@ function intelBuildCreativeCard(c, posicao) {
     const sel = document.createElement("input");
     sel.type = "checkbox";
     sel.className = "viva-intel-sel";
-    sel.title = "Selecionar para baixar";
-    sel.setAttribute("aria-label", "Selecionar criativo para baixar");
+    sel.title = "Selecionar (para descartar, apagar ou baixar em lote). Shift + clique marca um intervalo";
+    sel.setAttribute("aria-label", "Selecionar criativo");
     sel.checked = _vivaIntelSel.has(chave);
-    sel.addEventListener("change", () => {
-      if (sel.checked) _vivaIntelSel.add(chave); else _vivaIntelSel.delete(chave);
-      card.classList.toggle("is-selected", sel.checked);
-      if (_vivaIntelOnSel) _vivaIntelOnSel();
-    });
+    intelLigarCheckbox(sel, _vivaIntelSel, chave, card);
     card.classList.toggle("is-selected", sel.checked);
     rank.appendChild(sel);
   }
@@ -4167,11 +4181,7 @@ function showIntelCenter() {
           </div>
         </details>
         <div class="viva-intel-exportbar">
-          <span id="viva-sel-info" class="viva-sel-info"></span>
-          <button type="button" id="viva-sel-all">☑ Selecionar os filtrados</button>
-          <button type="button" id="viva-sel-clear">☐ Limpar seleção</button>
-          <button type="button" id="viva-del-sel" class="viva-del-btn" title="Apaga do acervo o que está marcado">🗑 Apagar selecionados</button>
-          <button type="button" id="viva-del-all" class="viva-del-btn" title="Apaga do acervo tudo que aparece com os filtros atuais">🗑 Apagar os filtrados</button>
+          <span class="viva-exp-rotulo">Baixar planilha:</span>
           <select id="viva-exp-escopo" aria-label="O que baixar">
             <option value="selecionados">Baixar: selecionados</option>
             <option value="filtro">Baixar: filtro atual</option>
@@ -4180,6 +4190,21 @@ function showIntelCenter() {
           <button type="button" id="viva-exp-xlsx" class="viva-exp-btn">⬇ Excel</button>
           <button type="button" id="viva-exp-csv" class="viva-exp-btn">⬇ CSV</button>
         </div>
+      </div>
+      <div class="viva-intel-triagem" id="viva-triagem" role="toolbar" aria-label="Triagem em lote">
+        <div class="viva-tri-topo">
+          <strong class="viva-tri-titulo">Triagem em lote</strong>
+          <span id="viva-sel-info" class="viva-sel-info"></span>
+        </div>
+        <div class="viva-tri-botoes">
+          <button type="button" id="viva-sel-all" class="viva-tri-sel">☑ Selecionar todos</button>
+          <button type="button" id="viva-sel-clear" class="viva-tri-sel">☐ Limpar seleção</button>
+          <span class="viva-tri-sep"></span>
+          <button type="button" id="viva-dis-sel" class="viva-dis-btn" title="Marca como Descartada (sai da lista, mas dá para recuperar em Status → Descartadas)">🚫 Descartar selecionados</button>
+          <button type="button" id="viva-del-sel" class="viva-del-btn" title="Apaga do acervo o que está marcado">🗑 Apagar selecionados</button>
+          <button type="button" id="viva-del-all" class="viva-del-btn viva-del-leve" title="Apaga do acervo tudo que aparece com os filtros atuais">🗑 Apagar todos os filtrados</button>
+        </div>
+        <p class="viva-tri-dica" id="viva-tri-dica">Marque a caixinha ☐ de cada card (Shift + clique marca um intervalo) e use Descartar ou Apagar.</p>
       </div>
       <div id="viva-intel-termos" class="viva-intel-termos" aria-label="Termos-chave (clique para exigir o termo)"></div>
       <div id="viva-intel-list" class="viva-intel-list" role="list"></div>
@@ -4582,16 +4607,31 @@ function showIntelCenter() {
   const alvoDeChaves = chaves => (_vivaIntelUi.tab === "paginas" ? { paginas: chaves } : _vivaIntelUi.tab === "ofertas" ? { dominios: chaves } : { chaves });
   const btnDelSel = $("#viva-del-sel");
   const btnDelAll = $("#viva-del-all");
+  const btnDisSel = $("#viva-dis-sel");
+  const triagem = $("#viva-triagem");
+  const triDica = $("#viva-tri-dica");
+  const btnSelAll = $("#viva-sel-all");
   const atualizarBarraSelecao = () => {
     const sel = intelSelDaAba(_vivaIntelUi.tab);
     const n = sel.size;
     const [singular, plural] = UNIDADES[_vivaIntelUi.tab] || UNIDADES.criativos;
     const nCriativosSel = _vivaIntelSel.size;
     const filtrados = filtradosAgora().length;
+    const naoSelecionadosVisiveis = itensVisiveis.filter(item => { const k = chaveDoItem(item); return k && !sel.has(k); }).length;
     selInfo.textContent = n ? `${n} ${n > 1 ? plural : singular} selecionado${n > 1 ? "s" : ""}` : `${itensVisiveis.length} ${itensVisiveis.length === 1 ? singular : plural} no filtro atual`;
+    triagem.classList.toggle("tem-selecao", n > 0);
+    triDica.textContent = n
+      ? `Descartar tira da lista (dá para recuperar em Status → Descartadas). Apagar remove do acervo${_vivaIntelUi.tab === "criativos" ? "" : " e leva os criativos junto"}.`
+      : `Marque a caixinha ☐ de cada ${singular} (Shift + clique marca um intervalo) ou use “Selecionar todos”, e depois Descartar ou Apagar.`;
+    btnSelAll.textContent = `☑ Selecionar todos (${itensVisiveis.length})`;
+    btnSelAll.disabled = itensVisiveis.length === 0 || naoSelecionadosVisiveis === 0;
+    $("#viva-sel-clear").disabled = n === 0;
+    btnDisSel.hidden = _vivaIntelUi.tab !== "criativos";
+    btnDisSel.textContent = `🚫 Descartar selecionados${n ? ` (${n})` : ""}`;
+    btnDisSel.disabled = n === 0;
     btnDelSel.textContent = `🗑 Apagar selecionados${n ? ` (${n})` : ""}`;
     btnDelSel.disabled = n === 0;
-    btnDelAll.textContent = `🗑 Apagar os filtrados (${itensVisiveis.length})`;
+    btnDelAll.textContent = `🗑 Apagar todos os filtrados (${itensVisiveis.length})`;
     btnDelAll.disabled = itensVisiveis.length === 0;
     escopoSel.options[0].textContent = `Baixar: selecionados (${nCriativosSel})`;
     escopoSel.options[1].textContent = `Baixar: filtro atual (${filtrados})`;
@@ -4653,6 +4693,36 @@ function showIntelCenter() {
   };
   btnDelSel.addEventListener("click", () => apagarEmLote(Array.from(intelSelDaAba(_vivaIntelUi.tab)), "selecao"));
   btnDelAll.addEventListener("click", () => apagarEmLote(itensVisiveis.map(chaveDoItem).filter(Boolean), "filtro"));
+
+  // Shift + clique: marca/desmarca todos os cards entre a última caixinha clicada e esta (na ordem da lista).
+  _vivaIntelRange = (de, ate, marcar) => {
+    const chaves = itensVisiveis.map(chaveDoItem);
+    const i = chaves.indexOf(de), j = chaves.indexOf(ate);
+    if (i < 0 || j < 0) return false;
+    const sel = intelSelDaAba(_vivaIntelUi.tab);
+    chaves.slice(Math.min(i, j), Math.max(i, j) + 1).forEach(k => { if (!k) return; if (marcar) sel.add(k); else sel.delete(k); });
+    renderTudo();
+    return true;
+  };
+
+  // Descartar em lote (só na aba Criativos): status "Descartada" — reversível, e o filtro padrão "Sem descartadas" esconde.
+  btnDisSel.addEventListener("click", async () => {
+    const chaves = Array.from(_vivaIntelSel);
+    if (!chaves.length) { showAppleToast("Nada para descartar", "Marque os criativos primeiro", "error"); return; }
+    try {
+      const resposta = await chrome.runtime.sendMessage({ action: "TEAM_SET_STATUS_LOTE", keys: chaves, novoStatus: "descartada" });
+      if (!resposta || resposta.status !== "ok") throw new Error((resposta && resposta.error) || "sem resposta do background");
+      const agora = Date.now();
+      const meta = { ...latestTeamMeta };
+      chaves.forEach(k => { meta[k] = { ...(meta[k] || {}), status: "descartada", statusMs: agora }; });
+      latestTeamMeta = meta;
+      _vivaIntelSel.clear();
+      renderTudo();
+      showAppleToast(`${chaves.length} ${chaves.length === 1 ? "criativo descartado" : "criativos descartados"}`, "Saíram da lista. Para recuperar: Status → Descartadas");
+    } catch (error) {
+      showAppleToast("Não foi possível descartar", error.message, "error");
+    }
+  });
 
   const descreverFiltros = () => {
     const U = _vivaIntelUi, A = U.adv, partes = [];
@@ -4733,6 +4803,8 @@ function closeRankingOverlay(resumeEngine = true) {
   vivaMonitorFechar();
   _vivaIntelRerender = null;
   _vivaIntelOnSel = null;
+  _vivaIntelRange = null;
+  _vivaIntelUltimaSel = null;
   _vivaIntelSel.clear();
   _vivaIntelSelOfertas.clear();
   _vivaIntelSelPaginas.clear();

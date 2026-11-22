@@ -100,9 +100,8 @@
   background: linear-gradient(180deg, #fff 0%, #fbf5ff 100%) !important;
 }
 .viva-stage-baixo {
+  /* Só a faixa lateral marca "baixo volume": o card NÃO fica escuro (o fundo preto era um erro do redesign). */
   border-left-color: #000 !important;
-  background: #0A0A0A !important;
-  opacity: 0.9 !important;
 }
 
 /* Escala Potencial Modular Apple Banner (32px / 13px Bold) */
@@ -1792,31 +1791,7 @@ input:checked + .viva-slider:before {
   }
 }
 
-.viva-baixo-volume {
-  border: 2px solid #000 !important;
-  background: #0a0a0a !important;
-  position: relative;
-}
-
-.viva-baixo-volume::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  pointer-events: none;
-  z-index: 1;
-  border-radius: inherit;
-}
-
-.viva-baixo-volume > * {
-  position: relative;
-  z-index: 2;
-}
-
-.viva-baixo-volume-frame {
-  border: 2px solid #000 !important;
-  background: #0a0a0a !important;
-}
+/* Baixo volume: o alerta é o selo "⚫ BAIXO VOLUME" e a faixa lateral da fase. Sem fundo/borda/véu preto no card. */
 
 .viva-badge-black {
   background: #000 !important;
@@ -1832,14 +1807,6 @@ input:checked + .viva-slider:before {
   gap: 4px !important;
   z-index: 2 !important;
   position: relative !important;
-}
-
-.viva-baixo-volume-frame .viva-processed,
-.viva-baixo-volume-frame .viva-escala-strip,
-.viva-baixo-volume-frame .viva-card-badge-container,
-.viva-baixo-volume-frame .viva-card-footer {
-  z-index: 2;
-  position: relative;
 }
 
 body {
@@ -3050,7 +3017,7 @@ body { padding-bottom: 0 !important; }
 
 /* Centro: filtros avançados, seleção e download */
 .viva-intel-rank { display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; gap: 8px !important; }
-.viva-intel-sel { width: 17px !important; height: 17px !important; margin: 0 !important; cursor: pointer !important; accent-color: #0071e3 !important; }
+.viva-intel-sel { width: 22px !important; height: 22px !important; margin: 0 !important; cursor: pointer !important; accent-color: #0071e3 !important; }
 .viva-intel-card.is-selected { box-shadow: 0 0 0 2px #0071e3 inset !important; background: #f2f8ff !important; }
 .viva-intel-actionbar { display: flex !important; flex-direction: column !important; gap: 8px !important; padding: 8px 22px 10px !important; background: #fafafc !important; border-bottom: 1px solid rgba(0,0,0,0.07) !important; }
 .viva-intel-adv > summary { cursor: pointer !important; font: 650 12.5px var(--viva-font) !important; color: #1d1d1f !important; list-style: none !important; user-select: none !important; }
@@ -3067,8 +3034,26 @@ body { padding-bottom: 0 !important; }
 .viva-sel-info { font: 700 12px var(--viva-font) !important; color: #0071e3 !important; margin-right: auto !important; }
 
 /* Apagar em lote, bloqueados e pop-up de confirmação do Centro */
-.viva-intel-exportbar button.viva-del-btn { color: #b3261e !important; border-color: rgba(179,38,30,0.35) !important; }
-.viva-intel-exportbar button.viva-del-btn:hover:not(:disabled) { background: #fde4e2 !important; }
+.viva-exp-rotulo { font: 650 12px var(--viva-font) !important; color: #515154 !important; margin-right: 2px !important; }
+.viva-sel-info { margin-right: 0 !important; }
+
+/* Triagem em lote: faixa própria, sempre visível acima da lista */
+.viva-intel-triagem { display: flex !important; flex-direction: column !important; gap: 6px !important; padding: 10px 22px !important; background: #fff !important; border-bottom: 1px solid rgba(0,0,0,0.08) !important; }
+.viva-intel-triagem.tem-selecao { background: #eef6ff !important; border-bottom-color: rgba(0,113,227,0.35) !important; }
+.viva-tri-topo { display: flex !important; align-items: baseline !important; gap: 12px !important; }
+.viva-tri-titulo { font: 700 13px var(--viva-font) !important; color: #1d1d1f !important; }
+.viva-tri-botoes { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 8px !important; }
+.viva-tri-sep { width: 1px !important; height: 22px !important; background: rgba(0,0,0,0.15) !important; margin: 0 4px !important; }
+.viva-tri-botoes button { min-height: 34px !important; padding: 0 14px !important; border: 1px solid rgba(0,0,0,0.16) !important; border-radius: 9px !important; background: #fff !important; font: 650 12.5px var(--viva-font) !important; color: #1d1d1f !important; cursor: pointer !important; }
+.viva-tri-botoes button[hidden] { display: none !important; }
+.viva-tri-botoes button:disabled { opacity: 0.45 !important; cursor: default !important; }
+.viva-tri-botoes button.viva-dis-btn { background: #1d1d1f !important; border-color: #1d1d1f !important; color: #fff !important; }
+.viva-tri-botoes button.viva-dis-btn:hover:not(:disabled) { background: #3a3a3c !important; }
+.viva-tri-botoes button.viva-del-btn { background: #b3261e !important; border-color: #b3261e !important; color: #fff !important; }
+.viva-tri-botoes button.viva-del-btn:hover:not(:disabled) { background: #8f1d17 !important; }
+.viva-tri-botoes button.viva-del-btn.viva-del-leve { background: #fff !important; color: #b3261e !important; border-color: rgba(179,38,30,0.4) !important; }
+.viva-tri-botoes button.viva-del-btn.viva-del-leve:hover:not(:disabled) { background: #fde4e2 !important; }
+.viva-tri-dica { margin: 0 !important; font: 500 11.5px var(--viva-font) !important; color: #6e6e73 !important; }
 .viva-intel-pill.ig { cursor: pointer !important; border: 0 !important; font-family: var(--viva-font) !important; }
 .viva-intel-pill.ig:hover { background: #fde8f3 !important; color: #b0176b !important; }
 
