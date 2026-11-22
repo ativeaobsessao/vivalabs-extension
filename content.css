@@ -2996,3 +2996,20 @@ body { padding-bottom: 0 !important; }
   .viva-top-filter-group > label { font-size: 11px !important; }
   .viva-top-filter-group input[type="number"] { width: 46px !important; }
 }
+
+/* ── Centro: equipe (status compartilhado) ──────────────────────────────────────────────── */
+.viva-intel-status {
+  height: 28px !important;
+  padding: 0 8px !important;
+  color: var(--vs-ink) !important;
+  background: var(--vs-fill) !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  font: 600 11px var(--viva-font) !important;
+  cursor: pointer !important;
+  margin-left: auto !important;
+}
+.viva-intel-status[data-status="analise"] { color: #8a5a00 !important; background: #fff4d6 !important; }
+.viva-intel-status[data-status="minerada"] { color: #1a7f37 !important; background: #def7e5 !important; }
+.viva-intel-status[data-status="descartada"] { color: #6e6e73 !important; background: #e5e5ea !important; }
+.viva-intel-toolbar select[hidden] { display: none !important; }

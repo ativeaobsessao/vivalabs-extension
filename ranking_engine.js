@@ -178,6 +178,69 @@ function mesclarAcervo(existente, novos, agora = Date.now(), max = VIVA_ACERVO_M
   return { acervo, adicionados, atualizados };
 }
 
+// Junta ao acervo local os registros COMPLETOS vindos do cofre da equipe (Supabase).
+// Diferente de mesclarAcervo, NÃO "renova" o lastSeen (item antigo de outro minerador continua
+// antigo) e respeita o que já existe: dup/adv = maior, firstSeen = menor, lastSeen = maior.
+function mesclarRemotos(existente, remotos, agora = Date.now(), max = VIVA_ACERVO_MAX) {
+  const mapa = new Map();
+  for (const item of Array.isArray(existente) ? existente : []) {
+    if (!item || typeof item !== "object") continue;
+    if (agora - (Number(item.lastSeen) || 0) > VIVA_ACERVO_TTL_MS) continue;
+    const key = acervoKey(item);
+    if (key) mapa.set(key, item);
+  }
+  let adicionados = 0;
+  let atualizados = 0;
+  for (const linha of Array.isArray(remotos) ? remotos : []) {
+    const rec = linha && linha.rec;
+    const base = sanitizarCriativo(rec);
+    if (!base) continue;
+    const key = acervoKey(base);
+    if (!key) continue;
+    const lastRemoto = Number(rec.lastSeen) || 0;
+    if (agora - lastRemoto > VIVA_ACERVO_TTL_MS) continue;
+    const atual = mapa.get(key);
+    const firstRemoto = Number(rec.firstSeen) || lastRemoto || agora;
+    const fontes = new Set(atual && Array.isArray(atual.fontes) ? atual.fontes : []);
+    (Array.isArray(rec.fontes) ? rec.fontes : []).forEach(f => { const t = _trimText(f, 80); if (t) fontes.add(t); });
+    const remotoMaisNovo = !atual || lastRemoto >= (Number(atual.lastSeen) || 0);
+    const pick = (a, b) => (remotoMaisNovo ? (a || b) : (b || a));
+    const A = atual || {};
+    const merged = {
+      id: pick(base.id, A.id) || "",
+      pid: pick(base.pid, A.pid) || "",
+      sig: pick(base.sig, A.sig) || "",
+      nome: remotoMaisNovo && base.nome !== "Anunciante sem nome" ? base.nome : (A.nome || base.nome),
+      copy: pick(base.copy, A.copy) || "",
+      dest: pick(base.dest, A.dest) || "",
+      dom: pick(base.dom, A.dom) || "",
+      thumb: pick(base.thumb, A.thumb) || "",
+      video: Boolean(base.video || A.video),
+      url: pick(base.url, A.url) || "",
+      dup: Math.max(A.dup || 1, base.dup),
+      dias: remotoMaisNovo ? (base.dias !== null ? base.dias : (A.dias ?? null)) : (A.dias ?? base.dias),
+      inicio: base.inicio || A.inicio || 0,
+      adv: Math.max(A.adv || 0, base.adv),
+      stage: pick(base.stage, A.stage) || "",
+      fontes: Array.from(fontes).slice(-6),
+      firstSeen: Math.min(Number(A.firstSeen) || firstRemoto, firstRemoto),
+      lastSeen: Math.max(Number(A.lastSeen) || 0, lastRemoto),
+    };
+    const calc = scoreCriativo({ dup: merged.dup, dias: diasNoAr(merged, agora), adv: merged.adv });
+    merged.score = calc.score;
+    merged.emEscala = calc.emEscala;
+    if (atual) atualizados += 1;
+    else adicionados += 1;
+    mapa.set(key, merged);
+  }
+  let acervo = Array.from(mapa.values());
+  if (acervo.length > max) {
+    acervo.sort((a, b) => (b.score - a.score) || (b.lastSeen - a.lastSeen));
+    acervo = acervo.slice(0, max);
+  }
+  return { acervo, adicionados, atualizados };
+}
+
 // Agrupa o acervo por biblioteca (anunciante) e ranqueia.
 function agruparPaginas(acervo, agora = Date.now()) {
   const grupos = new Map();

@@ -3434,12 +3434,20 @@ function setupSidebarInteractions() {
 // Mantém o mesmo mecanismo de pausa do motor da tela antiga (rankingOverlayPaused) enquanto aberto.
 let _vivaIntelRerender = null;
 let _vivaIntelRerenderTimer = null;
-const _vivaIntelUi = { tab: "criativos", filtro: "todos", fonte: "", sort: "score", busca: "" };
+const _vivaIntelUi = { tab: "criativos", filtro: "todos", fonte: "", sort: "score", busca: "", status: "ativas" };
+// Cofre da equipe (preenchido pelo background): quem achou, etiqueta de trabalho e estado do sync.
+let latestTeamMeta = {};
+let latestSyncState = null;
+const VIVA_TEAM_META_KEY = "viva_team_meta";
+const VIVA_SYNC_STATE_KEY = "viva_sync_state";
+const VIVA_TEAM_STATUS_LABELS = { nova: "Nova", analise: "Em análise", minerada: "Minerada", descartada: "Descartada" };
 
 function carregarAcervoLocal() {
   try {
-    return chrome.storage.local.get(VIVA_ACERVO_KEY).then(data => {
+    return chrome.storage.local.get([VIVA_ACERVO_KEY, VIVA_TEAM_META_KEY, VIVA_SYNC_STATE_KEY]).then(data => {
       latestAcervo = Array.isArray(data[VIVA_ACERVO_KEY]) ? data[VIVA_ACERVO_KEY] : [];
+      latestTeamMeta = data[VIVA_TEAM_META_KEY] && typeof data[VIVA_TEAM_META_KEY] === "object" ? data[VIVA_TEAM_META_KEY] : {};
+      latestSyncState = data[VIVA_SYNC_STATE_KEY] || null;
       atualizarContadorDock();
     }).catch(error => console.warn("[VIVA] Não foi possível ler o acervo:", error.message));
   } catch (error) {
@@ -3460,9 +3468,17 @@ function atualizarContadorDock() {
 // Atualiza contador do Dock e o Centro (se aberto) quando QUALQUER aba/janela grava no acervo.
 try {
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes[VIVA_ACERVO_KEY]) return;
-    const novo = changes[VIVA_ACERVO_KEY].newValue;
-    latestAcervo = Array.isArray(novo) ? novo : [];
+    if (area !== "local") return;
+    if (!changes[VIVA_ACERVO_KEY] && !changes[VIVA_TEAM_META_KEY] && !changes[VIVA_SYNC_STATE_KEY]) return;
+    if (changes[VIVA_ACERVO_KEY]) {
+      const novo = changes[VIVA_ACERVO_KEY].newValue;
+      latestAcervo = Array.isArray(novo) ? novo : [];
+    }
+    if (changes[VIVA_TEAM_META_KEY]) {
+      const meta = changes[VIVA_TEAM_META_KEY].newValue;
+      latestTeamMeta = meta && typeof meta === "object" ? meta : {};
+    }
+    if (changes[VIVA_SYNC_STATE_KEY]) latestSyncState = changes[VIVA_SYNC_STATE_KEY].newValue || null;
     atualizarContadorDock();
     if (_vivaIntelRerender) {
       clearTimeout(_vivaIntelRerenderTimer);
@@ -3549,6 +3565,7 @@ function intelBuildCreativeCard(c, posicao) {
   if (c.adv > 1) pills.appendChild(intelEl("span", "viva-intel-pill", `📚 ${c.adv} ads na biblioteca`));
   if (c.dom) pills.appendChild(intelEl("span", "viva-intel-pill", `🔗 ${c.dom}`));
   if (c.fontes && c.fontes.length) pills.appendChild(intelEl("span", "viva-intel-pill muted", `🔎 ${c.fontes[c.fontes.length - 1]}`));
+  if (c._by) pills.appendChild(intelEl("span", "viva-intel-pill muted", `👤 ${c._by}`));
   body.appendChild(pills);
 
   const actions = intelEl("div", "viva-intel-actions");
@@ -3586,6 +3603,29 @@ function intelBuildCreativeCard(c, posicao) {
   monitor.type = "button";
   monitor.addEventListener("click", () => intelMonitorar(monitor, c.nome, c.pid, c.adv));
   actions.appendChild(monitor);
+
+  // Etiqueta de trabalho compartilhada com a equipe (evita dois mineradores na mesma oferta).
+  const statusSelect = document.createElement("select");
+  statusSelect.className = "viva-intel-status";
+  statusSelect.dataset.status = c._status;
+  statusSelect.setAttribute("aria-label", "Status desta oferta");
+  Object.entries(VIVA_TEAM_STATUS_LABELS).forEach(([valor, rotulo]) => {
+    const op = document.createElement("option");
+    op.value = valor;
+    op.textContent = rotulo;
+    statusSelect.appendChild(op);
+  });
+  statusSelect.value = c._status;
+  statusSelect.title = c._statusBy ? `Última mudança por ${c._statusBy}` : "Marque como está o trabalho nesta oferta";
+  statusSelect.addEventListener("change", () => {
+    const novoStatus = statusSelect.value;
+    statusSelect.dataset.status = novoStatus;
+    const chave = acervoKey(c);
+    latestTeamMeta = { ...latestTeamMeta, [chave]: { ...(latestTeamMeta[chave] || {}), status: novoStatus, statusMs: Date.now() } };
+    chrome.runtime.sendMessage({ action: "TEAM_SET_STATUS", key: chave, novoStatus })
+      .catch(error => showAppleToast("Não foi possível salvar o status", error.message, "error"));
+  });
+  actions.appendChild(statusSelect);
   body.appendChild(actions);
   card.appendChild(body);
 
@@ -3676,7 +3716,7 @@ function showIntelCenter() {
           <p id="viva-intel-summary"></p>
         </div>
         <div class="viva-intel-header-actions">
-          <button id="viva-intel-clear" class="viva-intel-ghost" type="button">🗑 Limpar acervo</button>
+          <button id="viva-intel-clear" class="viva-intel-ghost" type="button" title="Apaga só a sua cópia local; o cofre da equipe não é afetado">🗑 Limpar acervo</button>
           <button id="viva-close-ranking" class="viva-close-btn" type="button">✕ Fechar</button>
         </div>
       </header>
@@ -3686,6 +3726,14 @@ function showIntelCenter() {
           <button type="button" data-tab="paginas" role="tab">Bibliotecas</button>
         </div>
         <div class="viva-intel-chips" id="viva-intel-chips"></div>
+        <select id="viva-intel-status" aria-label="Filtrar por status">
+          <option value="ativas">Sem descartadas</option>
+          <option value="todas">Todos os status</option>
+          <option value="nova">Novas</option>
+          <option value="analise">Em análise</option>
+          <option value="minerada">Mineradas</option>
+          <option value="descartada">Descartadas</option>
+        </select>
         <select id="viva-intel-fonte" aria-label="Filtrar por busca"></select>
         <select id="viva-intel-sort" aria-label="Ordenar">
           <option value="score">Maior score</option>
@@ -3705,6 +3753,7 @@ function showIntelCenter() {
   const chipsBox = $("#viva-intel-chips");
   const fonteSelect = $("#viva-intel-fonte");
   const sortSelect = $("#viva-intel-sort");
+  const statusSelectBar = $("#viva-intel-status");
   const searchInput = $("#viva-intel-search");
   const summary = $("#viva-intel-summary");
   const clearBtn = $("#viva-intel-clear");
@@ -3724,7 +3773,9 @@ function showIntelCenter() {
     return latestAcervo.map(c => {
       const dias = diasNoAr(c, agora);
       const calc = scoreCriativo({ dup: c.dup, dias, adv: c.adv });
-      return { ...c, _dias: dias, _score: calc.score, _emEscala: calc.emEscala };
+      const meta = latestTeamMeta[acervoKey(c)] || {};
+      const status = VIVA_TEAM_STATUS_LABELS[meta.status] ? meta.status : "nova";
+      return { ...c, _dias: dias, _score: calc.score, _emEscala: calc.emEscala, _by: meta.by || "", _status: status, _statusBy: meta.statusBy || "" };
     });
   };
 
@@ -3735,6 +3786,8 @@ function showIntelCenter() {
       if (_vivaIntelUi.filtro === "monstro" && c.stage !== "monstro") return false;
       if (_vivaIntelUi.filtro === "bruta" && c.stage !== "bruta") return false;
       if (_vivaIntelUi.fonte && !(c.fontes || []).includes(_vivaIntelUi.fonte)) return false;
+      if (_vivaIntelUi.status === "ativas" && c._status === "descartada") return false;
+      if (["nova", "analise", "minerada", "descartada"].includes(_vivaIntelUi.status) && c._status !== _vivaIntelUi.status) return false;
       if (termo && !`${c.nome} ${c.copy} ${c.dom}`.toLowerCase().includes(termo)) return false;
       return true;
     });
@@ -3772,15 +3825,21 @@ function showIntelCenter() {
     const paginasTodas = agruparPaginas(latestAcervo);
     const emEscalaTotal = criativos.filter(c => c._emEscala).length;
     const idade = latestAcervo.reduce((max, c) => Math.max(max, Number(c.lastSeen) || 0), 0);
+    let equipeTxt = "";
+    if (latestSyncState && latestSyncState.off) equipeTxt = " · ☁ equipe desligada (conecte no ícone da extensão)";
+    else if (latestSyncState && latestSyncState.error) equipeTxt = ` · ☁ ${latestSyncState.error}`;
+    else if (latestSyncState && latestSyncState.ok) equipeTxt = ` · ☁ equipe sincronizada às ${new Date(latestSyncState.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
     summary.textContent = latestAcervo.length === 0
-      ? "Nenhum criativo coletado ainda"
-      : `${latestAcervo.length} criativos · ${emEscalaTotal} em escala agora · ${paginasTodas.length} bibliotecas${idade ? ` · atualizado ${new Date(idade).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : ""}`;
+      ? `Nenhum criativo coletado ainda${equipeTxt}`
+      : `${latestAcervo.length} criativos · ${emEscalaTotal} em escala agora · ${paginasTodas.length} bibliotecas${idade ? ` · atualizado ${new Date(idade).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : ""}${equipeTxt}`;
 
     overlay.querySelectorAll(".viva-intel-tabs button").forEach(btn => {
       btn.classList.toggle("is-active", btn.dataset.tab === _vivaIntelUi.tab);
     });
     chipsBox.hidden = _vivaIntelUi.tab !== "criativos";
     sortSelect.hidden = _vivaIntelUi.tab !== "criativos";
+    statusSelectBar.hidden = _vivaIntelUi.tab !== "criativos";
+    statusSelectBar.value = _vivaIntelUi.status;
     chipsBox.textContent = "";
     CHIPS.forEach(chip => {
       const btn = intelEl("button", `viva-intel-filter${_vivaIntelUi.filtro === chip.id ? " is-active" : ""}`, chip.label);
@@ -3839,6 +3898,7 @@ function showIntelCenter() {
   });
   fonteSelect.addEventListener("change", () => { _vivaIntelUi.fonte = fonteSelect.value; renderTudo(); });
   sortSelect.addEventListener("change", () => { _vivaIntelUi.sort = sortSelect.value; renderTudo(); });
+  statusSelectBar.addEventListener("change", () => { _vivaIntelUi.status = statusSelectBar.value; renderTudo(); });
   let buscaTimer = null;
   searchInput.value = _vivaIntelUi.busca;
   searchInput.addEventListener("input", () => {
@@ -5227,7 +5287,7 @@ async function init() {
   _vivaInitialized = true;
 
   console.log("[VIVA] Motor otimizado O(1) + 5 cores Apple aplicadas");
-  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v9.0 (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
+  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v10.0-equipe (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
   console.log("[VIVA] Highlight preto baixo volume aplicado");
   await loadLocalApiUrl();
   // Esta aba é uma janela de mineração da Busca Inteligente Turbo? (resposta vem do background

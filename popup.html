@@ -92,6 +92,21 @@
     .apple-switch input:checked + .apple-slider { background: var(--green); }
     .apple-switch input:checked + .apple-slider:before { transform: translateX(16px); }
 
+
+    .team { margin-top: 12px; background: var(--fill); border-radius: 12px; padding: 12px 14px; }
+    .team-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .team-title { font-size: 13.5px; font-weight: 500; }
+    .team-state { font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .team-state.ok { color: #248a3d; }
+    .team-state.err { color: #d70015; }
+    .team input[type="text"], .team input[type="password"] {
+      width: 100%; font-family: inherit; font-size: 12.5px; background: #fff; border: 1px solid transparent;
+      border-radius: 9px; padding: 8px 10px; color: var(--text); outline: none; margin-bottom: 7px;
+      transition: border-color .18s, box-shadow .18s;
+    }
+    .team input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.18); }
+    .team .btn { font-size: 12.5px; padding: 9px 12px; }
+    .team-hint { font-size: 11px; color: var(--muted); margin-top: 7px; line-height: 1.4; }
     details.advanced { margin-top: 14px; }
     details.advanced summary {
       list-style: none;
@@ -164,6 +179,17 @@
         <span class="apple-slider"></span>
       </label>
     </div>
+  </div>
+
+  <div class="team" id="teamBox">
+    <div class="team-head">
+      <span class="team-title">Equipe</span>
+      <span class="team-state" id="teamState">Desligado</span>
+    </div>
+    <input type="text" id="teamName" placeholder="Seu nome (ex.: Gus)" maxlength="40" autocomplete="off">
+    <input type="password" id="teamCode" placeholder="Código da equipe" autocomplete="off">
+    <button class="btn btn-primary" id="teamSaveBtn" type="button">Conectar à equipe</button>
+    <div class="team-hint" id="teamHint">Com o código, tudo que você achar aparece para a equipe e vice-versa.</div>
   </div>
 
   <details class="advanced">

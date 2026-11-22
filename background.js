@@ -1,6 +1,6 @@
-// VIVA Labs Helper - Background Service Worker
+// Viva Spy - Background Service Worker
 
-importScripts("intelligent_parser.js", "ranking_engine.js");
+importScripts("intelligent_parser.js", "ranking_engine.js", "team_sync.js");
 console.info("[VIVA] Infra inteligente instalada - parser + fila + ranking");
 
 // Regra dinâmica ID para declarativeNetRequest (Mobile User-Agent)
@@ -390,6 +390,16 @@ function upsertAcervo(creatives) {
     const data = await chrome.storage.local.get(VIVA_ACERVO_KEY);
     const resultado = mesclarAcervo(data[VIVA_ACERVO_KEY], creatives, Date.now());
     await chrome.storage.local.set({ [VIVA_ACERVO_KEY]: resultado.acervo });
+    // Cofre da equipe: marca o que mudou para ser enviado no próximo ciclo (só se a equipe estiver configurada).
+    try {
+      if (await teamConfig()) {
+        const chaves = (Array.isArray(creatives) ? creatives : []).map(c => acervoKey(sanitizarCriativo(c))).filter(Boolean);
+        await teamMarkDirtyRaw(chaves);
+        teamAgendarSync();
+      }
+    } catch (error) {
+      console.warn(`[BG][TEAM] não foi possível marcar para sincronizar: ${error.message}`);
+    }
     console.log(`[BG][DIAG-A2] acervo: +${resultado.adicionados} novos, ${resultado.atualizados} atualizados, total ${resultado.acervo.length}`);
     return { status: "ok", total: resultado.acervo.length, adicionados: resultado.adicionados };
   });
@@ -399,7 +409,8 @@ function upsertAcervo(creatives) {
 
 function limparAcervo() {
   const run = acervoWriteChain.then(async () => {
-    await chrome.storage.local.remove(VIVA_ACERVO_KEY);
+    // Limpa só a visão LOCAL (acervo, fila de envio e etiquetas). O cofre da equipe não é apagado.
+    await chrome.storage.local.remove([VIVA_ACERVO_KEY, TEAM_STORE.dirty, TEAM_STORE.dirtyStatus, TEAM_STORE.meta]);
     return { status: "ok" };
   });
   acervoWriteChain = run.catch(() => {});
@@ -788,9 +799,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  else if (message.action === "TEAM_SYNC_NOW") {
+    teamSyncNow({ force: true })
+      .then(state => sendResponse({ status: "ok", state }))
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "TEAM_CONFIG_CHANGED") {
+    teamConfigChanged()
+      .then(state => sendResponse({ status: "ok", state }))
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "TEAM_SET_STATUS") {
+    teamSetStatus(message.key, message.novoStatus)
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
   // Mensagem desconhecida: não mantém o canal aberto à toa.
   return false;
 });
+
+// Cofre da equipe: liga a fila de escrita do acervo ao módulo, cria o ciclo de sincronização e
+// sincroniza ao acordar (com intervalo mínimo, para não repetir a cada mensagem recebida).
+teamSyncInit({
+  serial: fn => {
+    const run = acervoWriteChain.then(fn);
+    acervoWriteChain = run.catch(() => {});
+    return run;
+  },
+});
+try {
+  if (chrome.alarms && chrome.alarms.onAlarm) chrome.alarms.onAlarm.addListener(teamHandleAlarm);
+  teamEnsureAlarms();
+  teamSyncNow({ force: false }).catch(() => {});
+} catch (error) {
+  console.warn(`[BG][TEAM] sincronização indisponível: ${error.message}`);
+}
 
 // FIX ITEM 9: retoma automaticamente qualquer fila deixada pendente por uma suspensão anterior
 // do service worker — roda toda vez que este script acorda, seja por qual evento for.
