@@ -160,3 +160,28 @@ function gerarFilaRadar(rawText, opcoes = {}) {
   });
   return itens;
 }
+
+// BUSCA COMBINADA: junta TODAS as linhas numa única pesquisa. A Meta exige que todas as palavras apareçam
+// no anúncio (qualquer ordem), então cada termo a mais AFUNILA o resultado (testado na Ad Library: "nerve
+// pain" >50.000 · 7 palavras ≈ 810 · 15 palavras ≈ 7). Aspas e vírgulas não viram "ou" nem frase dentro
+// de uma busca combinada — por isso são ignoradas aqui. O limite da Meta é ~255 caracteres.
+const VIVA_META_Q_MAX = 250;
+
+function combinarBuscaLinhas(rawText) {
+  const linhas = String(rawText || "").split(/\r?\n/).map(l => l.trim()).filter(l => l.length >= 2);
+  const vistas = new Set();
+  const palavras = [];
+  let cortou = false;
+  let tamanho = 0;
+  for (const linha of linhas) {
+    for (const palavra of linha.replace(/["“”,;]/g, " ").split(/\s+/).filter(Boolean)) {
+      const chave = palavra.toLowerCase();
+      if (vistas.has(chave)) continue;
+      if (tamanho + palavra.length + (palavras.length ? 1 : 0) > VIVA_META_Q_MAX) { cortou = true; continue; }
+      vistas.add(chave);
+      palavras.push(palavra);
+      tamanho += palavra.length + (palavras.length > 1 ? 1 : 0);
+    }
+  }
+  return { q: palavras.join(" "), termos: linhas.length, palavras: palavras.length, cortou, linhas };
+}

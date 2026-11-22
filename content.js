@@ -683,7 +683,7 @@ function getAcervoSourceLabel() {
   if (_vivaMinerFonte) return _vivaMinerFonte;
   const params = new URLSearchParams(window.location.search);
   const q = (params.get("q") || "").trim();
-  if (q) return q.slice(0, 80);
+  if (q) return q.replace(/["“”]/g, "").trim().slice(0, 80);
   const pid = params.get("view_all_page_id");
   if (pid) {
     const nome = getPageNameFromHeader();
@@ -4747,12 +4747,18 @@ function injectTopBar() {
         </select>
       </label>
     </div>
+    <label id="viva-busca-modo-wrap" class="viva-busca-modo" hidden>Com várias linhas
+      <select id="viva-busca-modo" aria-label="Como pesquisar várias linhas">
+        <option value="combinada">Uma pesquisa só, com todos os termos (mais preciso)</option>
+        <option value="sequencia">Um termo por vez em 1 janela (mais cobertura)</option>
+      </select>
+    </label>
     <div id="viva-busca-info" class="viva-busca-info" aria-live="polite"></div>
     <div id="viva-turbo-controls" class="viva-turbo-controls" hidden>
       <label class="viva-timer-row" for="viva-timer-slider">
         Tempo por busca: <strong id="viva-timer-val">60s</strong>
         <input type="range" id="viva-timer-slider" min="20" max="180" value="60" step="10">
-        <small id="viva-timer-hint">Coleta completa (1 janela, um termo por vez)</small>
+        <small id="viva-timer-hint">Tempo que a janela rola a página lendo anúncios em cada termo (acaba antes se a lista terminar)</small>
       </label>
       <div id="viva-progress-wrap" class="viva-progress-wrap" hidden>
         <div class="viva-progress-bar"><div id="viva-progress-fill"></div></div>
@@ -4803,6 +4809,21 @@ function injectTopBar() {
   } catch (error) {
     console.warn("[VIVA] Não foi possível ler os filtros da busca:", error.message);
   }
+  const modoWrap = dropdown.querySelector("#viva-busca-modo-wrap");
+  const modoSelect = dropdown.querySelector("#viva-busca-modo");
+  try {
+    chrome.storage.local.get("viva_busca_modo", data => {
+      if (data && data.viva_busca_modo === "sequencia") modoSelect.value = "sequencia";
+      updateInputMode();
+    });
+  } catch (error) {
+    console.warn("[VIVA] Não foi possível ler o modo da busca:", error.message);
+  }
+  const buscaCombinada = () => modoSelect.value !== "sequencia";
+  modoSelect.addEventListener("change", () => {
+    try { chrome.storage.local.set({ viva_busca_modo: modoSelect.value }); } catch (error) { /* só conveniência */ }
+    updateInputMode();
+  });
   const salvarFiltrosBusca = () => {
     try { chrome.storage.local.set({ viva_busca_filtros: filtrosBusca() }); } catch (error) { /* só conveniência */ }
     if (buscaState.modo === "turbo") updateInputMode();
@@ -4861,6 +4882,7 @@ function injectTopBar() {
     openCenterButton.hidden = true;
     progress.textContent = "";
     progress.classList.remove("is-error");
+    modoWrap.hidden = parsed.modo !== "turbo";
     if (parsed.modo === "vazio") {
       info.textContent = "";
       turboControls.hidden = true;
@@ -4874,6 +4896,14 @@ function injectTopBar() {
       turboControls.hidden = true;
       primaryButton.disabled = false;
       primaryButton.textContent = `🔍 Buscar: "${parsed.termoBusca}"`;
+      primaryButton.className = "viva-btn-minerar viva-btn-normal";
+    } else if (buscaCombinada()) {
+      const c = combinarBuscaLinhas(input.value);
+      const f = filtrosBusca();
+      info.textContent = `Pesquisa combinada: ${c.termos} termos → 1 busca na mesma biblioteca (${c.palavras} palavras · ${f.country === "ALL" ? "todos os países" : f.country}/${f.language === "all" ? "todos os idiomas" : f.language.toUpperCase()}). A Meta exige TODAS as palavras no anúncio; aspas são ignoradas.${c.palavras > 10 ? " ⚠ Com muitas palavras a Meta devolve pouquíssimos anúncios (7 palavras ≈ 800 resultados; 15 ≈ 7)." : ""}${c.cortou ? " ⚠ Passou do limite de ~250 caracteres: as últimas palavras foram descartadas." : ""}`;
+      turboControls.hidden = true;
+      primaryButton.disabled = false;
+      primaryButton.textContent = `🔍 Buscar combinado (${c.termos} termos)`;
       primaryButton.className = "viva-btn-minerar viva-btn-normal";
     } else {
       const seconds = Number(timerSlider.value) || 60;
@@ -4894,7 +4924,7 @@ function injectTopBar() {
       timerHint.textContent = "Modo rápido: lê menos anúncios por busca.";
       timerHint.dataset.mode = "fast";
     } else {
-      timerHint.textContent = "Coleta completa (1 janela, um termo por vez).";
+      timerHint.textContent = "Rola a página lendo anúncios em cada termo (acaba antes se a lista terminar).";
       timerHint.dataset.mode = "complete";
     }
     if (buscaState.modo === "turbo") updateInputMode();
@@ -4935,6 +4965,11 @@ function injectTopBar() {
     if (parsed.modo === "vazio") return;
     if (parsed.modo === "normal") {
       await startNormalSearch(parsed);
+      return;
+    }
+    if (buscaCombinada()) {
+      const c = combinarBuscaLinhas(input.value);
+      await startNormalSearch({ modo: "normal", termoBusca: c.q, termoOriginal: c.q, exata: false, linhasReais: 1 });
       return;
     }
 
@@ -5390,7 +5425,7 @@ async function init() {
   _vivaInitialized = true;
 
   console.log("[VIVA] Motor otimizado O(1) + 5 cores Apple aplicadas");
-  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v12.0-sessao-unica (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
+  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v13.0-busca-combinada (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
   console.log("[VIVA] Highlight preto baixo volume aplicado");
   await loadLocalApiUrl();
   // Esta aba é uma janela de mineração da Busca Inteligente Turbo? (resposta vem do background
