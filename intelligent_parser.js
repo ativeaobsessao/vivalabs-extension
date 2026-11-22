@@ -7,6 +7,8 @@ function parseBuscaInput(rawText) {
     .map(original => ({
       original,
       term: original.replace(/["“”]/g, "").trim(),
+      // Linha INTEIRA entre aspas = frase exata na Ad Library (search_type=keyword_exact_phrase).
+      exata: /^["“][^"“”]+["”]$/.test(original),
     }))
     .filter(entry => entry.term.length >= 2);
   if (entries.length === 0) return { modo: "vazio" };
@@ -16,6 +18,7 @@ function parseBuscaInput(rawText) {
       modo: "normal",
       termoOriginal: entries[0].original,
       termoBusca: entries[0].term,
+      exata: entries[0].exata,
       linhasReais: 1,
     };
   }
@@ -24,22 +27,25 @@ function parseBuscaInput(rawText) {
     modo: "turbo",
     termosOriginais: entries.map(entry => entry.original),
     termosBusca: entries.map(entry => entry.term),
+    termosExatos: entries.map(entry => entry.exata),
     linhasReais: entries.length,
     tempoEstimado: entries.length * 60,
   };
 }
 
-function buildAdLibraryUrl(termo) {
+function buildAdLibraryUrl(termo, opcoes = {}) {
+  const base = opcoes.base || "https://www.facebook.com/ads/library/";
+  const filtros = opcoes.filtros || {};
   const params = new URLSearchParams({
-    active_status: "active",
-    ad_type: "all",
-    country: "ALL",
-    is_targeted_country: "false",
-    media_type: "all",
+    active_status: filtros.active_status || "active",
+    ad_type: filtros.ad_type || "all",
+    country: filtros.country || "ALL",
+    is_targeted_country: filtros.is_targeted_country || "false",
+    media_type: filtros.media_type || "all",
     q: String(termo || ""),
-    search_type: "keyword_unordered",
+    search_type: opcoes.exata ? "keyword_exact_phrase" : "keyword_unordered",
   });
-  return `https://www.facebook.com/ads/library/?${params.toString()}`;
+  return `${base}?${params.toString()}`;
 }
 
 function parseLinhaInteligente(linha) {
@@ -101,15 +107,17 @@ function gerarFilaInteligente(linhas) {
   if (parsed.modo !== "turbo") return [];
   return parsed.termosBusca.map((termo, index) => {
     const linhaOriginal = parsed.termosOriginais[index];
+    const exata = Boolean(parsed.termosExatos && parsed.termosExatos[index]);
     const lineId = String(index);
     return {
       q: termo,
+      exata,
       tipo: "linha",
       termo,
       linhaOriginal,
       lineId,
       planId: `${lineId}:base`,
-      url: buildAdLibraryUrl(termo),
+      url: buildAdLibraryUrl(termo, { exata }),
     };
   });
 }

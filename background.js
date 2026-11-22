@@ -131,7 +131,7 @@ const INTELIGENTE_IDX_KEY = "viva_inteligente_idx";
 const INTELIGENTE_STATE_KEY = "viva_inteligente_state";
 const INTELIGENTE_STATUS_KEY = "viva_inteligente_status";
 let isMinerando = false;
-let inteligenteResultsWriteChain = Promise.resolve();
+const MINER_MAX_PARALLEL = 2;
 
 async function getInteligenteQueue() {
   const data = await chrome.storage.local.get(INTELIGENTE_QUEUE_KEY);
@@ -183,10 +183,13 @@ async function setInteligenteState(state) {
   });
 }
 
+// IMPORTANTE: chrome.runtime.sendMessage disparado do service worker NÃO chega nos content
+// scripts (só em popup/páginas da extensão) — por isso progresso/ranking nunca apareciam na tela.
+// O canal que funciona é o storage: o content script escuta chrome.storage.onChanged.
 function notifyInteligente(message) {
-  chrome.runtime.sendMessage(message).catch(() => {
-    // No listener is required: durable state is also exposed in chrome.storage.local.
-  });
+  chrome.storage.local
+    .set({ viva_inteligente_progress: { ...message, ts: Date.now() } })
+    .catch(error => console.warn("[BG] Não foi possível publicar o progresso:", error.message));
 }
 
 const FUNIL_SEQUENCE_API_BASE = "https://app.vivalabs.com.br";
@@ -285,205 +288,152 @@ function getEscalaMineracao(stage) {
   return "";
 }
 
-async function registrarResultadoMineracao(message, sender) {
-  const state = await getInteligenteState();
-  const activeTabs = Array.isArray(state?.active)
-    ? state.active
-    : (state?.active ? [state.active] : []);
-  const activeTask = activeTabs.find(task => task.tabId === sender.tab?.id);
-  if (
-    !state
-    || state.status !== "running"
-    || !activeTask
-    || message.runId !== state.runId
-    || message.planId !== activeTask.planId
-  ) {
-    return { status: "ignored" };
-  }
+// ─── Mineração: janelas, contexto por aba, acervo ───────────────────────────────────────────
+const MINER_GRACE_MS = 25000; // folga além do tempo por busca (carregamento da página + flush final)
+let acervoWriteChain = Promise.resolve();
 
-  if (!Array.isArray(message.paginas)) return { status: "ignored" };
-  const queue = await getInteligenteQueue();
-  const currentPlan = queue[activeTask.index];
-  if (!currentPlan || currentPlan.planId !== message.planId) return { status: "ignored" };
-  try {
-    const resultUrl = new URL(message.url);
-    if (
-      !/(^|\.)facebook\.com$/i.test(resultUrl.hostname)
-      || resultUrl.searchParams.get("q") !== currentPlan.q
-      || resultUrl.searchParams.get("viva_miner_run") !== state.runId
-      || resultUrl.searchParams.get("viva_miner_plan") !== currentPlan.planId
-    ) {
-      return { status: "ignored" };
-    }
-  } catch {
-    return { status: "ignored" };
-  }
-  const previousWrite = inteligenteResultsWriteChain;
-  let releaseWrite;
-  inteligenteResultsWriteChain = new Promise(resolve => {
-    releaseWrite = resolve;
-  });
-  await previousWrite;
-  try {
-    const results = await getInteligenteResultados();
-
-    for (const page of message.paginas) {
-      if (!page || !/^\d{10,20}$/.test(String(page.page_id || ""))) continue;
-      const pageId = String(page.page_id);
-      const record = results[pageId] || {
-        nome: page.nome || "Desconhecido",
-        page_id: pageId,
-        aparicoes: 0,
-        qtd_ads: 0,
-        dias_ativo: 0,
-        escala: "",
-        searchHits: {},
-        metricasPorBusca: {},
-      };
-      if (!record.searchHits || typeof record.searchHits !== "object") record.searchHits = {};
-      if (!record.metricasPorBusca || typeof record.metricasPorBusca !== "object") {
-        record.metricasPorBusca = {};
-      }
-      const lineHits = new Set(record.searchHits[currentPlan.lineId] || []);
-      lineHits.add(currentPlan.planId);
-      record.searchHits[currentPlan.lineId] = Array.from(lineHits);
-      record.nome = page.nome || record.nome;
-      record.qtd_ads = Math.max(record.qtd_ads || 0, Number(page.qtd_ads) || 0);
-      if (!state.modoRapido) {
-        record.dias_ativo = Math.max(record.dias_ativo || 0, Number(page.dias_ativo) || 0);
-        record.metricasPorBusca[currentPlan.planId] = {
-          media_dias: Number(page.media_dias ?? page.dias_ativo) || 0,
-          tem_recente: Boolean(page.tem_recente),
-          escala_tipo: page.escala_tipo || page.escala || "",
-          qtd_ads: Number(page.qtd_ads) || 1,
-          qtd_duplicados: Number(page.qtd_duplicados) || 0,
-        };
-        const scale = page.escala || "";
-        const scaleRank = { "ESCALA BRUTA": 3, "POTENCIAL ESCALA": 2, "CAMPANHA NORMAL": 1 };
-        if ((scaleRank[scale] || 0) > (scaleRank[record.escala] || 0)) record.escala = scale;
-      }
-      record.aparicoes = new Set(
-        Object.values(record.searchHits).flat(),
-      ).size;
-      results[pageId] = record;
-    }
-
-    await setInteligenteResultados(results);
-    return { status: "resultado_salvo" };
-  } finally {
-    releaseWrite();
-  }
+function listarTarefasAtivas(state) {
+  if (Array.isArray(state?.active)) return state.active;
+  return state?.active ? [state.active] : [];
 }
 
-async function salvarTopRankingNoMonitor(ranking) {
-  const apiData = await chrome.storage.local.get("viva_monitor_api_url");
-  const apiUrl = (apiData.viva_monitor_api_url || "https://viva-labs-monitor.onrender.com").replace(/\/+$/, "");
-  for (const page of ranking.slice(0, 20)) {
+// Abre a busca numa JANELA pequena (não numa aba oculta): abas em segundo plano têm o render
+// pausado pelo Chrome, então a Meta nunca carregava mais que o primeiro lote de anúncios.
+async function criarJanelaMineracao(url, slot) {
+  try {
+    const win = await chrome.windows.create({
+      url,
+      type: "popup",
+      focused: false,
+      width: 1100,
+      height: 820,
+      left: 30 + slot * 70,
+      top: 50 + slot * 50,
+    });
+    const tab = win.tabs && win.tabs[0];
+    if (tab) return { tabId: tab.id, windowId: win.id };
+  } catch (error) {
+    console.warn(`[BG] Janela de mineração indisponível, usando aba: ${error.message}`);
+  }
+  const tab = await chrome.tabs.create({ url, active: false });
+  return { tabId: tab.id, windowId: null };
+}
+
+async function fecharTarefaMineracao(task) {
+  if (!task) return;
+  if (task.windowId) {
     try {
-      const response = await fetch(`${apiUrl}/api/salvar`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          nome: page.nome,
-          url: `https://www.facebook.com/ads/library/?view_all_page_id=${encodeURIComponent(page.page_id)}`,
-          tipo: "pagina",
-          ads_count_inicial: page.qtd_ads,
-        }),
-      });
-      if (!response.ok) {
-        console.error(`[BG] Cadastro no monitor falhou para ${page.page_id}: HTTP ${response.status}`);
-      }
-    } catch (err) {
-      console.error(`[BG] Cadastro no monitor falhou para ${page.page_id}: ${err.message}`);
+      await chrome.windows.remove(task.windowId);
+      return;
+    } catch (error) {
+      console.warn(`[BG] Janela ${task.windowId} já fechada: ${error.message}`);
     }
+  }
+  try {
+    await chrome.tabs.remove(task.tabId);
+  } catch (error) {
+    console.warn(`[BG] Aba ${task.tabId} já fechada: ${error.message}`);
   }
 }
 
-async function finalizarMineracao(queue, results, state) {
-  await inteligenteResultsWriteChain;
-  results = await getInteligenteResultados();
-  const plansByLine = new Map();
-  for (const item of queue) {
-    if (!plansByLine.has(item.lineId)) plansByLine.set(item.lineId, new Map());
-    plansByLine.get(item.lineId).set(item.planId, item.linhaOriginal);
-  }
+// O content script da aba de mineração pergunta "sou uma aba de mineração?" — a resposta vem do
+// tabId (confiável), não de parâmetros na URL, que a Meta pode reescrever durante a navegação.
+async function obterContextoMineracao(sender) {
+  const state = await getInteligenteState();
+  if (!state || state.status !== "running") return null;
+  const tabId = sender.tab && sender.tab.id;
+  const task = listarTarefasAtivas(state).find(item => item.tabId === tabId);
+  if (!task) return null;
+  const queue = await getInteligenteQueue();
+  const plan = queue[task.index];
+  if (!plan) return null;
+  return {
+    runId: state.runId,
+    planId: task.planId,
+    q: plan.q,
+    tempoPorBusca: Math.max(20, Number(state.tempoPorBusca) || 60),
+    modoRapido: Boolean(state.modoRapido),
+  };
+}
 
-  const matched = new Map();
-  for (const page of Object.values(results)) {
-    const matchedLines = [];
-    const matchedPlanIds = new Set();
-    for (const [lineId, plans] of plansByLine) {
-      const hits = new Set(page.searchHits?.[lineId] || []);
-      if (Array.from(plans.keys()).every(planId => hits.has(planId))) {
-        const originalLine = plans.values().next().value;
-        if (originalLine && !matchedLines.includes(originalLine)) matchedLines.push(originalLine);
-        for (const planId of plans.keys()) matchedPlanIds.add(planId);
-      }
-    }
-    if (matchedLines.length > 0) {
-      const metrics = Array.from(matchedPlanIds)
-        .map(planId => page.metricasPorBusca?.[planId])
-        .filter(Boolean);
-      const averageDays = metrics.length
-        ? metrics.reduce((total, metric) => total + (Number(metric.media_dias) || 0), 0) / metrics.length
-        : Number(page.dias_ativo) || 0;
-      const scaleRank = { "ESCALA BRUTA": 3, "POTENCIAL ESCALA": 2, "CAMPANHA NORMAL": 1 };
-      const allLowVolume = metrics.length > 0
-        && metrics.every(metric => metric.escala_tipo === "BAIXO VOLUME");
-      const escalaTipo = allLowVolume ? "BAIXO VOLUME" : metrics.reduce((best, metric) => {
-        const candidate = metric.escala_tipo || "CAMPANHA NORMAL";
-        if (candidate === "BAIXO VOLUME") return best;
-        return (scaleRank[candidate] || 0) > (scaleRank[best] || 0) ? candidate : best;
-      }, "CAMPANHA NORMAL");
-      const qtdAds = metrics.reduce(
-        (maximum, metric) => Math.max(maximum, Number(metric.qtd_ads) || 1),
-        Number(page.qtd_ads) || 1,
-      );
-      const qtdDuplicados = metrics.reduce(
-        (maximum, metric) => Math.max(maximum, Number(metric.qtd_duplicados) || 0),
-        0,
-      );
-      matched.set(page.page_id, {
-        ...page,
-        linhas: matchedLines,
-        linhas_distintas: matchedLines.length,
-        media_dias: averageDays,
-        tem_recente: metrics.some(metric => metric.tem_recente),
-        escala_tipo: escalaTipo,
-        qtd_ads: qtdAds,
-        qtd_duplicados: qtdDuplicados,
-      });
-    }
-  }
+async function marcarMineracaoConcluida(message, sender) {
+  const state = await getInteligenteState();
+  if (!state || state.status !== "running" || message.runId !== state.runId) return { status: "ignored" };
+  const active = listarTarefasAtivas(state).map(task => ({ ...task }));
+  const task = active.find(item => item.tabId === (sender.tab && sender.tab.id) && item.planId === message.planId);
+  if (!task) return { status: "ignored" };
+  task.done = true;
+  console.log(`[BG][DIAG-M3] busca ${task.planId} concluída pela aba (${message.motivo || "?"}, ${message.cards || 0} anúncios)`);
+  await setInteligenteState({ ...state, active });
+  return { status: "ok" };
+}
 
-  const ranking = state.modoRapido
-    ? Array.from(matched.values())
-      .map(page => ({ ...page, score: Number(page.qtd_ads) || 0 }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 50)
-    : gerarRankingFinal(matched);
-  await chrome.storage.local.set({ viva_ultimo_ranking: ranking });
-  await setInteligenteState({
-    ...state,
-    status: "finalizing",
-    active: [],
-    idx: queue.length,
-    nextIndex: queue.length,
+async function relatarProgressoMineracao(message, sender) {
+  const state = await getInteligenteState();
+  if (!state || state.status !== "running" || message.runId !== state.runId) return { status: "ignored" };
+  const task = listarTarefasAtivas(state).find(item => item.tabId === (sender.tab && sender.tab.id));
+  if (!task) return { status: "ignored" };
+  const queue = await getInteligenteQueue();
+  const plan = queue[task.index];
+  notifyInteligente({
+    action: "PROGRESSO_INTELIGENTE",
+    texto: `${Number(state.idx) || 0}/${queue.length} concluídas · lendo "${plan ? plan.q : "?"}": ${Number(message.cards) || 0} anúncios · ${Number(message.escala) || 0} em escala`,
+    status: "running",
   });
-  notifyInteligente({ action: "RANKING_FINAL", ranking });
-  await salvarTopRankingNoMonitor(ranking);
-  const completedState = {
+  return { status: "ok" };
+}
+
+// Escrita serializada: vários content scripts (aba do operador + janelas de mineração) enviam
+// criativos ao mesmo tempo — sem a fila, um sobrescreveria o outro.
+function upsertAcervo(creatives) {
+  const run = acervoWriteChain.then(async () => {
+    const data = await chrome.storage.local.get(VIVA_ACERVO_KEY);
+    const resultado = mesclarAcervo(data[VIVA_ACERVO_KEY], creatives, Date.now());
+    await chrome.storage.local.set({ [VIVA_ACERVO_KEY]: resultado.acervo });
+    console.log(`[BG][DIAG-A2] acervo: +${resultado.adicionados} novos, ${resultado.atualizados} atualizados, total ${resultado.acervo.length}`);
+    return { status: "ok", total: resultado.acervo.length, adicionados: resultado.adicionados };
+  });
+  acervoWriteChain = run.catch(() => {});
+  return run;
+}
+
+function limparAcervo() {
+  const run = acervoWriteChain.then(async () => {
+    await chrome.storage.local.remove(VIVA_ACERVO_KEY);
+    return { status: "ok" };
+  });
+  acervoWriteChain = run.catch(() => {});
+  return run;
+}
+
+async function finalizarMineracao(queue, state) {
+  await acervoWriteChain;
+  const data = await chrome.storage.local.get(VIVA_ACERVO_KEY);
+  const acervo = Array.isArray(data[VIVA_ACERVO_KEY]) ? data[VIVA_ACERVO_KEY] : [];
+  const inicio = Date.parse(state.startedAt) || 0;
+  const fontes = new Set(queue.map(item => item.q));
+  const daRodada = acervo.filter(c => (c.lastSeen || 0) >= inicio && (c.fontes || []).some(f => fontes.has(f)));
+  const bibliotecas = new Set(daRodada.map(c => c.pid || c.nome)).size;
+  const emEscala = daRodada.filter(c => c.emEscala).length;
+  const resumo = { runId: state.runId, criativos: daRodada.length, emEscala, bibliotecas, finalizadoEm: Date.now() };
+  await chrome.storage.local.set({ viva_ultimo_resumo: resumo });
+  console.log(`[BG][DIAG-M4] mineração finalizada: ${daRodada.length} criativos, ${emEscala} em escala, ${bibliotecas} bibliotecas`);
+
+  await setInteligenteState({
     ...state,
     status: "completed",
     active: [],
     idx: queue.length,
     nextIndex: queue.length,
-  };
-  await setInteligenteState(completedState);
+  });
   await setInteligenteQueue([]);
   await setInteligenteIdx(0);
-  await setInteligenteResultados({});
-  notifyInteligente({ action: "PROGRESSO_INTELIGENTE", texto: "Mineração finalizada", ranking: ranking.length });
+  notifyInteligente({
+    action: "PROGRESSO_INTELIGENTE",
+    texto: `Mineração finalizada · ${daRodada.length} criativos escalados · ${bibliotecas} bibliotecas`,
+    status: "completed",
+    resumo,
+  });
 }
 
 async function processarFilaInteligente() {
@@ -495,8 +445,7 @@ async function processarFilaInteligente() {
     const queue = await getInteligenteQueue();
 
     if (state.status === "finalizing") {
-      const results = await getInteligenteResultados();
-      await finalizarMineracao(queue, results, state);
+      await finalizarMineracao(queue, state);
       return;
     }
 
@@ -505,11 +454,9 @@ async function processarFilaInteligente() {
       if (!state || state.status !== "running") return;
       if (state.paused) return;
 
-      let active = Array.isArray(state.active)
-        ? [...state.active]
-        : (state.active ? [{ ...state.active, index: Number(state.active.index) || Number(state.idx) || 0 }] : []);
+      let active = listarTarefasAtivas(state).map(task => ({ ...task }));
       let completedCount = Number(state.idx) || 0;
-      const durationMs = Math.max(20, Number(state.tempoPorBusca) || 60) * 1000;
+      const durationMs = Math.max(20, Number(state.tempoPorBusca) || 60) * 1000 + MINER_GRACE_MS;
       let changed = false;
       const completedTabIds = [];
 
@@ -522,14 +469,9 @@ async function processarFilaInteligente() {
           console.warn(`[BG] Aba da busca ${task.planId} não está mais disponível: ${error.message}`);
         }
 
-        if (!tabExists || Date.now() - task.startedAt >= durationMs) {
-          if (tabExists) {
-            try {
-              await chrome.tabs.remove(task.tabId);
-            } catch (error) {
-              console.warn(`[BG] Não foi possível fechar a aba ${task.tabId}: ${error.message}`);
-            }
-          }
+        // Termina quando: a aba avisou que acabou (MINER_DONE), o tempo estourou ou a aba sumiu.
+        if (!tabExists || task.done || Date.now() - task.startedAt >= durationMs) {
+          if (tabExists) await fecharTarefaMineracao(task);
           active = active.filter(item => item.tabId !== task.tabId);
           completedTabIds.push(task.tabId);
           completedCount += 1;
@@ -540,9 +482,7 @@ async function processarFilaInteligente() {
       if (changed) {
         const latestState = await getInteligenteState();
         if (!latestState || latestState.status !== "running") return;
-        const latestActive = Array.isArray(latestState.active)
-          ? latestState.active
-          : (latestState.active ? [latestState.active] : []);
+        const latestActive = listarTarefasAtivas(latestState);
         const completedNow = latestActive.filter(task => completedTabIds.includes(task.tabId)).length;
         state = {
           ...latestState,
@@ -560,34 +500,32 @@ async function processarFilaInteligente() {
       }
 
       if (completedCount >= queue.length && active.length === 0) {
-        await finalizarMineracao(queue, await getInteligenteResultados(), state);
+        await finalizarMineracao(queue, state);
         break;
       }
 
       let nextIndex = Math.max(Number(state.nextIndex) || 0, completedCount + active.length);
-      while (active.length < 2 && nextIndex < queue.length) {
+      while (active.length < MINER_MAX_PARALLEL && nextIndex < queue.length) {
         const beforeCreate = await getInteligenteState();
         if (!beforeCreate || beforeCreate.status !== "running") return;
         if (beforeCreate.paused) return;
         const index = nextIndex;
         const item = queue[index];
         const searchUrl = new URL(item.url);
-        searchUrl.searchParams.set("viva_miner_run", state.runId);
-        searchUrl.searchParams.set("viva_miner_plan", item.planId);
-        const tab = await chrome.tabs.create({ url: searchUrl.toString(), active: false });
+        searchUrl.searchParams.set("viva_miner", "1"); // só uma dica; a identidade real vem do tabId
+        const usedSlots = new Set(active.map(task => task.slot));
+        let slot = 0;
+        while (usedSlots.has(slot)) slot += 1;
+        const handle = await criarJanelaMineracao(searchUrl.toString(), slot);
 
         const latestState = await getInteligenteState();
         if (!latestState || latestState.runId !== state.runId || latestState.status !== "running" || latestState.paused) {
-          try {
-            await chrome.tabs.remove(tab.id);
-          } catch (error) {
-            console.warn(`[BG] Não foi possível fechar aba criada após cancelamento: ${error.message}`);
-          }
+          await fecharTarefaMineracao({ tabId: handle.tabId, windowId: handle.windowId });
           return;
         }
 
-        active = Array.isArray(latestState.active) ? [...latestState.active] : [];
-        const task = { index, planId: item.planId, tabId: tab.id, startedAt: Date.now() };
+        active = listarTarefasAtivas(latestState).map(task => ({ ...task }));
+        const task = { index, planId: item.planId, tabId: handle.tabId, windowId: handle.windowId, slot, startedAt: Date.now() };
         active.push(task);
         nextIndex = index + 1;
         state = {
@@ -597,9 +535,10 @@ async function processarFilaInteligente() {
           tempoPorBusca: Math.max(20, Number(latestState.tempoPorBusca) || 60),
         };
         await setInteligenteState(state);
+        console.log(`[BG][DIAG-M1] busca ${item.planId} "${item.q}" aberta (aba ${handle.tabId}, janela ${handle.windowId})`);
         notifyInteligente({
           action: "PROGRESSO_INTELIGENTE",
-          texto: `${completedCount}/${queue.length} concluídas · ${active.length}/2 abas · ${item.q}`,
+          texto: `${completedCount}/${queue.length} concluídas · ${active.length}/${MINER_MAX_PARALLEL} janelas · ${item.q}`,
           status: "running",
         });
       }
@@ -609,13 +548,8 @@ async function processarFilaInteligente() {
   } catch (err) {
     const state = await getInteligenteState();
     if (state && state.status !== "cancelled") {
-      const active = Array.isArray(state.active) ? state.active : (state.active ? [state.active] : []);
-      for (const task of active) {
-        try {
-          await chrome.tabs.remove(task.tabId);
-        } catch (closeError) {
-          console.warn(`[BG] Não foi possível fechar aba após falha: ${closeError.message}`);
-        }
+      for (const task of listarTarefasAtivas(state)) {
+        await fecharTarefaMineracao(task);
       }
       await setInteligenteState({ ...state, status: "failed", active: [], error: err.message });
     }
@@ -646,7 +580,7 @@ async function iniciarMineracaoInteligente(linhas, options, consentGranted) {
     const queue = gerarFilaInteligente(linhas, options);
     if (queue.length === 0) throw new Error("Nenhuma consulta válida foi informada.");
 
-    await chrome.storage.local.remove("viva_ultimo_ranking");
+    await chrome.storage.local.remove(["viva_ultimo_ranking", INTELIGENTE_RESULTADOS_KEY, "viva_ultimo_resumo"]);
     const runId = crypto.randomUUID();
     const state = {
       runId,
@@ -664,7 +598,6 @@ async function iniciarMineracaoInteligente(linhas, options, consentGranted) {
     };
     await setInteligenteQueue(queue);
     await setInteligenteIdx(0);
-    await setInteligenteResultados({});
     await setInteligenteState(state);
     console.log(`[BG] Fila inteligente iniciada com ${queue.length} itens`);
     response = { status: "fila_iniciada", total: queue.length, runId };
@@ -709,18 +642,13 @@ async function cancelarMineracaoInteligente(runId) {
     return { error: "Não há mineração ativa para cancelar." };
   }
 
-  const active = Array.isArray(state.active) ? state.active : (state.active ? [state.active] : []);
+  const active = listarTarefasAtivas(state);
   await setInteligenteState({ ...state, status: "cancelled", active: [], paused: false });
   for (const task of active) {
-    try {
-      await chrome.tabs.remove(task.tabId);
-    } catch (error) {
-      console.warn(`[BG] Aba ${task.tabId} já foi fechada durante o cancelamento: ${error.message}`);
-    }
+    await fecharTarefaMineracao(task);
   }
   await setInteligenteQueue([]);
   await setInteligenteIdx(0);
-  await setInteligenteResultados({});
   notifyInteligente({
     action: "PROGRESSO_INTELIGENTE",
     texto: "Mineração cancelada · abas encerradas",
@@ -787,6 +715,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     chrome.tabs.create({ url: mobileUrl });
     sendResponse({ status: "opened" });
+    return false;
   }
 
   else if (message.action === "INICIAR_MINERACAO_INTELIGENTE") {
@@ -818,15 +747,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  else if (message.action === "RESULTADO_PAGINA_MINERADA") {
-    registrarResultadoMineracao(message, sender).then(sendResponse).catch((err) => {
-      console.error(`[BG] Não foi possível salvar resultados minerados: ${err.message}`);
-      sendResponse({ status: "error", error: err.message });
-    });
+  else if (message.action === "GET_MINER_CONTEXT") {
+    obterContextoMineracao(sender)
+      .then(sendResponse)
+      .catch(error => {
+        console.error("[BG] Não foi possível obter o contexto de mineração:", error);
+        sendResponse(null);
+      });
     return true;
   }
-  
-  return true; // Mantém canal de comunicação aberto para responses assíncronos
+
+  else if (message.action === "MINER_DONE") {
+    marcarMineracaoConcluida(message, sender)
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "MINER_PROGRESS") {
+    relatarProgressoMineracao(message, sender)
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "ACERVO_UPSERT") {
+    upsertAcervo(message.creatives)
+      .then(sendResponse)
+      .catch(error => {
+        console.error(`[BG] Não foi possível gravar no acervo: ${error.message}`);
+        sendResponse({ status: "error", error: error.message });
+      });
+    return true;
+  }
+
+  else if (message.action === "ACERVO_CLEAR") {
+    limparAcervo()
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  // Mensagem desconhecida: não mantém o canal aberto à toa.
+  return false;
 });
 
 // FIX ITEM 9: retoma automaticamente qualquer fila deixada pendente por uma suspensão anterior
@@ -836,13 +799,8 @@ getInteligenteState()
   .then(async state => {
     if (!state || !["running", "finalizing"].includes(state.status)) return;
     if (state.consentGranted !== true) {
-      const active = Array.isArray(state.active) ? state.active : (state.active ? [state.active] : []);
-      for (const task of active) {
-        try {
-          await chrome.tabs.remove(task.tabId);
-        } catch (error) {
-          console.warn(`[BG] Aba legada ${task.tabId} já estava fechada ao revogar execução sem consentimento: ${error.message}`);
-        }
+      for (const task of listarTarefasAtivas(state)) {
+        await fecharTarefaMineracao(task);
       }
       await setInteligenteState({
         ...state,
@@ -853,7 +811,6 @@ getInteligenteState()
       });
       await setInteligenteQueue([]);
       await setInteligenteIdx(0);
-      await setInteligenteResultados({});
       return;
     }
     if (state.status === "finalizing" || (state.status === "running" && !state.paused)) {
