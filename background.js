@@ -1,6 +1,6 @@
 // Viva Spy - Background Service Worker
 
-importScripts("intelligent_parser.js", "ranking_engine.js", "team_sync.js");
+importScripts("intelligent_parser.js", "ranking_engine.js", "team_sync.js", "radar.js");
 console.info("[VIVA] Infra inteligente instalada - parser + fila + ranking");
 
 // Regra dinâmica ID para declarativeNetRequest (Mobile User-Agent)
@@ -439,6 +439,9 @@ async function finalizarMineracao(queue, state) {
   });
   await setInteligenteQueue([]);
   await setInteligenteIdx(0);
+  if (state.origem === "radar") {
+    await radarAposRodada(state, resumo).catch(error => console.warn(`[BG][RADAR] ${error.message}`));
+  }
   notifyInteligente({
     action: "PROGRESSO_INTELIGENTE",
     texto: `Mineração finalizada · ${daRodada.length} criativos escalados · ${bibliotecas} bibliotecas`,
@@ -502,6 +505,11 @@ async function processarFilaInteligente() {
         };
         completedCount = state.idx;
         active = state.active;
+        // Radar: pausa de ritmo humano antes de abrir a próxima busca.
+        if (state.pausaMaxMs > 0) {
+          const faixa = Math.max(0, state.pausaMaxMs - state.pausaMinMs);
+          state = { ...state, proximaAbertura: Date.now() + state.pausaMinMs + Math.random() * faixa };
+        }
         await setInteligenteState(state);
         notifyInteligente({
           action: "PROGRESSO_INTELIGENTE",
@@ -516,10 +524,12 @@ async function processarFilaInteligente() {
       }
 
       let nextIndex = Math.max(Number(state.nextIndex) || 0, completedCount + active.length);
-      while (active.length < MINER_MAX_PARALLEL && nextIndex < queue.length) {
+      const limiteParalelo = Math.max(1, Math.min(MINER_MAX_PARALLEL, Number(state.maxParallel) || MINER_MAX_PARALLEL));
+      while (active.length < limiteParalelo && nextIndex < queue.length) {
         const beforeCreate = await getInteligenteState();
         if (!beforeCreate || beforeCreate.status !== "running") return;
         if (beforeCreate.paused) return;
+        if (Date.now() < (Number(beforeCreate.proximaAbertura) || 0)) break; // ainda na pausa entre buscas
         const index = nextIndex;
         const item = queue[index];
         const searchUrl = new URL(item.url);
@@ -554,7 +564,8 @@ async function processarFilaInteligente() {
         });
       }
 
-      if (active.length > 0) await sleep(500);
+      const emPausa = Date.now() < (Number(state.proximaAbertura) || 0) && nextIndex < queue.length;
+      if (active.length > 0 || emPausa) await sleep(emPausa ? 1000 : 500);
     }
   } catch (err) {
     const state = await getInteligenteState();
@@ -563,6 +574,7 @@ async function processarFilaInteligente() {
         await fecharTarefaMineracao(task);
       }
       await setInteligenteState({ ...state, status: "failed", active: [], error: err.message });
+      if (state.origem === "radar") await radarRodadaInterrompida("failed").catch(() => {});
     }
     console.error(`[BG] Falha na mineração inteligente: ${err.message}`);
     notifyInteligente({ action: "PROGRESSO_INTELIGENTE", texto: `Falha: ${err.message}`, status: "failed" });
@@ -584,11 +596,16 @@ async function iniciarMineracaoInteligente(linhas, options, consentGranted) {
     if (currentState && ["running", "finalizing"].includes(currentState.status)) {
       throw new Error("Já existe uma mineração inteligente em andamento.");
     }
-    const inputState = parseBuscaInput(linhas.join("\n"));
-    if (inputState.modo !== "turbo") {
-      throw new Error("A mineração em segundo plano exige pelo menos duas linhas. Use a busca normal para uma linha.");
+    const origemRadar = options?.origem === "radar";
+    if (!origemRadar) {
+      const inputState = parseBuscaInput(linhas.join("\n"));
+      if (inputState.modo !== "turbo") {
+        throw new Error("A mineração em segundo plano exige pelo menos duas linhas. Use a busca normal para uma linha.");
+      }
     }
-    const queue = gerarFilaInteligente(linhas, options);
+    const queue = origemRadar
+      ? gerarFilaRadar(linhas.join("\n"), { country: options?.country, maximo: options?.maximo })
+      : gerarFilaInteligente(linhas, options);
     if (queue.length === 0) throw new Error("Nenhuma consulta válida foi informada.");
 
     await chrome.storage.local.remove(["viva_ultimo_ranking", INTELIGENTE_RESULTADOS_KEY, "viva_ultimo_resumo"]);
@@ -606,6 +623,11 @@ async function iniciarMineracaoInteligente(linhas, options, consentGranted) {
       modoRapido: Boolean(options?.modoRapido),
       consentGranted: true,
       startedAt: new Date().toISOString(),
+      origem: origemRadar ? "radar" : "manual",
+      maxParallel: origemRadar ? 1 : MINER_MAX_PARALLEL,
+      pausaMinMs: origemRadar ? Math.max(0, Number(options?.pausaMinMs) || 0) : 0,
+      pausaMaxMs: origemRadar ? Math.max(0, Number(options?.pausaMaxMs) || 0) : 0,
+      proximaAbertura: 0,
     };
     await setInteligenteQueue(queue);
     await setInteligenteIdx(0);
@@ -660,6 +682,7 @@ async function cancelarMineracaoInteligente(runId) {
   }
   await setInteligenteQueue([]);
   await setInteligenteIdx(0);
+  if (state.origem === "radar") await radarRodadaInterrompida("cancelled").catch(() => {});
   notifyInteligente({
     action: "PROGRESSO_INTELIGENTE",
     texto: "Mineração cancelada · abas encerradas",
@@ -799,6 +822,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  else if (message.action === "RADAR_CONFIG_CHANGED") {
+    radarConfigChanged()
+      .then(state => sendResponse({ status: "ok", state }))
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "RADAR_RUN_NOW") {
+    radarTick({ force: true })
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "RADAR_STOP_RUN") {
+    getInteligenteState()
+      .then(async state => {
+        if (!state || state.origem !== "radar" || state.status !== "running") return { status: "idle" };
+        const r = await cancelarMineracaoInteligente(state.runId);
+        await radarRodadaInterrompida("cancelled");
+        return r;
+      })
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
   else if (message.action === "TEAM_SYNC_NOW") {
     teamSyncNow({ force: true })
       .then(state => sendResponse({ status: "ok", state }))
@@ -840,6 +890,24 @@ try {
 } catch (error) {
   console.warn(`[BG][TEAM] sincronização indisponível: ${error.message}`);
 }
+
+// Radar diário: agenda + ganchos de reinício do Chrome.
+radarInit({
+  serial: fn => {
+    const run = acervoWriteChain.then(fn);
+    acervoWriteChain = run.catch(() => {});
+    return run;
+  },
+  iniciar: iniciarMineracaoInteligente,
+  ocupado: () => isMinerando,
+  marcarSujos: async chaves => {
+    if (await teamConfig()) {
+      await teamMarkDirtyRaw(chaves);
+      teamAgendarSync();
+    }
+  },
+});
+radarRegistrarEventos();
 
 // FIX ITEM 9: retoma automaticamente qualquer fila deixada pendente por uma suspensão anterior
 // do service worker — roda toda vez que este script acorda, seja por qual evento for.

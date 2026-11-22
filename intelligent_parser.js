@@ -121,3 +121,28 @@ function gerarFilaInteligente(linhas) {
     };
   });
 }
+
+// Fila do RADAR: aceita 1 ou mais linhas (o Turbo manual exige 2+). Cada linha vira uma busca;
+// linha inteira entre aspas = frase exata. `country` limita o país (padrão US).
+function gerarFilaRadar(rawText, opcoes = {}) {
+  const maximo = Math.max(1, Math.min(80, Number(opcoes.maximo) || 40));
+  const country = /^[A-Za-z]{2}$|^ALL$/i.test(String(opcoes.country || "")) ? String(opcoes.country).toUpperCase() : "US";
+  const vistos = new Set();
+  const itens = [];
+  String(rawText || "").split(/\r?\n/).forEach(bruta => {
+    const original = bruta.trim();
+    const termo = original.replace(/["“”]/g, "").trim();
+    if (termo.length < 2) return;
+    const exata = /^["“][^"“”]+["”]$/.test(original);
+    const chave = `${exata ? "e" : "a"}:${termo.toLowerCase()}`;
+    if (vistos.has(chave) || itens.length >= maximo) return;
+    vistos.add(chave);
+    const lineId = String(itens.length);
+    itens.push({
+      q: termo, exata, tipo: "linha", termo, linhaOriginal: original, lineId,
+      planId: `${lineId}:base`,
+      url: buildAdLibraryUrl(termo, { exata, filtros: { country, is_targeted_country: country === "ALL" ? "false" : "true" } }),
+    });
+  });
+  return itens;
+}

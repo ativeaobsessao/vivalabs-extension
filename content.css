@@ -3013,3 +3013,7 @@ body { padding-bottom: 0 !important; }
 .viva-intel-status[data-status="minerada"] { color: #1a7f37 !important; background: #def7e5 !important; }
 .viva-intel-status[data-status="descartada"] { color: #6e6e73 !important; background: #e5e5ea !important; }
 .viva-intel-toolbar select[hidden] { display: none !important; }
+
+/* Radar: selos "novo" e "subindo" no Centro */
+.viva-intel-chip.novo { background: #e3f1ff !important; color: #0a5bd3 !important; }
+.viva-intel-chip.subindo { background: #e4f8ea !important; color: #1b7a34 !important; }

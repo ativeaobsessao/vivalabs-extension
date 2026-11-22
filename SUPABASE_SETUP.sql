@@ -96,6 +96,13 @@ begin
         'firstSeen', least(coalesce(nullif(r->>'firstSeen', '')::numeric, nowms), coalesce(nullif(old.rec->>'firstSeen', '')::numeric, nowms)),
         'lastSeen',  greatest(coalesce(nullif(r->>'lastSeen', '')::numeric, 0), coalesce(nullif(old.rec->>'lastSeen', '')::numeric, 0))
       );
+      -- Base de comparação do radar ("subindo"): vale a leitura mais recente de quem já registrou uma.
+      if coalesce(nullif(old.rec->>'advBaseMs', '')::numeric, 0) > coalesce(nullif(r->>'advBaseMs', '')::numeric, 0) then
+        r := r || jsonb_build_object(
+          'advBase',   coalesce(nullif(old.rec->>'advBase', '')::numeric, 0),
+          'advBaseMs', coalesce(nullif(old.rec->>'advBaseMs', '')::numeric, 0)
+        );
+      end if;
       update public.viva_creatives
          set rec = r, seq = nextval('public.viva_seq')
        where key = old.key;

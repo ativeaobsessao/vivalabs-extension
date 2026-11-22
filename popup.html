@@ -107,6 +107,24 @@
     .team input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.18); }
     .team .btn { font-size: 12.5px; padding: 9px 12px; }
     .team-hint { font-size: 11px; color: var(--muted); margin-top: 7px; line-height: 1.4; }
+    .radar { margin-top: 12px; background: var(--fill); border-radius: 12px; padding: 12px 14px; }
+    .radar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .radar-title { font-size: 13.5px; font-weight: 500; }
+    .radar textarea, .radar select {
+      width: 100%; font-family: inherit; font-size: 12.5px; background: #fff; border: 1px solid transparent;
+      border-radius: 9px; padding: 8px 10px; color: var(--text); outline: none; margin-bottom: 7px;
+      transition: border-color .18s, box-shadow .18s;
+    }
+    .radar textarea { min-height: 78px; resize: vertical; line-height: 1.4; }
+    .radar textarea:focus, .radar select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.18); }
+    .radar-row { display: flex; gap: 7px; }
+    .radar-row > div { flex: 1; min-width: 0; }
+    .radar .field-label { display: block; margin-bottom: 3px; }
+    .radar .btn { font-size: 12.5px; padding: 9px 12px; }
+    .radar-state { font-size: 11.5px; color: var(--muted); line-height: 1.45; margin-top: 7px; }
+    .radar-state.err { color: #d70015; }
+    .radar-actions { display: flex; gap: 7px; }
+    .radar .btn[hidden] { display: none; }
     details.advanced { margin-top: 14px; }
     details.advanced summary {
       list-style: none;
@@ -190,6 +208,45 @@
     <input type="password" id="teamCode" placeholder="Código da equipe" autocomplete="off">
     <button class="btn btn-primary" id="teamSaveBtn" type="button">Conectar à equipe</button>
     <div class="team-hint" id="teamHint">Com o código, tudo que você achar aparece para a equipe e vice-versa.</div>
+  </div>
+
+  <div class="radar" id="radarBox">
+    <div class="radar-head">
+      <span class="radar-title">Radar diário</span>
+      <label class="apple-switch">
+        <input type="checkbox" id="radarToggle">
+        <span class="apple-slider"></span>
+      </label>
+    </div>
+    <label class="field-label" for="radarKeywords">Palavras-chave (uma por linha · entre aspas = frase exata)</label>
+    <textarea id="radarKeywords" placeholder="ex.:&#10;nerve pain relief&#10;&quot;blood sugar&quot;&#10;joint support supplement" maxlength="6000"></textarea>
+    <div class="radar-row">
+      <div>
+        <label class="field-label" for="radarCountry">País</label>
+        <select id="radarCountry">
+          <option value="US">EUA</option>
+          <option value="CA">Canadá</option>
+          <option value="GB">Reino Unido</option>
+          <option value="AU">Austrália</option>
+          <option value="ALL">Todos</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label" for="radarEvery">Repetir a cada</label>
+        <select id="radarEvery">
+          <option value="2">2 horas</option>
+          <option value="4">4 horas</option>
+          <option value="6">6 horas</option>
+          <option value="12">12 horas</option>
+          <option value="24">24 horas</option>
+        </select>
+      </div>
+    </div>
+    <div class="radar-actions">
+      <button class="btn btn-primary" id="radarRunBtn" type="button">Rodar agora</button>
+      <button class="btn btn-secondary" id="radarStopBtn" type="button" hidden>Parar</button>
+    </div>
+    <div class="radar-state" id="radarState">Desligado. Ao ligar, o Chrome abre janelinhas sozinho, uma por vez.</div>
   </div>
 
   <details class="advanced">

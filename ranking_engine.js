@@ -160,6 +160,8 @@ function mesclarAcervo(existente, novos, agora = Date.now(), max = VIVA_ACERVO_M
       fontes: fontesLista,
       firstSeen: atual ? atual.firstSeen : agora,
       lastSeen: agora,
+      advBase: atual ? (Number(atual.advBase) || 0) : 0,
+      advBaseMs: atual ? (Number(atual.advBaseMs) || 0) : 0,
     };
     const diasAtuais = diasNoAr(merged, agora);
     const calc = scoreCriativo({ dup: merged.dup, dias: diasAtuais, adv: merged.adv });
@@ -226,6 +228,15 @@ function mesclarRemotos(existente, remotos, agora = Date.now(), max = VIVA_ACERV
       firstSeen: Math.min(Number(A.firstSeen) || firstRemoto, firstRemoto),
       lastSeen: Math.max(Number(A.lastSeen) || 0, lastRemoto),
     };
+    const baseMsRemoto = Number(rec.advBaseMs) || 0;
+    const baseMsLocal = Number(A.advBaseMs) || 0;
+    if (baseMsRemoto >= baseMsLocal && baseMsRemoto > 0) {
+      merged.advBase = Math.max(0, Number(rec.advBase) || 0);
+      merged.advBaseMs = baseMsRemoto;
+    } else {
+      merged.advBase = Number(A.advBase) || 0;
+      merged.advBaseMs = baseMsLocal;
+    }
     const calc = scoreCriativo({ dup: merged.dup, dias: diasNoAr(merged, agora), adv: merged.adv });
     merged.score = calc.score;
     merged.emEscala = calc.emEscala;
@@ -239,6 +250,89 @@ function mesclarRemotos(existente, remotos, agora = Date.now(), max = VIVA_ACERV
     acervo = acervo.slice(0, max);
   }
   return { acervo, adicionados, atualizados };
+}
+
+// ── Histórico diário por biblioteca (para detectar quem está SUBINDO) ──────────────────────────
+// hist = { [pid]: { n: nome, s: [[diaIndex, adsNaBiblioteca], ...] } } — um número por dia, 14 dias.
+const VIVA_HIST_KEY = "viva_hist";
+const VIVA_HIST_DIAS = 14;
+const VIVA_HIST_MAX_PAGINAS = 4000;
+const VIVA_TEND_MIN_DELTA = 5;     // precisa ter ganhado pelo menos 5 anúncios...
+const VIVA_TEND_MIN_RAZAO = 1.3;   // ...e ao menos +30% sobre a base
+
+function histDia(ms) {
+  const d = new Date(ms);
+  return Math.floor((ms - d.getTimezoneOffset() * 60000) / VIVA_DAY_MS);
+}
+
+// Registra o maior nº de anúncios visto hoje por biblioteca. Devolve um hist novo (não muta o original).
+function histRegistrar(hist, criativos, agora = Date.now()) {
+  const novo = {};
+  const hoje = histDia(agora);
+  const corte = hoje - VIVA_HIST_DIAS;
+  for (const [pid, h] of Object.entries(hist && typeof hist === "object" ? hist : {})) {
+    const s = (Array.isArray(h && h.s) ? h.s : []).filter(par => Array.isArray(par) && par[0] > corte);
+    if (s.length) novo[pid] = { n: String((h && h.n) || ""), s };
+  }
+  for (const c of Array.isArray(criativos) ? criativos : []) {
+    const pid = c && /^\d{8,20}$/.test(String(c.pid || "")) ? String(c.pid) : "";
+    const adv = Number(c && c.adv) || 0;
+    if (!pid || adv <= 0) continue;
+    const atual = novo[pid] || { n: "", s: [] };
+    const s = atual.s.map(par => par.slice());
+    const ultimo = s[s.length - 1];
+    if (ultimo && ultimo[0] === hoje) ultimo[1] = Math.max(ultimo[1], adv);
+    else s.push([hoje, adv]);
+    novo[pid] = { n: String(c.nome || atual.n || "").slice(0, 80), s: s.slice(-VIVA_HIST_DIAS) };
+  }
+  const pids = Object.keys(novo);
+  if (pids.length > VIVA_HIST_MAX_PAGINAS) {
+    pids.sort((a, b) => novo[b].s[novo[b].s.length - 1][0] - novo[a].s[novo[a].s.length - 1][0]);
+    const mantidos = {};
+    pids.slice(0, VIVA_HIST_MAX_PAGINAS).forEach(pid => { mantidos[pid] = novo[pid]; });
+    return mantidos;
+  }
+  return novo;
+}
+
+// Base de comparação: a leitura MAIS ANTIGA entre 1 e 7 dias atrás (ontem ou antes).
+function histBase(hist, pid, agora = Date.now()) {
+  const h = hist && hist[pid];
+  if (!h || !Array.isArray(h.s)) return null;
+  const hoje = histDia(agora);
+  const candidatos = h.s.filter(par => par[0] <= hoje - 1 && par[0] >= hoje - 7);
+  if (!candidatos.length) return null;
+  const [dia, adv] = candidatos[0];
+  return { adv, ms: agora - (hoje - dia) * VIVA_DAY_MS };
+}
+
+// Está subindo? (também usada pelo Centro para mostrar o selo)
+function tendenciaCriativo(c, agora = Date.now()) {
+  const base = Number(c && c.advBase) || 0;
+  const adv = Number(c && c.adv) || 0;
+  if (base <= 0 || adv <= 0) return { sobe: false, delta: 0, dias: 0 };
+  const delta = adv - base;
+  const dias = Math.max(1, Math.round((agora - (Number(c.advBaseMs) || agora)) / VIVA_DAY_MS));
+  return { sobe: delta >= VIVA_TEND_MIN_DELTA && adv >= base * VIVA_TEND_MIN_RAZAO, delta, dias };
+}
+
+// Grava advBase/advBaseMs nos criativos a partir do histórico. Devolve { acervo, mudou: [chaves] }.
+function aplicarTendencias(acervo, hist, agora = Date.now()) {
+  const mudou = [];
+  const lista = (Array.isArray(acervo) ? acervo : []).map(c => {
+    if (!c || !c.pid) return c;
+    const base = histBase(hist, c.pid, agora);
+    const advBase = base ? base.adv : 0;
+    const advBaseMs = base ? base.ms : 0;
+    if ((Number(c.advBase) || 0) === advBase && (Number(c.advBaseMs) || 0) === advBaseMs) return c;
+    // a base só "anda" quando muda de dia (evita reenviar o mesmo registro à toa)
+    if (Math.abs((Number(c.advBaseMs) || 0) - advBaseMs) < VIVA_DAY_MS / 2 && (Number(c.advBase) || 0) === advBase) return c;
+    const novo = { ...c, advBase, advBaseMs };
+    const chave = acervoKey(novo);
+    if (chave) mudou.push(chave);
+    return novo;
+  });
+  return { acervo: lista, mudou };
 }
 
 // Agrupa o acervo por biblioteca (anunciante) e ranqueia.

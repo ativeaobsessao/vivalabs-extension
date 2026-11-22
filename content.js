@@ -3553,6 +3553,8 @@ function intelBuildCreativeCard(c, posicao) {
   const top = intelEl("div", "viva-intel-topline");
   top.appendChild(intelEl("strong", "viva-intel-name", c.nome || "Anunciante sem nome"));
   const stageInfo = STAGE_INFO[c.stage];
+  if (c._novo24) top.appendChild(intelEl("span", "viva-intel-chip novo", "🆕 NOVO"));
+  if (c._tend && c._tend.sobe) top.appendChild(intelEl("span", "viva-intel-chip subindo", `📈 SUBINDO +${c._tend.delta}`));
   if (c._emEscala) top.appendChild(intelEl("span", "viva-intel-chip hot", "🚀 EM ESCALA"));
   else if (stageInfo) top.appendChild(intelEl("span", `viva-intel-chip ${c.stage}`, stageInfo.label));
   body.appendChild(top);
@@ -3563,6 +3565,7 @@ function intelBuildCreativeCard(c, posicao) {
   pills.appendChild(intelEl("span", "viva-intel-pill strong", `🔁 ${c.dup}x duplicados`));
   pills.appendChild(intelEl("span", "viva-intel-pill", c._dias === null ? "📅 data n/d" : `📅 ${c._dias} dias no ar`));
   if (c.adv > 1) pills.appendChild(intelEl("span", "viva-intel-pill", `📚 ${c.adv} ads na biblioteca`));
+  if (c._tend && c._tend.sobe) pills.appendChild(intelEl("span", "viva-intel-pill strong", `📈 ${c._tend.delta > 0 ? "+" : ""}${c._tend.delta} ads em ${c._tend.dias}d`));
   if (c.dom) pills.appendChild(intelEl("span", "viva-intel-pill", `🔗 ${c.dom}`));
   if (c.fontes && c.fontes.length) pills.appendChild(intelEl("span", "viva-intel-pill muted", `🔎 ${c.fontes[c.fontes.length - 1]}`));
   if (c._by) pills.appendChild(intelEl("span", "viva-intel-pill muted", `👤 ${c._by}`));
@@ -3762,6 +3765,8 @@ function showIntelCenter() {
     { id: "escala", label: "🚀 Em escala agora" },
     { id: "monstro", label: "💎 Monstro" },
     { id: "bruta", label: "🔥 Bruta" },
+    { id: "novos24", label: "🆕 Novos (24h)" },
+    { id: "subindo", label: "📈 Subindo" },
   ];
 
   let itensVisiveis = [];
@@ -3775,7 +3780,9 @@ function showIntelCenter() {
       const calc = scoreCriativo({ dup: c.dup, dias, adv: c.adv });
       const meta = latestTeamMeta[acervoKey(c)] || {};
       const status = VIVA_TEAM_STATUS_LABELS[meta.status] ? meta.status : "nova";
-      return { ...c, _dias: dias, _score: calc.score, _emEscala: calc.emEscala, _by: meta.by || "", _status: status, _statusBy: meta.statusBy || "" };
+      const tend = tendenciaCriativo(c, agora);
+      const novo24 = (Number(c.firstSeen) || 0) >= agora - 24 * 3600 * 1000;
+      return { ...c, _dias: dias, _score: calc.score, _emEscala: calc.emEscala, _by: meta.by || "", _status: status, _statusBy: meta.statusBy || "", _tend: tend, _novo24: novo24 };
     });
   };
 
@@ -3785,6 +3792,8 @@ function showIntelCenter() {
       if (_vivaIntelUi.filtro === "escala" && !c._emEscala) return false;
       if (_vivaIntelUi.filtro === "monstro" && c.stage !== "monstro") return false;
       if (_vivaIntelUi.filtro === "bruta" && c.stage !== "bruta") return false;
+      if (_vivaIntelUi.filtro === "novos24" && !c._novo24) return false;
+      if (_vivaIntelUi.filtro === "subindo" && !c._tend.sobe) return false;
       if (_vivaIntelUi.fonte && !(c.fontes || []).includes(_vivaIntelUi.fonte)) return false;
       if (_vivaIntelUi.status === "ativas" && c._status === "descartada") return false;
       if (["nova", "analise", "minerada", "descartada"].includes(_vivaIntelUi.status) && c._status !== _vivaIntelUi.status) return false;
@@ -5287,7 +5296,7 @@ async function init() {
   _vivaInitialized = true;
 
   console.log("[VIVA] Motor otimizado O(1) + 5 cores Apple aplicadas");
-  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v10.0-equipe (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
+  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v11.0-radar (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
   console.log("[VIVA] Highlight preto baixo volume aplicado");
   await loadLocalApiUrl();
   // Esta aba é uma janela de mineração da Busca Inteligente Turbo? (resposta vem do background

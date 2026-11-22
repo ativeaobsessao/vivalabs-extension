@@ -135,6 +135,96 @@ document.addEventListener("DOMContentLoaded", () => {
     if (area === "local" && (changes.viva_sync_state || changes.viva_team_code)) carregarEquipe();
   });
 
+  // ── Radar diário ──────────────────────────────────────────────────────────────────────────
+  const radarToggle = document.getElementById("radarToggle");
+  const radarKeywords = document.getElementById("radarKeywords");
+  const radarCountry = document.getElementById("radarCountry");
+  const radarEvery = document.getElementById("radarEvery");
+  const radarRunBtn = document.getElementById("radarRunBtn");
+  const radarStopBtn = document.getElementById("radarStopBtn");
+  const radarState = document.getElementById("radarState");
+
+  function horaCurta(ms) {
+    const d = new Date(ms);
+    const hoje = new Date();
+    const hh = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    return d.toDateString() === hoje.toDateString() ? `hoje às ${hh}` : `${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} às ${hh}`;
+  }
+
+  function desenharRadar(config, state) {
+    const c = config || {};
+    const s = state || {};
+    radarToggle.checked = c.on === true;
+    if (document.activeElement !== radarKeywords) radarKeywords.value = c.keywords || "";
+    radarCountry.value = c.country || "US";
+    radarEvery.value = String(c.everyH || 6);
+    radarState.className = "radar-state";
+    radarStopBtn.hidden = s.status !== "running";
+    radarRunBtn.disabled = s.status === "running";
+    const partes = [];
+    if (s.status === "running") partes.push("Rodando agora… as janelinhas abrem e fecham sozinhas.");
+    else if (c.on && s.status === "error" && s.lastError) { radarState.classList.add("err"); partes.push(s.lastError); }
+    else if (c.on && s.nextRunAt) partes.push(`Ligado · próxima rodada ${horaCurta(s.nextRunAt)}.`);
+    else if (c.on) partes.push("Ligado.");
+    else partes.push("Desligado. Ao ligar, o Chrome abre janelinhas sozinho, uma por vez.");
+    const r = s.lastSummary;
+    if (r && s.status !== "running") {
+      partes.push(`Última (${horaCurta(r.at)}): ${r.criativos} criativos · ${r.emEscala} em escala · ${r.novos} novos · ${r.subindo} subindo.`);
+    }
+    radarState.textContent = partes.join(" ");
+  }
+
+  function carregarRadar() {
+    chrome.storage.local.get(["viva_radar_config", "viva_radar_state"], (data) => {
+      desenharRadar(data.viva_radar_config, data.viva_radar_state);
+    });
+  }
+
+  function salvarRadar() {
+    const config = {
+      on: radarToggle.checked,
+      keywords: radarKeywords.value,
+      country: radarCountry.value,
+      everyH: Number(radarEvery.value) || 6,
+    };
+    chrome.storage.local.set({ viva_radar_config: config }, () => {
+      chrome.runtime.sendMessage({ action: "RADAR_CONFIG_CHANGED" }, () => { void chrome.runtime.lastError; carregarRadar(); });
+    });
+  }
+
+  radarToggle.addEventListener("change", () => {
+    if (radarToggle.checked && !radarKeywords.value.trim()) {
+      radarToggle.checked = false;
+      radarState.className = "radar-state err";
+      radarState.textContent = "Escreva pelo menos uma palavra-chave antes de ligar.";
+      return;
+    }
+    salvarRadar();
+  });
+  radarKeywords.addEventListener("blur", salvarRadar);
+  radarCountry.addEventListener("change", salvarRadar);
+  radarEvery.addEventListener("change", salvarRadar);
+  radarRunBtn.addEventListener("click", () => {
+    if (!radarKeywords.value.trim()) {
+      radarState.className = "radar-state err";
+      radarState.textContent = "Escreva pelo menos uma palavra-chave.";
+      return;
+    }
+    if (!radarToggle.checked) radarToggle.checked = true;
+    chrome.storage.local.set({
+      viva_radar_config: { on: true, keywords: radarKeywords.value, country: radarCountry.value, everyH: Number(radarEvery.value) || 6 },
+    }, () => {
+      chrome.runtime.sendMessage({ action: "RADAR_RUN_NOW" }, () => { void chrome.runtime.lastError; carregarRadar(); });
+    });
+  });
+  radarStopBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ action: "RADAR_STOP_RUN" }, () => { void chrome.runtime.lastError; carregarRadar(); });
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.viva_radar_state) carregarRadar();
+  });
+  carregarRadar();
+
   // Abrir Meta Ad Library
   openLibraryBtn.addEventListener("click", () => {
     chrome.tabs.create({ url: "https://www.facebook.com/ads/library/?active_status=active" });
