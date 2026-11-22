@@ -2,224 +2,178 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
+  <title>Viva Spy</title>
   <style>
+    :root {
+      --bg: #ffffff;
+      --fill: rgba(120, 120, 128, 0.12);
+      --fill-hover: rgba(120, 120, 128, 0.2);
+      --sep: rgba(60, 60, 67, 0.12);
+      --text: #1d1d1f;
+      --muted: #86868b;
+      --accent: #0071e3;
+      --green: #34c759;
+      --red: #ff3b30;
+    }
+    * { box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      width: 280px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      width: 300px;
       margin: 0;
-      padding: 16px;
-      background-color: #f5f5f7;
-      color: #1d1d1f;
+      padding: 18px;
+      background: var(--bg);
+      color: var(--text);
     }
     .header {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 16px;
+      gap: 11px;
+      margin-bottom: 18px;
     }
-    .header-logo {
-      width: 20px;
-      height: 20px;
-      stroke: #007aff;
-      fill: none;
-    }
-    .title {
-      font-size: 14px;
-      font-weight: 700;
-      margin: 0;
-    }
-    .form-group {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      margin-bottom: 12px;
-    }
-    label {
-      font-size: 10px;
-      font-weight: 600;
-      color: #86868b;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    input {
-      font-family: inherit;
-      font-size: 12px;
-      background-color: rgba(0, 0, 0, 0.04);
-      border: 1px solid rgba(0, 0, 0, 0.08);
-      border-radius: 8px;
-      padding: 8px 10px;
-      color: #1d1d1f;
-      outline: none;
-      transition: all 0.2s;
-    }
-    input:focus {
-      background-color: #fff;
-      border-color: #007aff;
-      box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15);
-    }
+    .header-logo { width: 36px; height: 36px; border-radius: 9px; flex-shrink: 0; display: block; }
+    .header-text { flex: 1; min-width: 0; }
+    .title { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; margin: 0; line-height: 1.15; }
+    .status-bar { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #8e8e93; flex-shrink: 0; }
+    .status-dot.online { background: var(--green); }
+    .status-dot.offline { background: var(--red); }
+
     .btn {
       font-family: inherit;
-      font-size: 12px;
+      font-size: 13.5px;
       font-weight: 600;
-      border-radius: 8px;
+      border-radius: 11px;
       border: none;
-      padding: 8px 12px;
+      padding: 11px 14px;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 6px;
-      transition: all 0.2s;
+      gap: 7px;
       width: 100%;
-      box-sizing: border-box;
+      transition: background-color .18s ease, transform .12s ease;
     }
-    .btn-primary {
-      background-color: #007aff;
-      color: #fff;
-    }
-    .btn-primary:hover {
-      background-color: #0062cc;
-    }
-    .btn-secondary {
-      background-color: rgba(120, 120, 128, 0.16);
-      color: #1d1d1f;
-      margin-top: 10px;
-    }
-    .btn-secondary:hover {
-      background-color: rgba(120, 120, 128, 0.24);
-    }
-    .divider {
-      height: 1px;
-      background-color: rgba(0, 0, 0, 0.08);
-      margin: 14px 0;
-    }
-    .status-bar {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      color: #86868b;
-      margin-top: 10px;
-      justify-content: center;
-    }
-    .status-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background-color: #8e8e93;
-    }
-    .status-dot.online {
-      background-color: #34c759;
-    }
-    .status-dot.offline {
-      background-color: #ff3b30;
+    .btn:active { transform: scale(0.985); }
+    .btn-primary { background: var(--text); color: #fff; }
+    .btn-primary:hover { background: #3a3a3c; }
+    .btn-secondary { background: var(--fill); color: var(--text); }
+    .btn-secondary:hover { background: var(--fill-hover); }
+
+    .group {
+      margin-top: 12px;
+      background: var(--fill);
+      border-radius: 12px;
+      overflow: hidden;
     }
     .toggle-container {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-top: 12px;
-      padding: 10px 12px;
-      background: rgba(0, 0, 0, 0.03);
-      border: 1px solid rgba(0, 0, 0, 0.06);
-      border-radius: 10px;
+      padding: 11px 14px;
     }
-    .toggle-info {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-    .toggle-title {
-      font-size: 12px;
-      font-weight: 600;
-      color: #1d1d1f;
-    }
-    .toggle-sub {
-      font-size: 10px;
-      color: #86868b;
-    }
-    .apple-switch {
-      position: relative;
-      display: inline-block;
-      width: 40px;
-      height: 24px;
-      flex-shrink: 0;
-    }
-    .apple-switch input {
-      opacity: 0;
-      width: 0;
-      height: 0;
-    }
+    .toggle-info { display: flex; flex-direction: column; gap: 1px; }
+    .toggle-title { font-size: 13.5px; font-weight: 500; }
+    .toggle-sub { font-size: 11.5px; color: var(--muted); }
+
+    .apple-switch { position: relative; display: inline-block; width: 42px; height: 26px; flex-shrink: 0; }
+    .apple-switch input { opacity: 0; width: 0; height: 0; }
     .apple-slider {
-      position: absolute;
-      cursor: pointer;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background-color: #e9e9eb;
-      transition: .25s cubic-bezier(0.35, 0, 0.25, 1);
-      border-radius: 24px;
+      position: absolute; cursor: pointer; inset: 0;
+      background: #d1d1d6; border-radius: 26px;
+      transition: background-color .25s cubic-bezier(0.35, 0, 0.25, 1);
     }
     .apple-slider:before {
-      position: absolute;
-      content: "";
-      height: 20px;
-      width: 20px;
-      left: 2px;
-      bottom: 2px;
-      background-color: white;
-      transition: .25s cubic-bezier(0.35, 0, 0.25, 1);
-      border-radius: 50%;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+      content: ""; position: absolute; height: 22px; width: 22px; left: 2px; bottom: 2px;
+      background: #fff; border-radius: 50%;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      transition: transform .25s cubic-bezier(0.35, 0, 0.25, 1);
     }
-    input:checked + .apple-slider {
-      background-color: #34c759;
+    .apple-switch input:checked + .apple-slider { background: var(--green); }
+    .apple-switch input:checked + .apple-slider:before { transform: translateX(16px); }
+
+    details.advanced { margin-top: 14px; }
+    details.advanced summary {
+      list-style: none;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      user-select: none;
     }
-    input:checked + .apple-slider:before {
-      transform: translateX(16px);
+    details.advanced summary::-webkit-details-marker { display: none; }
+    details.advanced summary::before {
+      content: "›";
+      display: inline-block;
+      font-size: 15px;
+      line-height: 1;
+      transition: transform .18s ease;
     }
+    details.advanced[open] summary::before { transform: rotate(90deg); }
+    .advanced-body { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+    label.field-label { font-size: 11px; color: var(--muted); }
+    input[type="url"] {
+      font-family: inherit;
+      font-size: 12.5px;
+      background: var(--fill);
+      border: 1px solid transparent;
+      border-radius: 9px;
+      padding: 9px 11px;
+      color: var(--text);
+      outline: none;
+      transition: border-color .18s, box-shadow .18s, background-color .18s;
+    }
+    input[type="url"]:focus {
+      background: #fff;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.18);
+    }
+    .advanced-body .btn { font-size: 12.5px; padding: 9px 12px; }
   </style>
-  <title>VIVA Labs Helper</title>
 </head>
 <body>
   <div class="header">
-    <svg class="header-logo" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-    </svg>
-    <h1 class="title">VIVA Labs Helper</h1>
+    <img class="header-logo" src="icons/icon128.png" alt="">
+    <div class="header-text">
+      <h1 class="title">Viva Spy</h1>
+      <div class="status-bar">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Carregando status...</span>
+      </div>
+    </div>
   </div>
 
-  <div class="form-group">
-    <label for="apiUrl">URL do Monitor API</label>
-    <input type="url" id="apiUrl" placeholder="https://viva-labs-monitor.onrender.com" required>
-  </div>
-
-  <button class="btn btn-primary" id="saveBtn">Salvar Configuração</button>
-
-  <div class="divider"></div>
-
-  <button class="btn btn-secondary" id="openLibraryBtn">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-      <polyline points="15 3 21 3 21 9"></polyline>
-      <line x1="10" y1="14" x2="21" y2="3"></line>
+  <button class="btn btn-primary" id="openLibraryBtn" type="button">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7"></circle>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
     </svg>
     Abrir Meta Ad Library
   </button>
 
-  <div class="toggle-container" id="monitorToggleBox">
-    <div class="toggle-info">
-      <span class="toggle-title">Monitoramento VIVA</span>
-      <span class="toggle-sub" id="toggleStateLabel">Ativado</span>
+  <div class="group" id="monitorToggleBox">
+    <div class="toggle-container">
+      <div class="toggle-info">
+        <span class="toggle-title">Viva Spy</span>
+        <span class="toggle-sub" id="toggleStateLabel">Ativado</span>
+      </div>
+      <label class="apple-switch">
+        <input type="checkbox" id="vivaMasterToggle" checked>
+        <span class="apple-slider"></span>
+      </label>
     </div>
-    <label class="apple-switch">
-      <input type="checkbox" id="vivaMasterToggle" checked>
-      <span class="apple-slider"></span>
-    </label>
   </div>
 
-  <div class="status-bar">
-    <div class="status-dot" id="statusDot"></div>
-    <span id="statusText">Carregando status...</span>
-  </div>
+  <details class="advanced">
+    <summary>Conexão com o monitor</summary>
+    <div class="advanced-body">
+      <label class="field-label" for="apiUrl">URL do Monitor API</label>
+      <input type="url" id="apiUrl" placeholder="https://viva-labs-monitor.onrender.com" required>
+      <button class="btn btn-secondary" id="saveBtn" type="button">Salvar</button>
+    </div>
+  </details>
 
   <script src="popup.js"></script>
 </body>

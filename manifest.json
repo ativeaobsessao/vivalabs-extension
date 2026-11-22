@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "VIVA Labs Helper",
-  "version": "1.1.0",
-  "description": "Ferramenta de benchmark e espionagem de funis para Meta Ads Library, integrada ao VIVA Labs Monitor.",
+  "name": "Viva Spy",
+  "version": "1.2.0",
+  "description": "Inteligência de anúncios para a Meta Ad Library: encontre as ofertas mais escaladas, em segundos.",
   "permissions": [
     "storage",
     "downloads",
@@ -49,7 +49,18 @@
       "js": ["social_helper.js"]
     }
   ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_title": "Viva Spy",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
   }
 }

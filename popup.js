@@ -1,4 +1,4 @@
-// VIVA Labs Helper - Popup Controller Script
+// Viva Spy - Popup Controller Script
 
 document.addEventListener("DOMContentLoaded", () => {
   const apiUrlInput = document.getElementById("apiUrl");
@@ -37,9 +37,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const originalText = saveBtn.textContent;
       saveBtn.textContent = "Salvo!";
       saveBtn.style.backgroundColor = "#34c759";
+      saveBtn.style.color = "#fff";
       setTimeout(() => {
         saveBtn.textContent = originalText;
-        saveBtn.style.backgroundColor = "#007aff";
+        saveBtn.style.backgroundColor = "";
+        saveBtn.style.color = "";
       }, 1500);
     });
   });

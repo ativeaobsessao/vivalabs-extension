@@ -1,4 +1,4 @@
-// VIVA Labs Helper - Main Content Script (Meta Ad Library)
+// Viva Spy - Main Content Script (Meta Ad Library)
 
 // Limpa um id residual de modal após navegação do histórico. Não executar no carregamento
 // inicial: links salvos usam id intencionalmente para abrir o anúncio, e a Meta pode remover
@@ -58,7 +58,7 @@ function updateMotorVivaLeve(count, timeMs) {
   motorUpdateScheduled = true;
   requestAnimationFrame(() => {
     motorUpdateScheduled = false;
-    const text = `⚡ O(1) · ${motorStats.time.toFixed(1)}ms (${motorStats.count} ads)`;
+    const text = `${motorStats.count} anúncios · ${Math.round(motorStats.time)}ms`;
     const status = document.getElementById("viva-motor-status");
     if (status) status.textContent = text;
     const health = document.getElementById("viva-engine-health");
@@ -2841,25 +2841,25 @@ function injectSidebar() {
 
   sidebar.innerHTML = `
     <div class="viva-sidebar-header">
-      <div style="display:flex; align-items:center; gap:8px;">
-        <h3 class="viva-sidebar-title">VIVA Labs Monitor <span style="font-size:9px; opacity:0.5; font-weight:400;">v7.4-modal-pin</span></h3>
-        <span class="viva-scale-score viva-score-low" id="viva-sidebar-status">✓ Conectado</span>
+      <div class="viva-sidebar-heading">
+        <h3 class="viva-sidebar-title">Monitorar</h3>
+        <span class="viva-sidebar-status-dot" id="viva-sidebar-status" title="Conectado" aria-label="Conectado"></span>
       </div>
-      <button class="viva-sidebar-minimize-btn" id="viva-btn-minimize" title="Minimizar">_</button>
+      <button class="viva-sidebar-minimize-btn" id="viva-btn-minimize" title="Minimizar" aria-label="Minimizar"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
     </div>
     <div class="viva-sidebar-content">
       
       <!-- Seção 1: Rastreador — fixo, sem acordeão. Controle & Filtros vive no dock fixo no
            rodapé (injectDock), sempre visível independente de scroll. -->
       <div class="viva-panel-section" style="box-sizing: border-box;">
-        <h4 class="viva-section-title">Rastrear Competidor</h4>
+        <h4 class="viva-section-title">Rastrear concorrente</h4>
 
         <div id="viva-tracker-content" style="margin-top: 10px;">
           <!-- Apple Segmented Control -->
           <div class="viva-segmented-control" role="tablist" aria-label="Tipo de monitoramento">
-            <button id="viva-tab-page" class="viva-segment viva-segmented-btn active" data-tab="pagina" role="tab" aria-selected="true" aria-label="Página"><span>📄 Página</span></button>
-            <button id="viva-tab-domain" class="viva-segment viva-segmented-btn" data-tab="dominio" role="tab" aria-selected="false" aria-label="Domínio"><span>🌐 Domínio</span></button>
-            <button id="viva-tab-keyword" class="viva-segment viva-segmented-btn" data-tab="palavra" role="tab" aria-selected="false" aria-label="Palavra-chave"><span data-active-label="Palavra-chave" data-inactive-label="Chave">🔑 Chave</span></button>
+            <button id="viva-tab-page" class="viva-segment viva-segmented-btn active" data-tab="pagina" role="tab" aria-selected="true" aria-label="Página"><span>Página</span></button>
+            <button id="viva-tab-domain" class="viva-segment viva-segmented-btn" data-tab="dominio" role="tab" aria-selected="false" aria-label="Domínio"><span>Domínio</span></button>
+            <button id="viva-tab-keyword" class="viva-segment viva-segmented-btn" data-tab="palavra" role="tab" aria-selected="false" aria-label="Palavra-chave"><span data-active-label="Palavra-chave" data-inactive-label="Chave">Chave</span></button>
           </div>
 
           <!-- Aba 1: Por Página -->
@@ -2971,7 +2971,7 @@ function setupSidebarInteractions() {
         tab.setAttribute("aria-selected", String(selected));
         const label = tab.querySelector("[data-active-label]");
         if (label) {
-          label.textContent = `🔑 ${selected ? label.dataset.activeLabel : label.dataset.inactiveLabel}`;
+          label.textContent = selected ? label.dataset.activeLabel : label.dataset.inactiveLabel;
           tab.setAttribute("aria-label", label.dataset.activeLabel);
         }
         view.style.display = selected ? "block" : "none";
@@ -4559,36 +4559,42 @@ function injectTopBar() {
   topBar.className = "viva-top-bar viva-el";
   topBar.innerHTML = `
     <div class="viva-top-left">
-      <span class="viva-top-logo">VIVA Labs</span>
-      <span class="viva-top-version" id="viva-top-connection">✓ Conectado</span>
+      <svg class="viva-top-mark" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><defs><linearGradient id="vsg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3a3e"/><stop offset="1" stop-color="#1c1c1e"/></linearGradient></defs><rect width="32" height="32" rx="8" fill="url(#vsg)"/><path d="M9.4 10.4 16 21.6l6.6-11.2" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="23.2" cy="8.6" r="3" fill="#ff3b30" stroke="#232326" stroke-width="1.4"/></svg>
+      <span class="viva-top-logo">Viva Spy</span>
+      <span class="viva-top-version" id="viva-top-connection" title="Conectado" aria-label="Conectado"></span>
     </div>
     <div class="viva-top-center">
-      <div class="viva-top-filter-group">
-        <label for="viva-top-min-ads">MÍN. ADS ATIVOS</label>
-        <input id="viva-top-min-ads" type="number" min="0" aria-label="Mínimo de anúncios ativos">
+      <div class="viva-top-filters" role="group" aria-label="Filtros">
+        <div class="viva-top-filter-group">
+          <label for="viva-top-min-ads">Mín. anúncios</label>
+          <input id="viva-top-min-ads" type="number" min="0" placeholder="0" aria-label="Mínimo de anúncios ativos">
+        </div>
+        <div class="viva-top-filter-group">
+          <label for="viva-top-min-dup">Mín. duplicados</label>
+          <input id="viva-top-min-dup" type="number" min="0" placeholder="0" aria-label="Mínimo de anúncios duplicados">
+        </div>
+        <button class="viva-btn viva-btn-primary viva-top-apply" id="viva-top-apply" type="button">Aplicar</button>
       </div>
-      <div class="viva-top-filter-group">
-        <label for="viva-top-min-dup">MÍN. DUPLICADOS</label>
-        <input id="viva-top-min-dup" type="number" min="0" aria-label="Mínimo de anúncios duplicados">
-      </div>
-      <button class="viva-btn viva-btn-primary viva-top-apply" id="viva-top-apply" type="button">Aplicar</button>
-      <label class="viva-top-toggle">
-        <span>Recentes ≤ 3 dias</span>
+      <label class="viva-top-toggle" title="Mostrar só anúncios dos últimos 3 dias">
+        <span>Recentes</span>
         <span class="viva-switch viva-switch-sm">
-          <input id="viva-top-recentes" type="checkbox" aria-label="Filtrar anúncios recentes">
+          <input id="viva-top-recentes" type="checkbox" aria-label="Filtrar anúncios recentes (até 3 dias)">
           <span class="viva-slider"></span>
         </span>
       </label>
-      <label class="viva-top-toggle">
-        <span>Auto-Scroll</span>
+      <label class="viva-top-toggle" title="Rola a página sozinho para carregar mais anúncios">
+        <span>Auto-scroll</span>
         <span class="viva-switch viva-switch-sm">
           <input id="viva-top-autoscroll" type="checkbox" aria-label="Ativar auto-scroll">
           <span class="viva-slider"></span>
         </span>
       </label>
-      <button id="viva-btn-busca-inteligente" class="viva-btn-busca-inteligente" type="button" aria-expanded="false" aria-controls="viva-busca-dropdown">⚡ Busca Inteligente</button>
     </div>
     <span class="viva-top-spacer"></span>
+    <div class="viva-top-actions">
+      <button id="viva-btn-busca-inteligente" class="viva-btn-busca-inteligente" type="button" aria-expanded="false" aria-controls="viva-busca-dropdown" title="Pesquisar uma ou várias palavras-chave"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span>Busca Inteligente</span></button>
+      <button id="viva-btn-show-ranking" class="viva-btn-centro" type="button" title="Abre o Centro de Inteligência: criativos escalados que o motor encontrou"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg><span>Centro de Inteligência</span><span id="viva-intel-count" class="viva-dock-count">0</span></button>
+    </div>
   `;
   document.body.prepend(topBar);
 
@@ -4631,6 +4637,8 @@ function injectTopBar() {
   console.info("[VIVA] Busca Inteligente v2: modo normal x turbo com consentimento");
 
   const searchButton = topBar.querySelector("#viva-btn-busca-inteligente");
+  const centroButton = topBar.querySelector("#viva-btn-show-ranking");
+  if (centroButton) centroButton.addEventListener("click", () => showIntelCenter());
   const input = dropdown.querySelector("#viva-mass-keywords");
   const primaryButton = dropdown.querySelector("#viva-btn-minerar");
   const info = dropdown.querySelector("#viva-busca-info");
@@ -4991,26 +4999,16 @@ function injectDock() {
   dock.className = "viva-dock viva-el";
 
   dock.innerHTML = `
-    <div class="viva-dock-left"></div>
-    <div class="viva-dock-center">
-      <button id="viva-btn-show-ranking" class="viva-btn viva-btn-red-pro viva-dock-ranking ver-top-btn" type="button" title="Abre o Centro de Inteligência: criativos escalados que o motor Viva encontrou">🧠 CENTRO DE INTELIGÊNCIA <span id="viva-intel-count" class="viva-dock-count">0</span></button>
-    </div>
-    <div class="viva-dock-right">
-      <div class="viva-dock-engine">
-        <span class="viva-dock-engine-label">MOTOR VIVA</span>
-        <span id="viva-motor-status" class="viva-motor-status viva-motor-viva">⚡ O(1) · ${lastCycleDurationMs || 0}ms (${activeCardData.length} ads)</span>
-      </div>
+    <div class="viva-dock-engine" title="Motor Viva: anúncios lidos nesta página e tempo de leitura">
+      <span class="viva-dock-engine-dot"></span>
+      <span id="viva-motor-status" class="viva-motor-status viva-motor-viva">${activeCardData.length} anúncios · ${Math.round(lastCycleDurationMs || 0)}ms</span>
     </div>
   `;
 
   document.body.appendChild(dock);
-  const rankingBtn = dock.querySelector("#viva-btn-show-ranking");
-  if (rankingBtn) {
-    rankingBtn.addEventListener("click", () => showIntelCenter());
-  }
   if (!_vivaRankingFeatureLogShown) {
     _vivaRankingFeatureLogShown = true;
-    console.log("[VIVA] Dock fixo: CENTRO DE INTELIGÊNCIA centralizado + MOTOR VIVA à direita");
+    console.log("[VIVA] Dock: status do motor (Centro de Inteligência fica na barra superior)");
   }
   carregarAcervoLocal();
 }
@@ -5229,7 +5227,7 @@ async function init() {
   _vivaInitialized = true;
 
   console.log("[VIVA] Motor otimizado O(1) + 5 cores Apple aplicadas");
-  console.log("[VIVA] Extensão carregando... BUILD-CLAUDE-FIX-v8.0 (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
+  console.log("[VIVA] Extensão carregando... BUILD-VIVA-SPY-v9.0 (2026-11) — Centro de Inteligência (acervo de criativos escalados), Busca Inteligente Normal por URL e Turbo em janelas com auto-scroll");
   console.log("[VIVA] Highlight preto baixo volume aplicado");
   await loadLocalApiUrl();
   // Esta aba é uma janela de mineração da Busca Inteligente Turbo? (resposta vem do background
