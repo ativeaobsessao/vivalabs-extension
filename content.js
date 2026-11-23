@@ -1,5 +1,25 @@
 // Viva Spy - Main Content Script (Meta Ad Library)
 
+// Autoverificação: os 4 scripts desta página compartilham o mesmo escopo. Se a pasta da extensão estiver
+// MISTURADA (algum arquivo de outra versão), o content.js quebraria em silêncio e a extensão "sumiria".
+// Em vez disso, avisa na tela qual arquivo está desatualizado e para aqui.
+const _vivaChecagemArquivos = {
+  "ranking_engine.js": [typeof scoreCriativo, typeof acervoKey, typeof agruparOfertas, typeof acervoRemover, typeof lixeiraVazia, typeof igMapGravar],
+  "intelligent_parser.js": [typeof combinarBuscaLinhas],
+  "export_data.js": [typeof exportGerar],
+};
+const _vivaArquivosRuins = Object.keys(_vivaChecagemArquivos).filter(arquivo => _vivaChecagemArquivos[arquivo].some(tipo => tipo !== "function"));
+if (_vivaArquivosRuins.length) {
+  try {
+    const aviso = document.createElement("div");
+    aviso.id = "viva-erro-arquivos";
+    aviso.setAttribute("style", "position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#b3261e;color:#fff;padding:12px 18px;font:600 14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,.35)");
+    aviso.textContent = `⚠ Viva Spy: a pasta da extensão está com arquivos de versões diferentes (desatualizado: ${_vivaArquivosRuins.join(", ")}). Remova a extensão, copie a pasta COMPLETA da versão nova e recarregue em chrome://extensions.`;
+    (document.body || document.documentElement).appendChild(aviso);
+  } catch (e) {}
+  throw new Error(`[VIVA] Arquivos de versões diferentes: ${_vivaArquivosRuins.join(", ")}`);
+}
+
 // Limpa um id residual de modal após navegação do histórico. Não executar no carregamento
 // inicial: links salvos usam id intencionalmente para abrir o anúncio, e a Meta pode remover
 // o fragmento viva_pin antes deste content script rodar em document_idle.
