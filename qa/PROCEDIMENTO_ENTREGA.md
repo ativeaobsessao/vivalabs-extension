@@ -13,6 +13,8 @@ Causa: entregas copiavam só "os arquivos que mudaram". Nunca mais.
    Tem de dar exit 0: barra, dock e botão do Centro aparecem, sem aviso vermelho de arquivos.
 5. Entrega: copiar **todos** os arquivos listados por `bash qa/arquivos_runtime.sh` (não só os alterados).
 6. Conferir no PC: sha256 de cada arquivo da pasta == sha256 do repositório (`--hash`). Qualquer diferença = entrega falhou.
+   Exceção conhecida: os 4 PNGs de `icons/` chegam ao PC re-codificados (bytes diferentes, pixels idênticos — verificado em
+   23/11/2026). Para eles, comparar a imagem (pixels), não o hash.
 7. Dizer ao Gus a versão que deve aparecer em `chrome://extensions` e o que ele deve ver ao abrir a biblioteca.
 
 ## Rede de proteção embutida
