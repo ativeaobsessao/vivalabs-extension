@@ -1,6 +1,6 @@
 // Viva Spy - Background Service Worker
 
-importScripts("intelligent_parser.js", "ranking_engine.js", "export_data.js", "team_sync.js", "notify.js", "auto_export.js", "radar.js");
+importScripts("intelligent_parser.js", "ranking_engine.js", "export_data.js", "team_sync.js", "notify.js", "auto_export.js", "radar.js", "funnel_outbox.js");
 console.info("[VIVA] Infra inteligente instalada - parser + fila + ranking");
 
 // Regra dinâmica ID para declarativeNetRequest (Mobile User-Agent)
@@ -793,6 +793,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(error => {
         console.error("[BG] Não foi possível recuperar estado da mineração:", error);
         sendResponse({ error: error.message });
+      });
+    return true;
+  }
+
+  else if (message.action === "FUNNEL_ENQUEUE") {
+    funnelEnqueue(message.job)
+      .then(sendResponse)
+      .catch(error => {
+        console.error("[BG] Não foi possível enfileirar o funil:", error.message);
+        sendResponse({ ok: false, error: error.message });
       });
     return true;
   }

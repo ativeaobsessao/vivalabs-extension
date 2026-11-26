@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Viva Spy",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "description": "Inteligência de anúncios para a Meta Ad Library: encontre as ofertas mais escaladas, em segundos.",
   "permissions": [
     "storage",

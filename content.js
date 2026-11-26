@@ -1184,7 +1184,7 @@ function extractCardTexts(card, destinationUrl = null, advertiserName = extractA
   };
 }
 
-function showAppleToast(titulo, subtitulo, tipo = "success") {
+function showAppleToast(titulo, subtitulo, tipo = "success", duracaoMs = 2500) {
   document.querySelectorAll(".viva-apple-toast").forEach(toast => toast.remove());
 
   const toast = document.createElement("div");
@@ -1213,7 +1213,7 @@ function showAppleToast(titulo, subtitulo, tipo = "success") {
     toast.style.setProperty("transform", "translateX(-50%) translateY(10px) scale(0.95)", "important");
     toast.style.setProperty("opacity", "0", "important");
     setTimeout(() => toast.remove(), 300);
-  }, 2500);
+  }, duracaoMs);
 }
 
 async function handleCopiarCopies(card) {
@@ -2511,230 +2511,95 @@ function openFunnelModal(landingUrl, advertiserContext, options = {}) {
 
   overlay.querySelector("#viva-funnel-cancel").addEventListener("click", () => overlay.remove());
 
+  // 1 clique: o funil vai para a fila do background e o modal fecha na hora. O envio ao servidor
+  // (cadastro + etapas) roda em segundo plano, ver funnel_outbox.js.
   overlay.querySelector("#viva-funnel-review").addEventListener("click", async (event) => {
-    const reviewButton = event.currentTarget;
-    if (reviewButton.disabled) return;
-    const originalButtonText = reviewButton.textContent;
-    reviewButton.disabled = true;
-    if (!sequenceResolved) reviewButton.textContent = "Consultando sequência…";
-    await sequenceReady;
-    reviewButton.textContent = originalButtonText;
-    reviewButton.disabled = false;
+    const saveButton = event.currentTarget;
+    if (saveButton.disabled) return;
 
     const validSteps = steps.filter(s => s.url && s.url.length > 5);
     if (validSteps.length === 0) {
       alert("Por favor, preencha a URL de pelo menos uma etapa do funil.");
       return;
     }
+    saveButton.disabled = true;
 
-    showFunnelConfirmAppleModal({
+    const geoInput = document.getElementById("viva-side-geo");
+    const nichoInput = document.getElementById("viva-side-nicho");
+    const firstStep = validSteps[0];
+    const job = {
+      id: `funil-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      apiUrl: API_URL,
       nome: activeName,
-      slug: slug,
-      totalMetaAds: getOfficialMetaTotalResults(),
-      steps: validSteps
-    }, async (confirmBtn) => {
-      confirmBtn.textContent = "Salvando Anunciante & Funil...";
-      confirmBtn.disabled = true;
+      slug,
+      pageId: targetPageId,
+      urlPageId: new URLSearchParams(window.location.search).get("view_all_page_id"),
+      registro: {
+        url: registrationUrl,
+        tipo: registrationType,
+        geo: geoInput ? geoInput.value.trim() : "BR",
+        nicho: nichoInput ? nichoInput.value.trim() : "Geral",
+        instagram_url: getInstagramUrlFromHeader() || null,
+        ads_count_inicial: getOfficialMetaTotalResults(),
+      },
+      etapas: validSteps.map(s => ({
+        tipo: s.tipo,
+        rotulo: s.rotulo && s.rotulo.trim() !== "" ? s.rotulo.trim() : s.tipo.toUpperCase(),
+        url: s.url,
+      })),
+      // Salvou antes do sequencial responder: o background resolve o rótulo, sem travar a tela.
+      autoLabel: Boolean(!sequenceResolved && firstStep.id === 1 && firstStep.tipo === "ads" && !firstStep._labelEdited),
+    };
 
-      try {
-        // 1º Passo: Auto-Cadastro / Sincronização do Anunciante no /admin
-        const geoInput = document.getElementById("viva-side-geo");
-        const nichoInput = document.getElementById("viva-side-nicho");
-        const saveRes = await fetch(`${API_URL}/api/salvar`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            nome: activeName,
-            url: registrationUrl,
-            tipo: registrationType,
-            geo: geoInput ? geoInput.value.trim() : "BR",
-            nicho: nichoInput ? nichoInput.value.trim() : "Geral",
-            instagram_url: getInstagramUrlFromHeader() || null,
-            ads_count_inicial: getOfficialMetaTotalResults()
-          })
-        });
-
-        let authoritativeSlug = slug;
-        let authoritativeId = null;
-
-        try {
-          const saveData = await saveRes.json();
-          if (saveData) {
-            if (saveData.slug) authoritativeSlug = saveData.slug;
-            else if (saveData.player && saveData.player.slug) authoritativeSlug = saveData.player.slug;
-            if (saveData.id || saveData._id) authoritativeId = saveData.id || saveData._id;
-            else if (saveData.player && (saveData.player.id || saveData.player._id)) authoritativeId = saveData.player.id || saveData.player._id;
-          }
-        } catch (e) {}
-
-        // Busca no cache atualizado do servidor (GET /api/paginas) para garantir autoridade 100% (seja já monitorado ou recém monitorado)
-        if (typeof fetchMonitoredPages === 'function') {
-          await fetchMonitoredPages();
-        }
-        if (Array.isArray(monitoredPages)) {
-          const activeType = registrationType;
-          const matchedPlayer = targetPageId
-            ? monitoredPages.find(p => p?.tipo === "pagina" && p.url && p.url.includes(targetPageId))
-            : monitoredPages.find(p => {
-              if (!p || p.tipo !== activeType) return false;
-              const pNome = (p.nome || "").toLowerCase().trim();
-              const aNome = (activeName || "").toLowerCase().trim();
-              if (pNome && pNome === aNome) return true;
-              if (p.slug && (p.slug === authoritativeSlug || p.slug === slug)) return true;
-              const pageId = new URLSearchParams(window.location.search).get("view_all_page_id");
-              return Boolean(pageId && p.url && p.url.includes(pageId));
-            });
-          if (matchedPlayer) {
-            if (matchedPlayer.slug) authoritativeSlug = matchedPlayer.slug;
-            if (matchedPlayer.id || matchedPlayer._id) authoritativeId = matchedPlayer.id || matchedPlayer._id;
-          }
-        }
-
-        // 2º Passo: Salva todas as N etapas do funil vinculadas ao slug/ID autoritativo do servidor
-        let successCount = 0;
-        let lastErrorMsg = "";
-        const savedAdsStages = [];
-
-        for (let i = 0; i < validSteps.length; i++) {
-          const s = validSteps[i];
-          const nextStep = validSteps[i + 1];
-          const etapaPayload = {
-            slug: authoritativeSlug,
-            tipo: s.tipo,
-            rotulo: (s.rotulo && s.rotulo.trim() !== "") ? s.rotulo.trim() : s.tipo.toUpperCase(),
-            url: s.url,
-            checkout_url: nextStep ? nextStep.url : null
-          };
-          try {
-            const resEtapa = await fetch(`${API_URL}/api/funis/salvar-node`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(etapaPayload)
-            });
-            if (resEtapa.ok) {
-              successCount++;
-              if (s.tipo === "ads") savedAdsStages.push(s);
-            } else {
-              lastErrorMsg = `HTTP ${resEtapa.status}: ${await resEtapa.text()}`;
-              console.error("[VIVA LABS] Erro API ao salvar etapa:", lastErrorMsg);
-            }
-          } catch (netErr) {
-            lastErrorMsg = netErr.message;
-            console.error("[VIVA LABS] Erro de rede na etapa:", netErr);
-          }
-        }
-
-        if (successCount === 0) {
-          alert(`Atenção: Não foi possível salvar as etapas no servidor (/api/funis/salvar-node).\nMotivo: ${lastErrorMsg || "Erro desconhecido na API"}`);
-          confirmBtn.textContent = "Confirmar & Salvar Tudo";
-          confirmBtn.disabled = false;
-          return;
-        }
-
-        if (targetPageId && savedAdsStages.length > 0) {
-          try {
-            await chrome.runtime.sendMessage({
-              action: "INCREMENT_FUNIL_SEQ",
-              page_id: targetPageId,
-              count: savedAdsStages.length,
-              labels: savedAdsStages.map(step => step.rotulo),
-              total: getOfficialMetaTotalResults(),
-            });
-          } catch (error) {
-            console.warn("[VIVA] Não foi possível atualizar o sequencial local:", error.message);
-          }
-        }
-
-        const firstAdsStage = savedAdsStages[0];
-        if (firstAdsStage) {
-          showAppleToast("Funil salvo!", `${firstAdsStage.rotulo || "ADS"} com link do ADS`, "success");
-        }
-        confirmBtn.textContent = `✓ ${successCount} Etapa(s) Salvas com Sucesso!`;
-        confirmBtn.style.background = "#34C759";
-
-        setTimeout(() => {
-          const confirmModal = document.getElementById("viva-funnel-confirm-overlay");
-          if (confirmModal) confirmModal.remove();
-          if (overlay) overlay.remove();
-          if (typeof fetchMonitoredPages === 'function') fetchMonitoredPages();
-        }, 1200);
-
-      } catch (err) {
-        alert("Erro na comunicação com a API ao salvar o funil.");
-        confirmBtn.textContent = "Confirmar & Salvar Tudo";
-        confirmBtn.disabled = false;
-      }
-    });
+    vivaFunnelJobsDestaAba.add(job.id);
+    let ack;
+    try {
+      ack = await chrome.runtime.sendMessage({ action: "FUNNEL_ENQUEUE", job });
+    } catch (error) {
+      console.error("[VIVA] Não foi possível enfileirar o funil:", error.message);
+    }
+    if (!ack?.ok) {
+      saveButton.disabled = false;
+      showAppleToast("Não foi possível salvar o funil", "Recarregue a página (F5) e tente de novo", "error", 6000);
+      return;
+    }
+    overlay.remove();
+    // Se o servidor já respondeu, o aviso final está na tela: não sobrescrever.
+    if (vivaFunnelJobsDestaAba.has(job.id)) {
+      showAppleToast("Funil salvo!", "Enviando ao dashboard em segundo plano", "success");
+    }
   });
+
+  // Acorda o backend (plano gratuito hiberna) enquanto o operador preenche o modal.
+  fetch(`${API_URL}/api/healthz`, { cache: "no-store" })
+    .catch(error => console.warn("[VIVA] Backend ainda não respondeu:", error.message));
 }
 
-function showFunnelConfirmAppleModal(info, onConfirm) {
-  let overlay = document.getElementById("viva-funnel-confirm-overlay");
-  if (overlay) overlay.remove();
+const vivaFunnelJobsDestaAba = new Set();
 
-  overlay = document.createElement("div");
-  overlay.id = "viva-funnel-confirm-overlay";
-  overlay.className = "viva-confirm-overlay viva-el";
+function handleFunnelResult(result) {
+  const isOwn = vivaFunnelJobsDestaAba.has(result.id);
+  // Falha aparece em qualquer aba visível (a de origem pode já ter sido fechada).
+  if (!isOwn && !(result.status === "falhou" && document.visibilityState === "visible")) return;
 
-  const stepsHtml = info.steps.map((s, idx) => `
-    <div class="viva-funnel-summary-item">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span class="viva-funnel-summary-step-title">#${idx + 1} • [${s.tipo.toUpperCase()}] ${s.rotulo ? vivaEscapeHtml(s.rotulo) : ''}</span>
-      </div>
-      <span class="viva-funnel-summary-step-url">${vivaEscapeHtml(s.url)}</span>
-    </div>
-  `).join("");
+  if (result.status === "ok") {
+    vivaFunnelJobsDestaAba.delete(result.id);
+    showAppleToast("Funil no dashboard ✓", `${result.nome} · ${result.message}`, "success");
+    fetchMonitoredPages();
+  } else if (result.status === "tentando") {
+    showAppleToast("Funil guardado, ainda não enviado", `${result.message} Vou reenviar sozinho.`, "error", 6000);
+  } else {
+    showAppleToast(`Funil de ${result.nome} não foi salvo por completo`, result.message, "error", 12000);
+  }
+}
 
-  overlay.innerHTML = `
-    <div class="viva-confirm-card" style="width:440px;" onclick="event.stopPropagation()">
-      <div class="viva-confirm-header">
-        <div class="viva-confirm-icon">🔀</div>
-        <div>
-          <div class="viva-confirm-title">Confirmar Funil & Anunciante</div>
-          <div class="viva-confirm-sub">Auto-cadastro da página e injeção de ${info.steps.length} etapa(s)</div>
-        </div>
-      </div>
-      
-      <div class="viva-confirm-body">
-        <div class="viva-confirm-row">
-          <span class="viva-confirm-label">Anunciante Alvo:</span>
-          <span class="viva-confirm-value" title="${vivaEscapeHtml(info.nome)}">${vivaEscapeHtml(info.nome)}</span>
-        </div>
-        <div class="viva-confirm-row">
-          <span class="viva-confirm-label">Criativos Ativos (Meta):</span>
-          <span class="viva-confirm-value" style="color:#007AFF;">${info.totalMetaAds} anúncios ativos</span>
-        </div>
-        <div style="margin-top:10px; font-size:11px; color:var(--viva-muted);">
-          ✓ O anunciante será auto-cadastrado no servidor caso ainda não exista.
-        </div>
-      </div>
-
-      <div style="margin-bottom:18px; max-height:200px; overflow-y:auto;">
-        <div style="font-size:12px; font-weight:700; color:var(--viva-text); margin-bottom:6px;">
-          Resumo do Funil (${info.steps.length} Etapa${info.steps.length > 1 ? 's' : ''}):
-        </div>
-        ${stepsHtml}
-      </div>
-
-      <div class="viva-confirm-actions">
-        <button class="viva-confirm-btn viva-confirm-btn-cancel" id="viva-fmodal-cancel">Voltar</button>
-        <button class="viva-confirm-btn viva-confirm-btn-confirm" id="viva-fmodal-confirm">Confirmar & Salvar Tudo</button>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add("viva-visible"));
-
-  overlay.querySelector("#viva-fmodal-cancel").addEventListener("click", () => {
-    overlay.classList.remove("viva-visible");
-    setTimeout(() => overlay.remove(), 250);
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    const result = area === "local" ? changes.viva_funnel_result?.newValue : null;
+    if (result) handleFunnelResult(result);
   });
-
-    const confirmBtn = overlay.querySelector("#viva-fmodal-confirm");
-  confirmBtn.addEventListener("click", () => {
-    onConfirm(confirmBtn);
-  });
+} catch (error) {
+  console.warn("[VIVA] Aviso de salvamento de funil indisponível:", error.message);
 }
 
 // ─── Pop-ups Apple do botão "📢 Salvar Anúncio" (dropdown Ações de cada card) ───────────────
@@ -6162,8 +6027,6 @@ function teardownVivaMonitor(fullTeardown = false) {
   // explícita e não dependente de uma rede de segurança incidental.
   const modal = document.getElementById("viva-funnel-modal-container");
   if (modal) modal.remove();
-  const confirmModal = document.getElementById("viva-funnel-confirm-overlay");
-  if (confirmModal) confirmModal.remove();
   const topBtn = document.getElementById("viva-scroll-btn");
   if (topBtn) topBtn.remove();
   const dock = document.getElementById("viva-dock");
