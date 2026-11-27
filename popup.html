@@ -142,6 +142,16 @@
     .viral-title { font-size: 13.5px; font-weight: 600; }
     .viral-detail { font-size: 11.5px; color: var(--muted); line-height: 1.4; margin-top: 1px; overflow-wrap: anywhere; }
     .viral button { font: 600 12px inherit; font-family: inherit; background: #fff; border: 1px solid var(--sep); border-radius: 8px; padding: 6px 10px; cursor: pointer; color: var(--text); flex-shrink: 0; }
+    .foldable .team-head, .foldable .radar-head { cursor: pointer; gap: 10px; user-select: none; }
+    .foldable .team-title, .foldable .radar-title { margin-right: auto; }
+    .foldable .team-head::after, .foldable .radar-head::after {
+      content: "›"; font-size: 17px; line-height: 1; color: var(--muted);
+      width: 10px; text-align: center; transform: rotate(90deg); transition: transform .18s ease;
+    }
+    .foldable.folded .team-head::after, .foldable.folded .radar-head::after { transform: none; }
+    .foldable.folded { margin-top: 8px; min-height: 50px; display: flex; flex-direction: column; justify-content: center; }
+    .foldable.folded > :not(.team-head):not(.radar-head) { display: none !important; }
+    .foldable.folded > .team-head, .foldable.folded > .radar-head { margin-bottom: 0; }
     details.advanced { margin-top: 14px; }
     details.advanced summary {
       list-style: none;
@@ -349,5 +359,6 @@
   <script src="viral_page.js"></script>
   <script src="viral_popup.js"></script>
   <script src="popup.js"></script>
+  <script src="popup_fold.js"></script>
 </body>
 </html>
