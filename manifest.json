@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Viva Spy",
-  "version": "1.9.3",
+  "version": "1.10.0",
   "description": "Inteligência de anúncios para a Meta Ad Library: encontre as ofertas mais escaladas, em segundos.",
   "permissions": [
     "storage",
@@ -13,11 +13,13 @@
     "clipboardWrite",
     "alarms",
     "unlimitedStorage",
-    "offscreen"
+    "offscreen",
+    "scripting"
   ],
   "host_permissions": [
     "https://www.facebook.com/ads/library/*",
     "https://viva-labs-monitor.onrender.com/*",
+    "https://nutra-monitor.onrender.com/*",
     "https://zkgohmayzleupmswaeqh.supabase.co/*",
     "https://discord.com/api/webhooks/*",
     "https://discordapp.com/api/webhooks/*",
