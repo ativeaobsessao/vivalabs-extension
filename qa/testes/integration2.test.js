@@ -110,7 +110,7 @@ function makeChrome() {
   win.fetch = async () => ({ ok: true, json: async () => ({}) });
   win.console = { log() {}, info: (...a) => { if (String(a[0]).includes("DIAG")) console.log("   ", ...a); }, debug() {}, warn: (...a) => console.log("[CS WARN]", ...a), error: (...a) => console.log("[CS ERR]", ...a) };
   const vmCtx = dom.getInternalVMContext();
-  for (const f of ["intelligent_parser.js", "ranking_engine.js", "export_data.js", "content.js"]) new vm.Script(read(f), { filename: f }).runInContext(vmCtx);
+  for (const f of ["intelligent_parser.js", "ranking_engine.js", "export_data.js", "monitor_url.js", "content.js"]) new vm.Script(read(f), { filename: f }).runInContext(vmCtx);
   const run = code => new vm.Script(code).runInContext(vmCtx);
 
   // Cards falsos no DOM + processCards stub que reproduz o que o motor faz (preenche activeCardData)

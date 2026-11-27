@@ -7,6 +7,7 @@ const _vivaChecagemArquivos = {
   "ranking_engine.js": [typeof scoreCriativo, typeof acervoKey, typeof agruparOfertas, typeof acervoRemover, typeof lixeiraVazia, typeof igMapGravar],
   "intelligent_parser.js": [typeof combinarBuscaLinhas],
   "export_data.js": [typeof exportGerar],
+  "monitor_url.js": [typeof vivaMonitorUrl],
 };
 const _vivaArquivosRuins = Object.keys(_vivaChecagemArquivos).filter(arquivo => _vivaChecagemArquivos[arquivo].some(tipo => tipo !== "function"));
 if (_vivaArquivosRuins.length) {
@@ -51,7 +52,7 @@ function checkAndCleanAdModalUrl() {
 window.addEventListener("popstate", checkAndCleanAdModalUrl);
 
 // ─── Variáveis Globais de Estado ──────────────────────────────────────────────
-let API_URL = "https://viva-labs-monitor.onrender.com";
+let API_URL = vivaMonitorUrl(""); // padrão em monitor_url.js
 let monitoredPages = [];
 let cardSignatures = {};
 let isAutoScrollRunning = false;
@@ -387,9 +388,7 @@ function cleanInstagramUrl(url) {
 // hibernado. Agora só carrega a URL da API salva; a chamada de rede roda separada e em paralelo.
 async function loadLocalApiUrl() {
   const data = await chrome.storage.local.get("viva_monitor_api_url");
-  if (data.viva_monitor_api_url) {
-    API_URL = data.viva_monitor_api_url;
-  }
+  API_URL = vivaMonitorUrl(data.viva_monitor_api_url);
 }
 
 // FIX 4.1: fire-and-forget, nunca bloqueia a UI. Usa AbortController porque fetch() nativo não

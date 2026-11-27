@@ -107,7 +107,7 @@ const nodes = w => w.calls.filter(c => c.path === "/api/funis/salvar-node");
   win.IntersectionObserver = win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   win.console = { log() {}, info() {}, debug() {}, warn() {}, error() {} };
   const ctx = dom.getInternalVMContext();
-  for (const f of ["intelligent_parser.js", "ranking_engine.js", "export_data.js", "content.js"]) new vm.Script(read(f), { filename: f }).runInContext(ctx);
+  for (const f of ["intelligent_parser.js", "ranking_engine.js", "export_data.js", "monitor_url.js", "content.js"]) new vm.Script(read(f), { filename: f }).runInContext(ctx);
   await sleep(100);
   new vm.Script(`openFunnelModal("https://tsl/1", "Loja", { prefillAd: true, pageId: "123", libraryUrl: "https://ads/1" })`).runInContext(ctx);
   const t1 = Date.now();

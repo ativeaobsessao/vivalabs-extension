@@ -3,8 +3,6 @@
 
 const VIRAL_JOBS_KEY = "viva_viral_jobs";
 const VIRAL_ALARM = "viva-viral-outbox";
-const VIRAL_API_PADRAO = "https://nutra-monitor.onrender.com";
-const VIRAL_API_ANTIGA = "https://viva-labs-monitor.onrender.com"; // endereço padrão antigo, desativado
 const VIRAL_TIMEOUT_MS = 25000;
 const VIRAL_MAX_TENTATIVAS = 30;
 const VIRAL_MAX_HISTORICO = 40;
@@ -44,8 +42,7 @@ async function viralGet(id) {
 
 async function viralApiUrl() {
   const data = await chrome.storage.local.get("viva_monitor_api_url");
-  const url = String(data.viva_monitor_api_url || "").replace(/\/+$/, "");
-  return !url || url === VIRAL_API_ANTIGA ? VIRAL_API_PADRAO : url;
+  return vivaMonitorUrl(data.viva_monitor_api_url);
 }
 
 async function viralPost(url, body) {

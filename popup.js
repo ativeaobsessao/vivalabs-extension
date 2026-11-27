@@ -4,34 +4,43 @@ document.addEventListener("DOMContentLoaded", () => {
   const apiUrlInput = document.getElementById("apiUrl");
   const saveBtn = document.getElementById("saveBtn");
   const openLibraryBtn = document.getElementById("openLibraryBtn");
+  const openMonitorBtn = document.getElementById("openMonitorBtn");
   const statusDot = document.getElementById("statusDot");
   const statusText = document.getElementById("statusText");
 
-  // Carrega a URL da API salva anteriormente
+  // Endereço do sistema de monitoramento em uso (o salvo ou o padrão da equipe)
   chrome.storage.local.get("viva_monitor_api_url", (data) => {
-    if (data.viva_monitor_api_url) {
-      apiUrlInput.value = data.viva_monitor_api_url;
-      checkHealth(data.viva_monitor_api_url);
-    } else {
-      // Define padrão inicial se estiver vazio
-      apiUrlInput.value = "https://viva-labs-monitor.onrender.com";
-      checkHealth("https://viva-labs-monitor.onrender.com");
-    }
+    useMonitorUrl(vivaMonitorUrl(data.viva_monitor_api_url));
+  });
+
+  function useMonitorUrl(url) {
+    apiUrlInput.value = url;
+    openMonitorBtn.title = `${url}/dashboard`;
+    checkHealth(url);
+  }
+
+  // Lê o endereço na hora do clique, para valer mesmo logo depois de trocar.
+  openMonitorBtn.addEventListener("click", () => {
+    chrome.storage.local.get("viva_monitor_api_url", (data) => {
+      chrome.tabs.create({ url: `${vivaMonitorUrl(data.viva_monitor_api_url)}/dashboard` });
+    });
   });
 
   // Salvar Configuração
   saveBtn.addEventListener("click", () => {
-    let url = apiUrlInput.value.trim();
-    if (!url) return;
-
-    // Remove barra invertida do final se houver
-    if (url.endsWith("/")) {
-      url = url.slice(0, -1);
+    const digitado = apiUrlInput.value.trim();
+    if (!digitado) return;
+    const lido = vivaMonitorLer(digitado);
+    if (!lido) {
+      statusDot.className = "status-dot offline";
+      statusText.textContent = "Endereço inválido";
+      return;
     }
+    const url = vivaMonitorUrl(lido);
 
     chrome.storage.local.set({ "viva_monitor_api_url": url }, () => {
       console.log("Configuração salva:", url);
-      checkHealth(url);
+      useMonitorUrl(url);
       
       // Feedback temporário no botão
       const originalText = saveBtn.textContent;

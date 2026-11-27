@@ -33,6 +33,7 @@ function makeWorld({ latency = 0, respond } = {}) {
     },
   };
   vm.createContext(bg);
+  vm.runInContext(read("monitor_url.js"), bg);
   vm.runInContext(read("viral_url.js"), bg);
   vm.runInContext(read("viral_outbox.js"), bg);
   world.parse = url => clone(bg.viralParseUrl(url));
@@ -98,6 +99,11 @@ const VIDEO = "https://www.tiktok.com/@ana/video/7000000000000000001?x=1";
   w = makeWorld({ respond: () => ({ status: 404, body: null }) });
   r = await w.save(VIDEO); await w.process();
   check("servidor sem a área nova: avisa e marca o ícone", w.job(r.id).status === "falhou" && /404/.test(w.job(r.id).erro) && w.badges.includes("!"));
+
+  const monitor = salvo => vm.runInNewContext(`${read("monitor_url.js")}; vivaMonitorUrl(${JSON.stringify(salvo)})`, { URL });
+  check("botão: sem nada salvo abre o Nutra Monitor", monitor("") === "https://nutra-monitor.onrender.com");
+  check("botão: aceita o link do dashboard colado inteiro", monitor("outro-monitor.onrender.com/dashboard/") === "https://outro-monitor.onrender.com");
+  check("botão: endereço desativado cai no padrão", monitor("https://viva-labs-monitor.onrender.com/") === "https://nutra-monitor.onrender.com");
 
   console.log(fails ? `${fails} FALHA(S)` : "TUDO OK");
   process.exit(fails ? 1 : 0);

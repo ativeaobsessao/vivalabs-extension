@@ -60,6 +60,8 @@
     .btn-secondary { background: var(--fill); color: var(--text); }
     .btn-secondary:hover { background: var(--fill-hover); }
 
+    #openMonitorBtn { margin-top: 8px; }
+
     .group {
       margin-top: 12px;
       background: var(--fill);
@@ -209,6 +211,15 @@
     Abrir Meta Ad Library
   </button>
 
+  <button class="btn btn-secondary" id="openMonitorBtn" type="button">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <line x1="5" y1="20" x2="5" y2="12"></line>
+      <line x1="12" y1="20" x2="12" y2="4"></line>
+      <line x1="19" y1="20" x2="19" y2="9"></line>
+    </svg>
+    Abrir Sistema de Monitoramento
+  </button>
+
   <div class="group" id="monitorToggleBox">
     <div class="toggle-container">
       <div class="toggle-info">
@@ -327,12 +338,13 @@
   <details class="advanced">
     <summary>Conexão com o monitor</summary>
     <div class="advanced-body">
-      <label class="field-label" for="apiUrl">URL do Monitor API</label>
-      <input type="url" id="apiUrl" placeholder="https://viva-labs-monitor.onrender.com" required>
+      <label class="field-label" for="apiUrl">Endereço do sistema (usado pelo botão e para salvar)</label>
+      <input type="url" id="apiUrl" placeholder="https://nutra-monitor.onrender.com" required>
       <button class="btn btn-secondary" id="saveBtn" type="button">Salvar</button>
     </div>
   </details>
 
+  <script src="monitor_url.js"></script>
   <script src="viral_url.js"></script>
   <script src="viral_page.js"></script>
   <script src="viral_popup.js"></script>

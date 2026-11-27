@@ -109,7 +109,7 @@ function makeChrome() {
   const silent = { log() {}, info() {}, debug() {}, warn: (...a) => console.log("[CS WARN]", ...a), error: (...a) => console.log("[CS ERR]", ...a) };
   win.console = silent;
   const vmCtx = dom.getInternalVMContext();
-  for (const f of ["intelligent_parser.js", "ranking_engine.js", "export_data.js", "content.js"]) new vm.Script(read(f), { filename: f }).runInContext(vmCtx);
+  for (const f of ["intelligent_parser.js", "ranking_engine.js", "export_data.js", "monitor_url.js", "content.js"]) new vm.Script(read(f), { filename: f }).runInContext(vmCtx);
   await sleep(300);
 
   // fetch do content: registra o que vai para /api/salvar (Monitorar)
