@@ -1,5 +1,5 @@
 // Reconhece o link de um post viral (TikTok, Instagram, YouTube Shorts) e padroniza a URL.
-// Usado pelo popup e pelo background. As mesmas regras existem no servidor (viral-posts.js).
+// Usado pelo cartão da página e pelo background. As mesmas regras existem no servidor (viral-posts.js).
 
 const VIRAL_REDES = { tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube Shorts" };
 

@@ -23,8 +23,9 @@ function makeWorld({ latency = 0, respond } = {}) {
       action: { async setBadgeText(o) { badges.push(o.text); }, async setBadgeBackgroundColor() {} },
     },
     console: { log() {}, warn() {}, error() {} }, setTimeout, clearTimeout, AbortController, URL, JSON, Date, Math,
-    fetch: async (url, opt) => {
-      const call = { url, path: new URL(url).pathname, body: JSON.parse(opt.body) };
+    encodeURIComponent,
+    fetch: async (url, opt = {}) => {
+      const call = { url, path: new URL(url).pathname, body: opt.body ? JSON.parse(opt.body) : null };
       calls.push(call);
       await sleep(latency);
       const r = world.respond(call);
@@ -38,7 +39,9 @@ function makeWorld({ latency = 0, respond } = {}) {
   vm.runInContext(read("viral_outbox.js"), bg);
   world.parse = url => clone(bg.viralParseUrl(url));
   world.feed = url => bg.viralIsFeed(url);
-  world.save = url => bg.viralEnqueue({ url });
+  world.save = (url, etiquetas = {}) => bg.viralEnqueue({ url, ...etiquetas });
+  world.nichos = async () => clone(await bg.viralNichos());
+  world.status = async url => clone(await bg.viralStatus(url));
   world.undo = id => bg.viralUndo(id);
   world.process = () => bg.viralProcess();
   world.job = id => (store.viva_viral_jobs || []).find(j => j.id === id);
@@ -99,6 +102,53 @@ const VIDEO = "https://www.tiktok.com/@ana/video/7000000000000000001?x=1";
   w = makeWorld({ respond: () => ({ status: 404, body: null }) });
   r = await w.save(VIDEO); await w.process();
   check("servidor sem a área nova: avisa e marca o ícone", w.job(r.id).status === "falhou" && /404/.test(w.job(r.id).erro) && w.badges.includes("!"));
+
+  // Etiquetas: vão no envio e o nome oficial do nicho volta do servidor.
+  w = makeWorld({ respond: () => ({ status: 200, body: { id: 3, criado: true, nicho: "Diabetes" } }) });
+  r = await w.save(VIDEO, { nicho: "diabetes", idioma: "en", geo: "US", legenda: "Sugar trick", intruso: "x" }); await w.process();
+  const enviado = w.calls[0].body;
+  check("envia nicho, idioma, GEO e legenda (e só isso)", enviado.nicho === "diabetes" && enviado.idioma === "en" && enviado.geo === "US" && enviado.legenda === "Sugar trick" && !("intruso" in enviado));
+  check("guarda o nome oficial do nicho", w.job(r.id).nicho === "Diabetes");
+
+  // Corrigir o nicho do próprio post mantém o "Desfazer", que apaga o post.
+  let primeira = true;
+  w = makeWorld({ respond: c => (c.path.endsWith("remover") ? { status: 200, body: { removido: true } }
+    : { status: 200, body: { id: 7, criado: primeira ? !(primeira = false) : false, nicho: c.body.nicho } }) });
+  const a = await w.save(VIDEO, { nicho: "Diabetes" }); await w.process();
+  r = await w.save(VIDEO, { nicho: "Menopausa" }); await w.process();
+  check("correção vai ao servidor e ainda dá para desfazer", w.calls.length === 2 && w.calls[1].body.nicho === "Menopausa" && w.job(r.id).podeDesfazer === true);
+  await w.undo(r.id); await w.process();
+  check("desfazer apaga e nenhum registro continua 'salvo'", w.job(r.id).status === "desfeito" && w.job(a.id).status === "desfeito" && w.calls[2].body.id === 7);
+
+  // Desfazer com a correção ainda na fila (sem rede) apaga o post já salvo.
+  let rede = true;
+  w = makeWorld({ respond: c => (!rede ? "offline" : c.path.endsWith("remover") ? { status: 200, body: { removido: true } } : { status: 200, body: { id: 8, criado: true } }) });
+  await w.save(VIDEO, { nicho: "Diabetes" }); await w.process();
+  rede = false;
+  r = await w.save(VIDEO, { nicho: "Menopausa" }); await w.process();
+  await w.undo(r.id); await w.process();
+  rede = true; await w.process();
+  check("desfazer correção na fila apaga o post", w.job(r.id).status === "desfeito" && w.calls.filter(c => c.path === "/api/virais/remover").some(c => c.body.id === 8), w.job(r.id).status);
+
+  // Toque repetido não duplica o envio.
+  w = makeWorld({ latency: 100 });
+  const um = await w.save(VIDEO, { nicho: "Diabetes" }); const dois = await w.save(VIDEO, { nicho: "Diabetes" }); await w.process();
+  check("toque duplo vira um envio só", um.id === dois.id && w.calls.length === 1);
+
+  // Lista de nichos e consulta de post salvo.
+  let semRede = false;
+  w = makeWorld({ respond: c => (semRede ? "offline" : c.path === "/api/nichos"
+    ? { status: 200, body: { nichos: [{ id: 1, nome: "Emagrecimento" }, { id: 9, nome: "Próstata" }] } }
+    : c.path === "/api/virais/consulta" ? { status: 200, body: { salvo: true, nicho: "Próstata", idioma: "en", geo: "US" } }
+    : { status: 200, body: { id: 4, criado: true, nicho: "Visão" } }) });
+  check("nichos vêm do servidor", (await w.nichos()).nomes.join() === "Emagrecimento,Próstata");
+  await w.save(VIDEO, { nicho: "visão" }); await w.process();
+  check("nicho novo já entra na lista guardada", (await w.nichos()).nomes.includes("Visão"));
+  const st = await w.status(VIDEO);
+  check("consulta diz que já está salvo", st.salvo === true && st.nicho === "Próstata" && w.calls.some(c => c.url.includes("consulta?url=https%3A%2F%2Fwww.tiktok.com")));
+  semRede = true; w.store.viva_viral_nichos = undefined; delete w.store.viva_viral_nichos;
+  check("sem rede usa a lista inicial", (await w.nichos()).nomes.length === 6);
+  check("sem rede a consulta não inventa", (await w.status(VIDEO)).ok === false);
 
   const monitor = salvo => vm.runInNewContext(`${read("monitor_url.js")}; vivaMonitorUrl(${JSON.stringify(salvo)})`, { URL });
   check("botão: sem nada salvo abre o Nutra Monitor", monitor("") === "https://nutra-monitor.onrender.com");

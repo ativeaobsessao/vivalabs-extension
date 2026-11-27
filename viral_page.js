@@ -1,5 +1,5 @@
-// Roda DENTRO da aba (chrome.scripting) para descobrir qual post está no meio da tela num feed.
-// Precisa ser autocontida. Na dúvida devolve null: é melhor não salvar do que salvar o post errado.
+// Descobre qual post está no meio da tela num feed (usado pelo cartão da página).
+// Na dúvida devolve null: é melhor não salvar do que salvar o post errado.
 function viralFindPostOnScreen() {
   const centro = innerHeight / 2;
   const alturaVisivel = el => {
@@ -15,6 +15,11 @@ function viralFindPostOnScreen() {
   const tiktok = /(^|\.)tiktok\.com$/.test(location.hostname);
   const instagram = /(^|\.)instagram\.com$/.test(location.hostname);
   let no = instagram ? maisVisivel("article") : maisVisivel("video");
+  const publicacao = no;
+  let idSozinho = null;
+  const perfisEm = raiz => new Set(Array.from(raiz.querySelectorAll('a[href*="/@"]'))
+    .map(link => link.pathname.match(/^\/@([\w.-]+)\/?$/)?.[1]).filter(Boolean));
+  const tiktokPorId = (autor, id) => ({ url: `https://www.tiktok.com/@${autor}/video/${id}`, autor });
 
   for (let nivel = 0; no && no !== document.body && nivel < 14; nivel++, no = no.parentElement) {
     const posts = new Map();
@@ -38,14 +43,22 @@ function viralFindPostOnScreen() {
         const id = /^xgwrapper-\d+-(\d{15,})$/.exec(el.id || "");
         if (id) ids.add(id[1]);
       }
-      const perfis = new Set(Array.from(no.querySelectorAll('a[href*="/@"]'))
-        .map(link => link.pathname.match(/^\/@([\w.-]+)\/?$/)?.[1]).filter(Boolean));
-      if (ids.size > 1) return null;
-      if (ids.size === 1 && perfis.size === 1) {
-        const autor = perfis.values().next().value;
-        return { url: `https://www.tiktok.com/@${autor}/video/${ids.values().next().value}`, autor };
+      const perfis = perfisEm(no);
+      if (ids.size > 1) break; // subiu até a lista: já passou da publicação
+      if (ids.size === 1) {
+        idSozinho = ids.values().next().value;
+        if (perfis.size === 1) return tiktokPorId(perfis.values().next().value, idSozinho);
       }
     }
   }
-  return null;
+  if (!tiktok || !idSozinho) return null;
+  // Layout em coluna: o perfil do vídeo da tela fica numa camada por cima, fora da publicação.
+  const camadas = document.querySelectorAll('[data-e2e="anchoring-description-layer"]');
+  if (camadas.length !== 1) return null;
+  const camada = camadas[0].getBoundingClientRect();
+  const meio = (camada.top + camada.bottom) / 2;
+  const caixa = publicacao.closest("article")?.getBoundingClientRect() || publicacao.getBoundingClientRect();
+  if (!camada.height || meio < caixa.top || meio > caixa.bottom) return null;
+  const donos = perfisEm(camadas[0]);
+  return donos.size === 1 ? tiktokPorId(donos.values().next().value, idSozinho) : null;
 }

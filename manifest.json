@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Viva Spy",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "Inteligência de anúncios para a Meta Ad Library: encontre as ofertas mais escaladas, em segundos.",
   "permissions": [
     "storage",
@@ -13,8 +13,7 @@
     "clipboardWrite",
     "alarms",
     "unlimitedStorage",
-    "offscreen",
-    "scripting"
+    "offscreen"
   ],
   "host_permissions": [
     "https://www.facebook.com/ads/library/*",
@@ -56,6 +55,15 @@
         "https://*.facebook.com/ads/library/*"
       ],
       "js": ["social_helper.js"]
+    },
+    {
+      "matches": [
+        "https://*.tiktok.com/*",
+        "https://*.instagram.com/*",
+        "https://*.youtube.com/*"
+      ],
+      "js": ["viral_url.js", "viral_page.js", "viral_card.js"],
+      "run_at": "document_start"
     }
   ],
   "icons": {
