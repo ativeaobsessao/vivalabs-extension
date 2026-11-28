@@ -79,9 +79,12 @@ function makeChrome() {
   vm.runInContext(read("intelligent_parser.js"), bgCtx);
   vm.runInContext(read("ranking_engine.js"), bgCtx);
   vm.runInContext(read("export_data.js"), bgCtx);
+  vm.runInContext(read("intel_core.js"), bgCtx);
   vm.runInContext(read("team_sync.js"), bgCtx);
   vm.runInContext(read("notify.js"), bgCtx);
   vm.runInContext(read("auto_export.js"), bgCtx);
+  vm.runInContext(read("intel_espaco.js"), bgCtx);
+  vm.runInContext(read("intel_abas.js"), bgCtx);
   vm.runInContext(read("radar.js"), bgCtx);
   vm.runInContext(read("background.js"), bgCtx);
   check("background carregou e registrou listener", env.bgMessageListeners.length === 1);

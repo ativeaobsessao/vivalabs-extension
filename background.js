@@ -1,6 +1,6 @@
 // Viva Spy - Background Service Worker
 
-importScripts("intelligent_parser.js", "ranking_engine.js", "export_data.js", "team_sync.js", "notify.js", "auto_export.js", "radar.js", "funnel_outbox.js", "monitor_url.js", "viral_url.js", "viral_outbox.js");
+importScripts("intelligent_parser.js", "ranking_engine.js", "export_data.js", "intel_core.js", "team_sync.js", "notify.js", "auto_export.js", "intel_espaco.js", "intel_abas.js", "radar.js", "funnel_outbox.js", "monitor_url.js", "viral_url.js", "viral_outbox.js");
 console.info("[VIVA] Infra inteligente instalada - parser + fila + ranking");
 
 // Regra dinâmica ID para declarativeNetRequest (Mobile User-Agent)
@@ -948,7 +948,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   else if (message.action === "EXPORT_NOW") {
-    aexpBaixarAgora()
+    // com o banco de 150 mil, "baixar agora" traz o banco inteiro, não só o que está neste computador
+    aexpBancoAtivo().then(banco => (banco ? espacoBaixarAgora() : aexpBaixarAgora()))
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "ESPACO_ACESSO") {
+    espacoVerificar({ acesso: true }).then(sendResponse);
+    return true;
+  }
+
+  else if (message.action === "INTEL_OPEN") {
+    abrirCentro(sender)
+      .then(sendResponse)
+      .catch(error => sendResponse({ status: "error", error: error.message }));
+    return true;
+  }
+
+  else if (message.action === "INTEL_VOLTAR") {
+    voltarParaBiblioteca(sender)
       .then(sendResponse)
       .catch(error => sendResponse({ status: "error", error: error.message }));
     return true;
@@ -1051,6 +1071,7 @@ radarInit({
 radarRegistrarEventos();
 aexpRegistrarEventos();
 aexpAgendarVerificacao();   // ao acordar, confere se já está na hora do download automático
+espacoRegistrarEventos();   // banco da equipe: selo e aviso quando o espaço está acabando
 
 // FIX ITEM 9: retoma automaticamente qualquer fila deixada pendente por uma suspensão anterior
 // do service worker — roda toda vez que este script acorda, seja por qual evento for.

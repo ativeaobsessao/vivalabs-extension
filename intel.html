@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Centro de Inteligência · Viva Spy</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="intel.css">
+</head>
+<body>
+  <header class="topo">
+    <button type="button" class="voltar" id="voltar">← Voltar à Biblioteca</button>
+    <div class="titulo">
+      <h1>Centro de Inteligência</h1>
+      <p id="limiteTexto">Agora o limite é de <strong>150 mil anúncios</strong>.</p>
+    </div>
+    <div class="medidor" id="medidor">
+      <span id="medidorTexto">Carregando…</span>
+      <div class="barra"><i id="medidorBarra"></i></div>
+    </div>
+  </header>
+
+  <section class="alerta" id="alerta" role="alert" hidden></section>
+  <section class="aviso" id="aviso" hidden></section>
+
+  <div class="barra-principal">
+    <nav class="abas" id="abas" aria-label="Visões">
+      <button type="button" data-aba="criativos">Criativos</button>
+      <button type="button" data-aba="ofertas">Ofertas</button>
+      <button type="button" data-aba="paginas">Bibliotecas</button>
+    </nav>
+    <input type="search" id="busca" placeholder="Buscar por nome, domínio ou texto" aria-label="Buscar" maxlength="200">
+    <select id="ordem" aria-label="Ordenar">
+      <option value="score">Mais escalados primeiro</option>
+      <option value="menor">Menos escalados primeiro</option>
+      <option value="dup">Mais cópias</option>
+      <option value="dias">Há mais tempo no ar</option>
+      <option value="novos">Mais novos</option>
+    </select>
+    <button type="button" class="botao" id="selecionar" aria-pressed="false">Selecionar</button>
+    <button type="button" class="botao" id="opcoes" aria-label="Mais opções">⋯</button>
+  </div>
+
+  <div class="filtros" id="filtros">
+    <div class="pilulas" id="escala" role="group" aria-label="Escala">
+      <button type="button" data-escala="todos">Todos</button>
+      <button type="button" data-escala="agora">Escalando agora</button>
+      <button type="button" data-escala="bruta">Escala bruta</button>
+      <button type="button" data-escala="monstro">Escala monstro</button>
+    </div>
+    <select id="nicho" aria-label="Nicho"><option value="">Todos os nichos</option></select>
+    <select id="dias" aria-label="Dias no ar">
+      <option value="">Qualquer tempo no ar</option>
+      <option value="1-7">1 a 7 dias</option>
+      <option value="8-14">8 a 14 dias</option>
+      <option value="15-29">15 a 29 dias</option>
+      <option value="30+">30 dias ou mais</option>
+    </select>
+    <select id="formato" aria-label="Formato">
+      <option value="">Vídeo e imagem</option>
+      <option value="video">Só vídeo</option>
+      <option value="imagem">Só imagem</option>
+    </select>
+    <button type="button" class="botao" id="maisFiltros" aria-expanded="false">Mais filtros</button>
+  </div>
+
+  <div class="mais-filtros" id="painelFiltros" hidden>
+    <label class="campo"><span>Mínimo de cópias</span><input type="number" id="copiasMin" min="0" inputmode="numeric"></label>
+    <label class="campo"><span>Mínimo de ads na biblioteca</span><input type="number" id="advMin" min="0" inputmode="numeric"></label>
+    <label class="campo"><span>Termo de busca</span><select id="termo"><option value="">Todos</option></select></label>
+    <label class="campo"><span>Quem achou</span><select id="quem"><option value="">Todos</option></select></label>
+    <label class="campo"><span>Status</span>
+      <select id="status">
+        <option value="ativas">Sem os descartados</option>
+        <option value="todas">Todos</option>
+        <option value="nova">Nova</option>
+        <option value="analise">Em análise</option>
+        <option value="minerada">Minerada</option>
+        <option value="descartada">Descartada</option>
+      </select>
+    </label>
+    <label class="marca"><input type="checkbox" id="novos24"> Vistos nas últimas 24 h</label>
+    <label class="marca"><input type="checkbox" id="subindo"> Biblioteca crescendo</label>
+    <div class="salvos">
+      <label class="campo"><span>Filtros salvos</span><select id="salvos"><option value="">Escolher…</option></select></label>
+      <label class="campo"><span>Salvar o filtro atual como</span><input type="text" id="salvoNome" maxlength="40" placeholder="Nome do filtro"></label>
+      <button type="button" class="botao" id="salvoGravar">Salvar</button>
+      <button type="button" class="botao" id="salvoExcluir">Excluir salvo</button>
+    </div>
+  </div>
+
+  <div class="resumo">
+    <span id="contagem" aria-live="polite"></span>
+    <span class="recorte" id="recorte"></span>
+    <button type="button" class="limpar" id="limpar" hidden>Limpar filtros</button>
+    <span class="radar" id="radar"></span>
+  </div>
+
+  <main class="grade" id="grade"></main>
+
+  <nav class="paginas" id="paginas" aria-label="Páginas" hidden>
+    <button type="button" class="botao" id="anterior">← Anterior</button>
+    <span id="paginaTexto"></span>
+    <button type="button" class="botao" id="proxima">Próxima →</button>
+  </nav>
+
+  <div class="barra-selecao" id="barraSelecao" hidden>
+    <strong id="selContagem">0 selecionados</strong>
+    <button type="button" class="botao" id="selTodos">Selecionar todos do filtro</button>
+    <button type="button" class="botao" id="selDescartar">Descartar</button>
+    <button type="button" class="botao perigo" id="selApagar">Apagar definitivamente</button>
+    <button type="button" class="botao" id="selBaixar">Baixar planilha</button>
+    <button type="button" class="botao" id="selCancelar">Cancelar</button>
+  </div>
+
+  <aside class="painel" id="painel" aria-label="Detalhes do anúncio" hidden></aside>
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="ranking_engine.js"></script>
+  <script src="export_data.js"></script>
+  <script src="intel_core.js"></script>
+  <script src="team_sync.js"></script>
+  <script src="intel_source.js"></script>
+  <script src="intel_view.js"></script>
+  <script src="intel_panel.js"></script>
+  <script src="intel_acoes.js"></script>
+  <script src="intel_cabecalho.js"></script>
+  <script src="intel.js"></script>
+</body>
+</html>

@@ -299,7 +299,6 @@
   color: var(--viva-accent) !important;
 }
 
-
 /* O Divisor da Cápsula */
 .viva-badge-divider {
   width: 1px;
@@ -2038,34 +2037,6 @@ body {
   contain: layout style paint !important;
 }
 
-.viva-ranking-overlay {
-  position: fixed !important;
-  inset: 0 !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  padding: 20px !important;
-  background: rgba(245, 245, 247, 0.92) !important;
-  backdrop-filter: blur(20px) !important;
-  -webkit-backdrop-filter: blur(20px) !important;
-  z-index: 2147483647 !important;
-  box-sizing: border-box !important;
-}
-
-.viva-ranking-modal {
-  width: 100% !important;
-  max-width: 1100px !important;
-  max-height: 85vh !important;
-  display: flex !important;
-  flex-direction: column !important;
-  background: #fff !important;
-  border: 1px solid rgba(0, 0, 0, 0.08) !important;
-  border-radius: 16px !important;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15) !important;
-  overflow: hidden !important;
-  color: #1d1d1f !important;
-}
-
 .viva-ranking-header {
   display: flex !important;
   align-items: flex-start !important;
@@ -2087,22 +2058,6 @@ body {
   margin: 4px 0 0 !important;
   color: #86868b !important;
   font-size: 12px !important;
-}
-
-.viva-close-btn {
-  flex: 0 0 auto !important;
-  min-height: 34px !important;
-  padding: 0 12px !important;
-  border: 0 !important;
-  border-radius: 9px !important;
-  background: #f0f0f5 !important;
-  color: #1d1d1f !important;
-  font: 600 12px var(--viva-font) !important;
-  cursor: pointer !important;
-}
-
-.viva-close-btn:hover {
-  background: #e5e5ea !important;
 }
 
 .viva-ranking-table-scroll {
@@ -2248,29 +2203,12 @@ body {
   cursor: pointer !important;
 }
 
-.viva-ranking-actions .viva-ver-ads-btn {
-  color: #fff !important;
-  background: #007aff !important;
-}
-
 .viva-ranking-actions button:disabled {
   opacity: 0.6 !important;
   cursor: default !important;
 }
 
-.viva-sidebar.viva-ranking-suspended {
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
-
 @media (max-width: 720px) {
-  .viva-ranking-overlay {
-    padding: 8px !important;
-  }
-
-  .viva-ranking-modal {
-    max-height: 94vh !important;
-  }
 
   .viva-ranking-header {
     padding: 14px !important;
@@ -2386,227 +2324,6 @@ body {
   cursor: pointer !important;
 }
 .viva-btn-abrir-centro[hidden] { display: none !important; }
-
-.viva-intel-modal {
-  max-width: 1180px !important;
-  height: 88vh !important;
-  max-height: 88vh !important;
-}
-.viva-intel-header {
-  display: flex !important;
-  align-items: flex-start !important;
-  justify-content: space-between !important;
-  gap: 16px !important;
-  padding: 18px 22px 12px !important;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.07) !important;
-}
-.viva-intel-header h2 {
-  margin: 0 !important;
-  color: #1d1d1f !important;
-  font: 750 20px var(--viva-font) !important;
-}
-.viva-intel-header p {
-  margin: 4px 0 0 !important;
-  color: #6e6e73 !important;
-  font: 500 12px var(--viva-font) !important;
-}
-.viva-intel-header-actions {
-  display: flex !important;
-  gap: 8px !important;
-  flex: 0 0 auto !important;
-}
-.viva-intel-ghost {
-  min-height: 34px !important;
-  padding: 0 12px !important;
-  color: #6e6e73 !important;
-  background: transparent !important;
-  border: 1px solid rgba(0, 0, 0, 0.12) !important;
-  border-radius: 9px !important;
-  font: 600 12px var(--viva-font) !important;
-  cursor: pointer !important;
-}
-.viva-intel-ghost:hover { color: #d70015 !important; border-color: #d70015 !important; }
-
-.viva-intel-toolbar {
-  display: flex !important;
-  flex-wrap: wrap !important;
-  align-items: center !important;
-  gap: 10px !important;
-  padding: 12px 22px !important;
-  background: #fafafc !important;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.07) !important;
-}
-.viva-intel-toolbar[hidden], .viva-intel-chips[hidden], .viva-intel-toolbar select[hidden] { display: none !important; }
-.viva-intel-tabs {
-  display: inline-flex !important;
-  padding: 3px !important;
-  background: #ececf1 !important;
-  border-radius: 10px !important;
-}
-.viva-intel-tabs button {
-  padding: 6px 14px !important;
-  color: #3a3a3c !important;
-  background: transparent !important;
-  border: 0 !important;
-  border-radius: 8px !important;
-  font: 650 12px var(--viva-font) !important;
-  cursor: pointer !important;
-}
-.viva-intel-tabs button.is-active {
-  color: #1d1d1f !important;
-  background: #fff !important;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14) !important;
-}
-.viva-intel-chips { display: inline-flex !important; flex-wrap: wrap !important; gap: 6px !important; }
-.viva-intel-filter {
-  padding: 6px 11px !important;
-  color: #3a3a3c !important;
-  background: #fff !important;
-  border: 1px solid rgba(0, 0, 0, 0.12) !important;
-  border-radius: 999px !important;
-  font: 600 12px var(--viva-font) !important;
-  cursor: pointer !important;
-}
-.viva-intel-filter.is-active {
-  color: #fff !important;
-  background: #1d1d1f !important;
-  border-color: #1d1d1f !important;
-}
-.viva-intel-toolbar select,
-.viva-intel-toolbar input[type="search"] {
-  min-height: 32px !important;
-  padding: 0 10px !important;
-  color: #1d1d1f !important;
-  background: #fff !important;
-  border: 1px solid rgba(0, 0, 0, 0.14) !important;
-  border-radius: 9px !important;
-  font: 500 12px var(--viva-font) !important;
-}
-.viva-intel-toolbar select { max-width: 220px !important; }
-.viva-intel-toolbar input[type="search"] { flex: 1 1 200px !important; min-width: 160px !important; }
-
-.viva-intel-list {
-  flex: 1 1 auto !important;
-  overflow-y: auto !important;
-  padding: 14px 22px 22px !important;
-  display: flex !important;
-  flex-direction: column !important;
-  gap: 12px !important;
-  background: #f5f5f7 !important;
-}
-.viva-intel-card {
-  position: relative !important;
-  display: flex !important;
-  align-items: stretch !important;
-  gap: 14px !important;
-  padding: 12px 14px 12px 12px !important;
-  background: #fff !important;
-  border: 1px solid rgba(0, 0, 0, 0.07) !important;
-  border-left: 4px solid #d1d1d6 !important;
-  border-radius: 14px !important;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.05) !important;
-}
-.viva-intel-card.is-hot { border-left-color: #ff3b30 !important; box-shadow: 0 2px 14px rgba(255, 59, 48, 0.14) !important; }
-.viva-intel-rank {
-  flex: 0 0 34px !important;
-  align-self: center !important;
-  color: #8e8e93 !important;
-  font: 750 13px var(--viva-font) !important;
-  text-align: center !important;
-}
-.viva-intel-thumb {
-  flex: 0 0 132px !important;
-  width: 132px !important;
-  min-height: 132px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  overflow: hidden !important;
-  background: #ececf1 !important;
-  border-radius: 10px !important;
-  text-decoration: none !important;
-}
-.viva-intel-thumb img {
-  width: 100% !important;
-  height: 100% !important;
-  max-height: 190px !important;
-  object-fit: cover !important;
-  display: block !important;
-}
-.viva-intel-thumb-ph { font-size: 34px !important; opacity: 0.55 !important; }
-.viva-intel-body { flex: 1 1 auto !important; min-width: 0 !important; display: flex !important; flex-direction: column !important; gap: 8px !important; }
-.viva-intel-topline { display: flex !important; align-items: center !important; flex-wrap: wrap !important; gap: 8px !important; }
-.viva-intel-name { color: #1d1d1f !important; font: 700 14px var(--viva-font) !important; }
-.viva-intel-chip {
-  padding: 3px 8px !important;
-  color: #3a3a3c !important;
-  background: #ececf1 !important;
-  border-radius: 999px !important;
-  font: 700 10px var(--viva-font) !important;
-  letter-spacing: 0.2px !important;
-  white-space: nowrap !important;
-}
-.viva-intel-chip.hot { color: #fff !important; background: linear-gradient(135deg, #ff3b30, #d70015) !important; }
-.viva-intel-chip.monstro { color: #fff !important; background: #af52de !important; }
-.viva-intel-chip.bruta { color: #fff !important; background: #ff3b30 !important; }
-.viva-intel-copy {
-  margin: 0 !important;
-  display: -webkit-box !important;
-  -webkit-line-clamp: 3 !important;
-  -webkit-box-orient: vertical !important;
-  overflow: hidden !important;
-  color: #3a3a3c !important;
-  font: 400 12px/1.45 var(--viva-font) !important;
-}
-.viva-intel-pills { display: flex !important; flex-wrap: wrap !important; gap: 6px !important; }
-.viva-intel-pill {
-  padding: 3px 9px !important;
-  color: #3a3a3c !important;
-  background: #f2f2f7 !important;
-  border-radius: 999px !important;
-  font: 600 11px var(--viva-font) !important;
-}
-.viva-intel-pill.strong { color: #b00010 !important; background: #ffe5e3 !important; }
-.viva-intel-pill.muted { color: #8e8e93 !important; }
-.viva-intel-actions { display: flex !important; flex-wrap: wrap !important; gap: 6px !important; margin-top: auto !important; }
-.viva-intel-actions button {
-  min-height: 28px !important;
-  padding: 0 11px !important;
-  border: 0 !important;
-  border-radius: 8px !important;
-  color: #1d1d1f !important;
-  background: #ececf1 !important;
-  font: 650 11px var(--viva-font) !important;
-  cursor: pointer !important;
-}
-.viva-intel-actions .viva-ver-ads-btn:first-child { color: #fff !important; background: #007aff !important; }
-.viva-intel-actions .viva-monitor-btn { color: #fff !important; background: #34c759 !important; }
-.viva-intel-actions button:disabled { opacity: 0.5 !important; cursor: default !important; }
-.viva-intel-score {
-  flex: 0 0 64px !important;
-  align-self: center !important;
-  text-align: center !important;
-  color: #1d1d1f !important;
-}
-.viva-intel-score strong { display: block !important; font: 800 24px var(--viva-font) !important; }
-.viva-intel-score small { color: #8e8e93 !important; font: 600 10px var(--viva-font) !important; text-transform: uppercase !important; }
-.viva-intel-card.is-hot .viva-intel-score strong { color: #d70015 !important; }
-.viva-intel-page .viva-intel-body { padding: 4px 0 !important; }
-.viva-intel-empty {
-  margin: 40px auto !important;
-  max-width: 460px !important;
-  text-align: center !important;
-  color: #6e6e73 !important;
-  font: 500 13px/1.5 var(--viva-font) !important;
-}
-.viva-intel-empty strong { display: block !important; margin-bottom: 6px !important; color: #1d1d1f !important; font-size: 16px !important; }
-
-@media (max-width: 720px) {
-  .viva-intel-thumb { flex-basis: 84px !important; width: 84px !important; min-height: 84px !important; }
-  .viva-intel-score { flex-basis: 48px !important; }
-  .viva-intel-rank span { display: none !important; }
-}
-
 
 /* ═══ VIVA SPY — REDESIGN VISUAL (v9) ════════════════════════════════════════════════════════
    Somente a parte fixa da interface (barra superior, painel lateral, dock, Busca Inteligente,
@@ -2751,6 +2468,11 @@ body {
 .viva-btn-centro .viva-dock-count.has-hot {
   color: #fff !important;
   background: #ff3b30 !important;
+}
+/* Banco da equipe no limite de 150 mil */
+.viva-btn-centro .viva-dock-count.is-full {
+  color: #fff !important;
+  background: #ff9500 !important;
 }
 
 /* ── Painel lateral ─────────────────────────────────────────────────────────────────────── */
@@ -2933,16 +2655,6 @@ body { padding-bottom: 0 !important; }
   font: 600 13px var(--viva-font) !important;
 }
 
-/* ── Centro de Inteligência ─────────────────────────────────────────────────────────────── */
-.viva-intel-modal { border-radius: 22px !important; }
-.viva-intel-header h2 {
-  font-size: 20px !important;
-  font-weight: 700 !important;
-  letter-spacing: -0.4px !important;
-}
-.viva-intel-tabs { background: var(--vs-fill) !important; }
-.viva-intel-actions .viva-ver-ads-btn:first-child { background: var(--viva-accent) !important; }
-
 /* ── Telas médias/estreitas ─────────────────────────────────────────────────────────────── */
 @media (max-width: 1240px) {
   .viva-btn-centro > span:not(.viva-dock-count) { display: none !important; }
@@ -2964,119 +2676,14 @@ body { padding-bottom: 0 !important; }
   .viva-top-filter-group input[type="number"] { width: 46px !important; }
 }
 
-/* ── Centro: equipe (status compartilhado) ──────────────────────────────────────────────── */
-.viva-intel-status {
-  height: 28px !important;
-  padding: 0 8px !important;
-  color: var(--vs-ink) !important;
-  background: var(--vs-fill) !important;
-  border: 0 !important;
-  border-radius: 8px !important;
-  font: 600 11px var(--viva-font) !important;
-  cursor: pointer !important;
-  margin-left: auto !important;
-}
-.viva-intel-status[data-status="analise"] { color: #8a5a00 !important; background: #fff4d6 !important; }
-.viva-intel-status[data-status="minerada"] { color: #1a7f37 !important; background: #def7e5 !important; }
-.viva-intel-status[data-status="descartada"] { color: #6e6e73 !important; background: #e5e5ea !important; }
-.viva-intel-toolbar select[hidden] { display: none !important; }
-
-/* Radar: selos "novo" e "subindo" no Centro */
-.viva-intel-chip.novo { background: #e3f1ff !important; color: #0a5bd3 !important; }
-.viva-intel-chip.subindo { background: #e4f8ea !important; color: #1b7a34 !important; }
-
 /* Busca Inteligente: país e idioma */
 .viva-busca-filtros { display: flex !important; gap: 8px !important; margin: 8px 0 !important; }
 .viva-busca-filtros label { flex: 1 1 0 !important; display: flex !important; flex-direction: column !important; gap: 3px !important; font-size: 11px !important; color: #6e6e73 !important; }
 .viva-busca-filtros select { font: inherit !important; font-size: 12.5px !important; color: #1d1d1f !important; background: #f5f5f7 !important; border: 1px solid transparent !important; border-radius: 9px !important; padding: 7px 8px !important; }
 
-/* Centro: filtro por termos-chave */
-.viva-intel-termos { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 6px !important; padding: 0 20px 10px !important; }
-.viva-intel-termos[hidden] { display: none !important; }
-.viva-intel-termos-label { font-size: 11.5px !important; color: #6e6e73 !important; }
-.viva-intel-termo { font: inherit !important; font-size: 12px !important; color: #1d1d1f !important; background: #f5f5f7 !important; border: 1px solid transparent !important; border-radius: 980px !important; padding: 4px 10px !important; cursor: pointer !important; }
-.viva-intel-termo:hover { background: #e8e8ed !important; }
-.viva-intel-termo.is-active { color: #fff !important; background: #0071e3 !important; }
-.viva-intel-termo.limpar { color: #6e6e73 !important; background: transparent !important; border-color: #d2d2d7 !important; }
-.viva-intel-chip.termos { background: #fff1d6 !important; color: #9a5b00 !important; }
-.viva-intel-toolbar select[hidden] { display: none !important; }
-
 .viva-busca-modo { display: flex !important; flex-direction: column !important; gap: 3px !important; font-size: 11px !important; color: #6e6e73 !important; margin: 0 0 8px !important; }
 .viva-busca-modo[hidden] { display: none !important; }
 .viva-busca-modo select { font: inherit !important; font-size: 12.5px !important; color: #1d1d1f !important; background: #f5f5f7 !important; border: 1px solid transparent !important; border-radius: 9px !important; padding: 7px 8px !important; }
 
-/* Aba Ofertas (agrupa por domínio de destino) */
-.viva-intel-offer .viva-intel-name { word-break: break-all !important; }
-
-/* Sinal de vida do radar no cabeçalho do Centro */
-.viva-intel-radar { display: flex !important; flex-wrap: wrap !important; gap: 6px !important; margin-top: 6px !important; }
-.viva-intel-radar[hidden] { display: none !important; }
-.viva-intel-radar-chip { font: 700 11.5px var(--viva-font) !important; padding: 3px 9px !important; border-radius: 999px !important; background: #e8f7ee !important; color: #136c3a !important; }
-.viva-intel-radar-chip.atrasado { background: #fff4d6 !important; color: #8a5a00 !important; }
-.viva-intel-radar-chip.semsinal { background: #fde4e2 !important; color: #b3261e !important; }
-
-/* Centro: filtros avançados, seleção e download */
-.viva-intel-rank { display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: center !important; gap: 8px !important; }
-.viva-intel-sel { width: 22px !important; height: 22px !important; margin: 0 !important; cursor: pointer !important; accent-color: #0071e3 !important; }
-.viva-intel-card.is-selected { box-shadow: 0 0 0 2px #0071e3 inset !important; background: #f2f8ff !important; }
-.viva-intel-actionbar { display: flex !important; flex-direction: column !important; gap: 8px !important; padding: 8px 22px 10px !important; background: #fafafc !important; border-bottom: 1px solid rgba(0,0,0,0.07) !important; }
-.viva-intel-adv > summary { cursor: pointer !important; font: 650 12.5px var(--viva-font) !important; color: #1d1d1f !important; list-style: none !important; user-select: none !important; }
-.viva-intel-adv > summary::-webkit-details-marker { display: none !important; }
-.viva-intel-adv-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)) !important; gap: 8px 14px !important; margin: 10px 0 !important; }
-.viva-intel-adv-grid label { display: flex !important; flex-direction: column !important; gap: 3px !important; font: 600 11.5px var(--viva-font) !important; color: #515154 !important; }
-.viva-intel-adv-grid input[type="number"], .viva-intel-adv-grid input[type="text"], .viva-intel-adv-grid select { min-height: 30px !important; padding: 0 9px !important; border: 1px solid rgba(0,0,0,0.14) !important; border-radius: 8px !important; background: #fff !important; font: 500 12px var(--viva-font) !important; color: #1d1d1f !important; }
-.viva-intel-adv-grid .viva-adv-check { flex-direction: row !important; align-items: center !important; gap: 7px !important; }
-.viva-intel-presets, .viva-intel-exportbar { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 8px !important; }
-.viva-intel-presets select, .viva-intel-exportbar select { min-height: 30px !important; padding: 0 9px !important; border: 1px solid rgba(0,0,0,0.14) !important; border-radius: 8px !important; background: #fff !important; font: 500 12px var(--viva-font) !important; }
-.viva-intel-presets button, .viva-intel-exportbar button { min-height: 30px !important; padding: 0 12px !important; border: 1px solid rgba(0,0,0,0.14) !important; border-radius: 8px !important; background: #fff !important; font: 600 12px var(--viva-font) !important; color: #1d1d1f !important; cursor: pointer !important; }
-.viva-intel-exportbar button.viva-exp-btn { background: #0071e3 !important; border-color: #0071e3 !important; color: #fff !important; }
-.viva-intel-exportbar button:disabled { opacity: 0.55 !important; cursor: default !important; }
-.viva-sel-info { font: 700 12px var(--viva-font) !important; color: #0071e3 !important; margin-right: auto !important; }
-
-/* Apagar em lote, bloqueados e pop-up de confirmação do Centro */
-.viva-exp-rotulo { font: 650 12px var(--viva-font) !important; color: #515154 !important; margin-right: 2px !important; }
-.viva-sel-info { margin-right: 0 !important; }
-
-/* Triagem em lote: faixa própria, sempre visível acima da lista */
-.viva-intel-triagem { display: flex !important; flex-direction: column !important; gap: 6px !important; padding: 10px 22px !important; background: #fff !important; border-bottom: 1px solid rgba(0,0,0,0.08) !important; }
-.viva-intel-triagem.tem-selecao { background: #eef6ff !important; border-bottom-color: rgba(0,113,227,0.35) !important; }
-.viva-tri-topo { display: flex !important; align-items: baseline !important; gap: 12px !important; }
-.viva-tri-titulo { font: 700 13px var(--viva-font) !important; color: #1d1d1f !important; }
-.viva-tri-botoes { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 8px !important; }
-.viva-tri-sep { width: 1px !important; height: 22px !important; background: rgba(0,0,0,0.15) !important; margin: 0 4px !important; }
-.viva-tri-botoes button { min-height: 34px !important; padding: 0 14px !important; border: 1px solid rgba(0,0,0,0.16) !important; border-radius: 9px !important; background: #fff !important; font: 650 12.5px var(--viva-font) !important; color: #1d1d1f !important; cursor: pointer !important; }
-.viva-tri-botoes button[hidden] { display: none !important; }
-.viva-tri-botoes button:disabled { opacity: 0.45 !important; cursor: default !important; }
-.viva-tri-botoes button.viva-dis-btn { background: #1d1d1f !important; border-color: #1d1d1f !important; color: #fff !important; }
-.viva-tri-botoes button.viva-dis-btn:hover:not(:disabled) { background: #3a3a3c !important; }
-.viva-tri-botoes button.viva-del-btn { background: #b3261e !important; border-color: #b3261e !important; color: #fff !important; }
-.viva-tri-botoes button.viva-del-btn:hover:not(:disabled) { background: #8f1d17 !important; }
-.viva-tri-botoes button.viva-del-btn.viva-del-leve { background: #fff !important; color: #b3261e !important; border-color: rgba(179,38,30,0.4) !important; }
-.viva-tri-botoes button.viva-del-btn.viva-del-leve:hover:not(:disabled) { background: #fde4e2 !important; }
-.viva-tri-dica { margin: 0 !important; font: 500 11.5px var(--viva-font) !important; color: #6e6e73 !important; }
-.viva-intel-pill.ig { cursor: pointer !important; border: 0 !important; font-family: var(--viva-font) !important; }
-.viva-intel-pill.ig:hover { background: #fde8f3 !important; color: #b0176b !important; }
-
-.viva-intel-confirm { position: fixed !important; inset: 0 !important; z-index: 2147483647 !important; display: flex !important; align-items: center !important; justify-content: center !important; padding: 20px !important; background: rgba(0,0,0,0.45) !important; backdrop-filter: blur(6px) !important; -webkit-backdrop-filter: blur(6px) !important; opacity: 0; transition: opacity 0.15s ease !important; font-family: var(--viva-font, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif) !important; }
-.viva-intel-confirm.is-visible { opacity: 1 !important; }
-.viva-intel-confirm-card { width: 100% !important; max-width: 420px !important; box-sizing: border-box !important; background: #fff !important; color: #1d1d1f !important; border-radius: 18px !important; padding: 22px 22px 18px !important; box-shadow: 0 24px 60px rgba(0,0,0,0.3) !important; }
-.viva-intel-confirm-card h3 { margin: 0 0 8px !important; font: 700 17px var(--viva-font) !important; color: #1d1d1f !important; }
-.viva-intel-confirm-card.is-danger h3 { color: #b3261e !important; }
-.viva-intel-confirm-msg { margin: 0 0 10px !important; font: 500 13.5px/1.45 var(--viva-font) !important; color: #3a3a3c !important; }
-.viva-intel-confirm-list { margin: 0 0 12px !important; padding: 10px 12px 10px 28px !important; background: #f5f5f7 !important; border-radius: 10px !important; font: 600 12.5px/1.5 var(--viva-font) !important; color: #1d1d1f !important; max-height: 140px !important; overflow: auto !important; }
-.viva-intel-confirm-opt { display: flex !important; align-items: center !important; gap: 8px !important; margin: 4px 0 2px !important; font: 650 13px var(--viva-font) !important; cursor: pointer !important; }
-.viva-intel-confirm-opt input { width: 16px !important; height: 16px !important; accent-color: #0071e3 !important; }
-.viva-intel-confirm-hint { display: block !important; margin: 0 0 6px 24px !important; font: 500 11.5px var(--viva-font) !important; color: #6e6e73 !important; }
-.viva-intel-confirm-actions { display: flex !important; gap: 10px !important; justify-content: flex-end !important; margin-top: 16px !important; }
-.viva-intel-confirm-btn { min-height: 38px !important; padding: 0 18px !important; border-radius: 10px !important; border: 1px solid rgba(0,0,0,0.14) !important; background: #f5f5f7 !important; color: #1d1d1f !important; font: 650 13.5px var(--viva-font) !important; cursor: pointer !important; }
-.viva-intel-confirm-btn.primary { background: #0071e3 !important; border-color: #0071e3 !important; color: #fff !important; }
-.viva-intel-confirm-btn.danger { background: #d92d20 !important; border-color: #d92d20 !important; color: #fff !important; }
-.viva-intel-confirm-btn:focus-visible { outline: 3px solid rgba(0,113,227,0.45) !important; outline-offset: 2px !important; }
-
-/* Pop-up "Monitorar" aberto pelo Centro: sobe por cima do Centro e mostra o botão de fechar */
-.viva-sidebar.viva-from-intel { z-index: 2147483647 !important; visibility: visible !important; pointer-events: auto !important; box-shadow: 0 18px 60px rgba(0,0,0,0.35) !important; }
 .viva-sidebar-header-btns { display: flex !important; align-items: center !important; gap: 4px !important; }
-.viva-sidebar-close-ctx { display: none !important; }
-.viva-sidebar.viva-from-intel .viva-sidebar-close-ctx { display: flex !important; }
-.viva-monitor-ctx-note { display: none !important; margin: 0 0 10px !important; padding: 8px 10px !important; background: #eaf3ff !important; border-radius: 10px !important; font: 600 11.5px/1.4 var(--viva-font) !important; color: #0a4fa3 !important; }
-.viva-sidebar.viva-from-intel .viva-monitor-ctx-note:not(:empty) { display: block !important; }
+

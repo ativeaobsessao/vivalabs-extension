@@ -289,23 +289,26 @@ document.addEventListener("DOMContentLoaded", () => {
   const exportNowBtn = document.getElementById("exportNowBtn");
   const exportState = document.getElementById("exportState");
 
-  function desenharExport(config, estado, acervo) {
+  function desenharExport(config, estado, acervo, banco) {
     const c = config || {};
     exportAuto.checked = c.auto !== false;
     exportFormato.value = c.formato === "csv" ? "csv" : "xlsx";
     exportState.className = "radar-state";
     const total = Array.isArray(acervo) ? acervo.length : 0;
-    const partes = [`Acervo: ${total.toLocaleString("pt-BR")} de 10.000 criativos.`];
+    const noBanco = banco ? Number(banco.total) || 0 : 0;
+    const partes = banco
+      ? [`Banco da equipe: ${noBanco.toLocaleString("pt-BR")} de 150 mil anúncios.`]
+      : [`Neste computador: ${total.toLocaleString("pt-BR")} de 10.000. O limite do banco da equipe é de 150 mil anúncios.`];
     if (c.auto === false) partes.push("Download automático desligado.");
-    else partes.push("Baixa sozinho ao chegar em 10.000 (pasta Downloads/VivaSpy).");
+    else partes.push(`Baixa sozinho ao ${banco ? "passar de 150 mil" : "chegar em 10.000"} (pasta Downloads/VivaSpy).`);
     const e = estado || {};
     if (e.lastError && e.lastErrorAt) { exportState.classList.add("err"); partes.push(`Falha no último download: ${e.lastError}`); }
     else if (e.lastAt) partes.push(`Último arquivo: ${horaCurta(e.lastAt)} · ${Number(e.lastCount || 0).toLocaleString("pt-BR")} criativos.`);
     exportState.textContent = partes.join(" ");
   }
   function carregarExport() {
-    chrome.storage.local.get(["viva_export_config", "viva_export_state", "viva_acervo"], (data) => {
-      desenharExport(data.viva_export_config, data.viva_export_state, data.viva_acervo);
+    chrome.storage.local.get(["viva_export_config", "viva_export_state", "viva_acervo", "viva_vault_info"], (data) => {
+      desenharExport(data.viva_export_config, data.viva_export_state, data.viva_acervo, data.viva_vault_info);
     });
   }
   function salvarExport() {
@@ -325,7 +328,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && (changes.viva_export_state || changes.viva_acervo)) carregarExport();
+    if (area === "local" && (changes.viva_export_state || changes.viva_acervo || changes.viva_vault_info)) carregarExport();
   });
   carregarExport();
 

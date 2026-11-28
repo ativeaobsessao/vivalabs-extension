@@ -22,6 +22,7 @@ const TEAM_STORE = {
   cursor: "viva_sync_cursor",       // última posição lida do cofre
   seeded: "viva_sync_seeded",       // já marcou o acervo antigo para envio?
   radar: "viva_team_radar",         // { at, now, items:[{by,ms,info}] } — sinal de vida dos radares da equipe
+  vault: "viva_vault_info",         // { versao, total, descartados, bloqueados, bytes, at } — banco de 150 mil
 };
 const TEAM_STATUSES = ["nova", "analise", "minerada", "descartada"];
 const TEAM_PUSH_BATCH = 150;
@@ -205,6 +206,25 @@ async function teamPull(cfg, stats) {
   }
 }
 
+// Quanto o banco tem e ocupa. null = banco antigo (o SQL dos 150 mil ainda não foi rodado).
+async function teamVaultInfo(cfg) {
+  try {
+    const r = await teamRpc("viva_info", { p_token: cfg.code });
+    if (r && Number(r.versao) >= 2) {
+      const info = {
+        versao: Number(r.versao), total: Number(r.total) || 0, descartados: Number(r.descartados) || 0,
+        bloqueados: Number(r.bloqueados) || 0, bytes: Number(r.bytes) || 0, at: Date.now(),
+      };
+      await chrome.storage.local.set({ [TEAM_STORE.vault]: info });
+      return info;
+    }
+  } catch (error) {
+    if (!/could not find the function|PGRST202|function .*viva_info.* does not exist/i.test(String(error && error.message))) throw error;
+  }
+  await chrome.storage.local.remove(TEAM_STORE.vault);
+  return null;
+}
+
 // Radar: avisa o cofre "estou viva" (nunca derruba nada se falhar — SQL antigo, sem internet etc.).
 async function teamPing(info) {
   try {
@@ -234,6 +254,7 @@ async function _teamSyncInner() {
   const cfg = await teamConfig();
   if (!cfg) {
     const state = { ok: false, off: true, at: Date.now(), pushed: 0, pulled: 0, error: "" };
+    await chrome.storage.local.remove(TEAM_STORE.vault);
     await teamSetState(state);
     return state;
   }
@@ -249,7 +270,8 @@ async function _teamSyncInner() {
     });
     await teamPushCreatives(cfg, stats);
     await teamPushStatuses(cfg);
-    await teamPull(cfg, stats);
+    // Banco novo: o Centro consulta direto no banco, então não se baixa o cofre inteiro para cada computador.
+    if (!(await teamVaultInfo(cfg))) await teamPull(cfg, stats);
     await teamPullRadar(cfg);
     stats.ok = true;
   } catch (error) {
@@ -282,7 +304,7 @@ function teamSyncNow(options) {
 
 // Mudou código/nome: recomeça do zero (re-envia o acervo local e relê o cofre inteiro).
 async function teamConfigChanged() {
-  await chrome.storage.local.remove([TEAM_STORE.cursor, TEAM_STORE.seeded, TEAM_STORE.dirty, TEAM_STORE.dirtyStatus, TEAM_STORE.radar]);
+  await chrome.storage.local.remove([TEAM_STORE.cursor, TEAM_STORE.seeded, TEAM_STORE.dirty, TEAM_STORE.dirtyStatus, TEAM_STORE.radar, TEAM_STORE.vault]);
   await teamEnsureAlarms();
   return teamSyncNow({ force: true });
 }

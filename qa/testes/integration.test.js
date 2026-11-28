@@ -52,6 +52,7 @@ function makeChrome() {
       async update(id, o) { if (!tabsAlive.has(id)) throw new Error("No tab"); tabsUpdated.push({ id, url: o.url }); return { id }; },
       async remove(id) { tabsAlive.delete(id); },
       async create(o) { const id = nextTab++; tabsAlive.add(id); return { id }; },
+      async query() { return []; },
     },
     declarativeNetRequest: { async updateSessionRules() {} },
     downloads: { download() {} },
@@ -71,6 +72,7 @@ function makeChrome() {
       onStartup: { addListener() {} },
       sendMessage: () => Promise.resolve(),
       getManifest: () => ({ version: "0.0.0" }),
+      getURL: arquivo => `chrome-extension://teste/${arquivo}`,
     },
   };
   const bgCtx = { console: { log() {}, info() {}, warn() {}, error: (...a) => console.log("[BG ERR]", ...a) }, chrome: bgChrome, setTimeout, clearTimeout, URL, URLSearchParams, Promise, Date, Math, JSON, crypto: require("crypto").webcrypto, fetch: async () => ({ ok: true, json: async () => ({}) }), AbortController, importScripts: () => {} };
@@ -79,9 +81,12 @@ function makeChrome() {
   vm.runInContext(read("intelligent_parser.js"), bgCtx);
   vm.runInContext(read("ranking_engine.js"), bgCtx);
   vm.runInContext(read("export_data.js"), bgCtx);
+  vm.runInContext(read("intel_core.js"), bgCtx);
   vm.runInContext(read("team_sync.js"), bgCtx);
   vm.runInContext(read("notify.js"), bgCtx);
   vm.runInContext(read("auto_export.js"), bgCtx);
+  vm.runInContext(read("intel_espaco.js"), bgCtx);
+  vm.runInContext(read("intel_abas.js"), bgCtx);
   vm.runInContext(read("radar.js"), bgCtx);
   vm.runInContext(read("background.js"), bgCtx);
   check("background carregou e registrou listener", env.bgMessageListeners.length === 1);
@@ -204,237 +209,21 @@ function makeChrome() {
   check("painel mostra o fim da mineração (via storage.onChanged)", progressTxt.includes("finalizada"), progressTxt);
   check("botão 'Abrir Centro' apareceu", win.document.querySelector("#viva-btn-abrir-centro").hidden === false);
 
-  // ── 4) Centro de Inteligência renderiza o acervo ──
+  // ── 4) Dock e botão do Centro (a tela em si é testada em intel_tela.test.js) ──
   new vm.Script("injectDock()").runInContext(vmCtx);
   await sleep(200);
   const dockBadge = win.document.querySelector("#viva-intel-count");
   check("Dock mostra contagem do acervo", dockBadge && dockBadge.textContent === "13", dockBadge && dockBadge.textContent);
+  const abasAntes = env.tabsAlive.size;
   win.document.querySelector("#viva-btn-show-ranking").click();
   await sleep(300);
-  const overlay = win.document.querySelector("#viva-ranking-overlay");
-  check("Centro abriu", !!overlay);
-  let cards = overlay.querySelectorAll(".viva-intel-card");
-  check("Centro lista os criativos", cards.length === 13, String(cards.length));
-  const firstScore = Number(cards[0].querySelector(".viva-intel-score strong").textContent);
-  const lastScore = Number(cards[cards.length - 1].querySelector(".viva-intel-score strong").textContent);
-  check("ordenado por score desc", firstScore >= lastScore, `${firstScore} / ${lastScore}`);
-  check("topo é o criativo jovem com 30 duplicados", cards[0].textContent.includes("30x duplicados"), cards[0].textContent.slice(0, 120));
-  check("card tem botões de ação", cards[0].querySelectorAll(".viva-intel-actions button").length >= 4);
-  // filtro "em escala"
-  Array.from(overlay.querySelectorAll(".viva-intel-filter")).find(b => b.textContent.includes("Em escala")).click();
-  await sleep(50);
-  const hot = overlay.querySelectorAll(".viva-intel-card");
-  check("filtro 'Em escala agora' reduz a lista", hot.length > 0 && hot.length < 13, String(hot.length));
-  // aba bibliotecas
-  overlay.querySelector('.viva-intel-tabs button[data-tab="paginas"]').click();
-  await sleep(50);
-  const pages = overlay.querySelectorAll(".viva-intel-card");
-  check("aba Bibliotecas agrupa por anunciante (3)", pages.length === 3, String(pages.length));
-  // filtro por fonte
-  overlay.querySelector('.viva-intel-tabs button[data-tab="criativos"]').click();
-  const fonteSel = overlay.querySelector("#viva-intel-fonte");
-  check("select de buscas lista as 2 fontes", fonteSel.options.length === 3, String(fonteSel.options.length));
-  // atualização ao vivo: novo criativo entra com o Centro aberto
-  await sendToBg({ action: "ACERVO_UPSERT", creatives: [mk(77, { fonte: "dieta", dup: 40, dias: 2, inicio: Date.now() - 2 * 864e5 })] }, 7);
-  await sleep(1100);
-  check("Centro atualiza ao vivo", overlay.querySelector(".viva-intel-modal, .viva-ranking-modal") && win.document.querySelector("#viva-intel-summary").textContent.startsWith("14 criativos"), win.document.querySelector("#viva-intel-summary").textContent);
-  // ── radar: selos "novo" e "subindo" + filtros ──
-  {
-    const agoraT = Date.now();
-    const atual = env.store.viva_acervo.slice();
-    const alvo = atual.find(c => c.id && c.pid);
-    const antigo = atual.map(c => c === alvo ? { ...c, firstSeen: agoraT - 9 * 864e5, advBase: Math.max(1, (c.adv || 12) - 20), advBaseMs: agoraT - 2 * 864e5, adv: (c.adv || 12) + 20 } : { ...c, firstSeen: agoraT - 9 * 864e5 });
-    await env.chromeBase.storage.local.set({ viva_acervo: antigo });
-    await sleep(1100);
-    Array.from(overlay.querySelectorAll(".viva-intel-filter")).find(b => b.textContent.includes("Todos")).click();
-    await sleep(60);
-    Array.from(overlay.querySelectorAll(".viva-intel-filter")).find(b => b.textContent.includes("Subindo")).click();
-    await sleep(60);
-    const sub = overlay.querySelectorAll(".viva-intel-card");
-    check("filtro 'Subindo' mostra só quem subiu", sub.length === 1 && sub[0].textContent.includes("SUBINDO"), String(sub.length));
-    Array.from(overlay.querySelectorAll(".viva-intel-filter")).find(b => b.textContent.includes("Novos")).click();
-    await sleep(60);
-    const nov = overlay.querySelectorAll(".viva-intel-card");
-    check("filtro 'Novos (24h)' vazio quando nada é novo", nov.length === 0, String(nov.length));
-    await env.chromeBase.storage.local.set({ viva_acervo: antigo.map(c => c === antigo[0] || c.id === alvo.id ? { ...c, firstSeen: agoraT - 3600e3 } : c) });
-    await sleep(1100);
-    const nov2 = overlay.querySelectorAll(".viva-intel-card");
-    check("filtro 'Novos (24h)' mostra o criativo recente com selo", nov2.length >= 1 && nov2[0].textContent.includes("NOVO"), String(nov2.length));
-    Array.from(overlay.querySelectorAll(".viva-intel-filter")).find(b => b.textContent.includes("Todos")).click();
-    await sleep(60);
-  }
-  // ── termos-chave: chips, mínimo de termos, selo e ordenação ──
-  {
-    const base = env.store.viva_acervo.map((c, i) => ({ ...c, fontes: ["keto truque"] }));
-    base[0] = { ...base[0], fontes: ["keto truque", "ansiedade controle", "sono profundo", "glicemia"] };
-    base[1] = { ...base[1], fontes: ["keto truque", "ansiedade controle"] };
-    await env.chromeBase.storage.local.set({ viva_acervo: base });
-    await sleep(1100);
-    Array.from(overlay.querySelectorAll(".viva-intel-filter")).find(b => b.textContent.includes("Todos")).click();
-    await sleep(60);
-    const chipsTermos = Array.from(overlay.querySelectorAll(".viva-intel-termo"));
-    check("chips de termos-chave aparecem com contagem", chipsTermos.length >= 4 && chipsTermos[0].textContent.includes("keto truque ·"), chipsTermos.map(c => c.textContent).join("|"));
-    const minSel = overlay.querySelector("#viva-intel-minterms");
-    minSel.value = "2"; minSel.dispatchEvent(new win.Event("change", { bubbles: true })); await sleep(80);
-    let vis = overlay.querySelectorAll(".viva-intel-card");
-    check("'2+ termos' mostra só quem tem 2 ou mais", vis.length === 2, String(vis.length));
-    minSel.value = "3"; minSel.dispatchEvent(new win.Event("change", { bubbles: true })); await sleep(80);
-    vis = overlay.querySelectorAll(".viva-intel-card");
-    check("'3+ termos' mostra só 1", vis.length === 1 && vis[0].textContent.includes("4 termos"), String(vis.length));
-    check("card mostra selo 🎯 e pill com N termos", vis[0].querySelector(".viva-intel-chip.termos") && vis[0].textContent.includes("🎯 4 termos"));
-    minSel.value = "1"; minSel.dispatchEvent(new win.Event("change", { bubbles: true })); await sleep(80);
-    // clicar em 2 termos = exige os dois
-    Array.from(overlay.querySelectorAll(".viva-intel-termo")).find(b => b.textContent.startsWith("sono profundo")).click(); await sleep(80);
-    Array.from(overlay.querySelectorAll(".viva-intel-termo")).find(b => b.textContent.startsWith("ansiedade controle")).click(); await sleep(80);
-    vis = overlay.querySelectorAll(".viva-intel-card");
-    check("2 termos selecionados exigem os dois", vis.length === 1, String(vis.length));
-    Array.from(overlay.querySelectorAll(".viva-intel-termo")).find(b => b.textContent.includes("limpar")).click(); await sleep(80);
-    check("limpar termos devolve a lista", overlay.querySelectorAll(".viva-intel-card").length === base.length, String(overlay.querySelectorAll(".viva-intel-card").length));
-    const sortSel = overlay.querySelector("#viva-intel-sort");
-    sortSel.value = "termos"; sortSel.dispatchEvent(new win.Event("change", { bubbles: true })); await sleep(80);
-    const primeiro = overlay.querySelector(".viva-intel-card");
-    check("ordenar por mais termos-chave põe o de 4 termos no topo", primeiro && primeiro.textContent.includes("4 termos"));
-    sortSel.value = "score"; sortSel.dispatchEvent(new win.Event("change", { bubbles: true })); await sleep(60);
-  }
-  // ── aba Ofertas (por domínio de destino) + sinal de vida do radar ──
-  {
-    const agoraT = Date.now();
-    const base = env.store.viva_acervo.map((c, i) => ({ ...c, dom: i < 4 ? "oferta-x.com" : "facebook.com", dest: i < 4 ? "https://oferta-x.com/lp" : "https://facebook.com/x", pid: i < 4 ? String(90000 + i % 2) : c.pid }));
-    await env.chromeBase.storage.local.set({ viva_acervo: base });
-    await sleep(1100);
-    overlay.querySelector('.viva-intel-tabs button[data-tab="ofertas"]').click();
-    await sleep(80);
-    const ofertas = overlay.querySelectorAll(".viva-intel-card");
-    check("aba Ofertas: 1 oferta (plataformas ignoradas)", ofertas.length === 1 && ofertas[0].textContent.includes("oferta-x.com"), String(ofertas.length));
-    check("oferta mostra páginas distintas e criativos", ofertas[0].textContent.includes("2 PÁGINAS") && ofertas[0].textContent.includes("4 criativos"), ofertas[0].textContent.slice(0, 160));
-    check("filtros de criativo ficam escondidos na aba Ofertas", overlay.querySelector("#viva-intel-chips").hidden === true);
-    Array.from(ofertas[0].querySelectorAll("button")).find(b => b.textContent === "Ver criativos").click();
-    await sleep(80);
-    const doDominio = overlay.querySelectorAll(".viva-intel-card");
-    check("'Ver criativos' volta à aba Criativos filtrada pelo domínio", doDominio.length === 4, String(doDominio.length));
-    overlay.querySelector("#viva-intel-search").value = ""; overlay.querySelector("#viva-intel-search").dispatchEvent(new win.Event("input", { bubbles: true }));
-    await sleep(80);
-
-    const radarBox = overlay.querySelector("#viva-intel-radar");
-    check("sem dados de radar, nada é mostrado", radarBox.hidden === true);
-    await env.chromeBase.storage.local.set({ viva_team_radar: { at: agoraT, now: agoraT, items: [{ by: "Notebook", ms: agoraT - 60000, info: { on: true, status: "waiting", lastRunAt: agoraT - 3600e3, everyH: 6 } }] } });
-    await sleep(1100);
-    check("chip 'Radar OK' com a máquina e a última rodada", radarBox.hidden === false && /Radar OK · Notebook · última rodada há 1 h/.test(radarBox.textContent), radarBox.textContent);
-    await env.chromeBase.storage.local.set({ viva_team_radar: { at: agoraT, now: agoraT, items: [{ by: "Notebook", ms: agoraT - 3600e3, info: { on: true, status: "waiting", lastRunAt: agoraT - 7200e3, everyH: 6 } }] } });
-    await sleep(1100);
-    check("sem ping há 1 h → aviso vermelho 'SEM SINAL'", /Radar SEM SINAL/.test(radarBox.textContent) && radarBox.querySelector(".viva-intel-radar-chip.semsinal"), radarBox.textContent);
-    await env.chromeBase.storage.local.set({ viva_team_radar: { at: agoraT, now: agoraT, items: [{ by: "Notebook", ms: agoraT - 3600e3, info: { on: false } }] } });
-    await sleep(1100);
-    check("radar desligado de propósito não gera alarme", radarBox.hidden === true);
-    await env.chromeBase.storage.local.set({ viva_team_radar: null });
-  }
-  // ── filtros avançados, seleção, presets e download ──
-  {
-    // o jsdom não tem estas APIs do Chrome real: injeta as do Node e captura o download
-    win.TextEncoder = TextEncoder; win.CompressionStream = CompressionStream; win.Response = Response; win.Blob = require("buffer").Blob;
-    const baixados = [];
-    win.URL.createObjectURL = blob => { baixados.push({ blob }); return "blob:teste/" + baixados.length; };
-    win.URL.revokeObjectURL = () => {};
-    win.HTMLAnchorElement.prototype.click = function () { if (this.download) baixados[baixados.length - 1].nome = this.download; };
-    win.prompt = () => "Meu filtro de teste";
-    const setNum = (id, v) => { const el = overlay.querySelector(id); el.value = v; el.dispatchEvent(new win.Event("input", { bubbles: true })); };
-
-    Array.from(overlay.querySelectorAll(".viva-intel-filter")).find(b => b.textContent.includes("Todos")).click();
-    overlay.querySelector('.viva-intel-tabs button[data-tab="criativos"]').click();
-    await sleep(100);
-    const acervo = env.store.viva_acervo;
-    const total = overlay.querySelector("#viva-sel-info").textContent;
-    check("barra mostra quantos há no filtro atual", /\d+ criativos? no filtro atual/.test(total), total);
-
-    // filtro avançado: duplicados ≥ 10
-    const esperado = acervo.filter(c => (Number(c.dup) || 1) >= 10).length;
-    setNum("#viva-adv-dup", "10");
-    await sleep(450);
-    const n1 = overlay.querySelectorAll(".viva-intel-card").length;
-    check("Duplicados ≥ 10 filtra certo", n1 === esperado && esperado > 0 && esperado < acervo.length, `${n1}/${esperado}/${acervo.length}`);
-    check("título dos filtros avançados mostra 1 ativo", /1 ativo/.test(overlay.querySelector("#viva-intel-adv-sum").textContent));
-    setNum("#viva-adv-score", "999999");
-    await sleep(450);
-    check("combinação sem resultado mostra 'Nada com esses filtros'", overlay.querySelectorAll(".viva-intel-card").length === 0);
-    setNum("#viva-adv-score", "");
-    await sleep(450);
-    check("limpar o campo devolve a lista", overlay.querySelectorAll(".viva-intel-card").length === esperado);
-    const midia = overlay.querySelector("#viva-adv-midia"); midia.value = "video"; midia.dispatchEvent(new win.Event("change", { bubbles: true })); await sleep(100);
-    const nv = overlay.querySelectorAll(".viva-intel-card").length;
-    check("filtro de mídia: vídeo", nv === acervo.filter(c => (Number(c.dup) || 1) >= 10 && c.video).length, String(nv));
-    midia.value = ""; midia.dispatchEvent(new win.Event("change", { bubbles: true })); await sleep(100);
-
-    // presets
-    overlay.querySelector("#viva-preset-save").click();
-    await sleep(100);
-    check("preset salvo no storage", (env.store.viva_filtros_salvos || []).length === 1 && env.store.viva_filtros_salvos[0].nome === "Meu filtro de teste" && env.store.viva_filtros_salvos[0].ui.adv.dup === 10, JSON.stringify(env.store.viva_filtros_salvos));
-    overlay.querySelector("#viva-adv-clear").click(); await sleep(100);
-    check("limpar tudo zera os filtros", overlay.querySelectorAll(".viva-intel-card").length === acervo.length && !/ativo/.test(overlay.querySelector("#viva-intel-adv-sum").textContent));
-    const ps = overlay.querySelector("#viva-intel-preset"); ps.value = "0"; ps.dispatchEvent(new win.Event("change", { bubbles: true })); await sleep(100);
-    check("aplicar preset restaura o filtro", overlay.querySelectorAll(".viva-intel-card").length === esperado && overlay.querySelector("#viva-adv-dup").value === "10");
-
-    // seleção manual de 2 criativos
-    const cks = overlay.querySelectorAll(".viva-intel-sel");
-    cks[0].click(); cks[1].click(); await sleep(50);
-    check("seleção mostra '2 criativos selecionados' e marca o card", overlay.querySelector("#viva-sel-info").textContent === "2 criativos selecionados" && overlay.querySelectorAll(".viva-intel-card.is-selected").length === 2);
-    check("escopo muda para 'selecionados' sozinho", overlay.querySelector("#viva-exp-escopo").value === "selecionados" && /selecionados \(2\)/.test(overlay.querySelector("#viva-exp-escopo").options[0].textContent));
-    overlay.querySelector("#viva-exp-xlsx").click();
-    await sleep(900);
-    const b1 = baixados[baixados.length - 1];
-    check("baixou XLSX só com os 2 selecionados", b1 && /^VivaSpy_selecionados_.*_2-criativos\.xlsx$/.test(b1.nome || ""), JSON.stringify(b1 && b1.nome));
-    const buf1 = Buffer.from(await b1.blob.arrayBuffer());
-    check("arquivo é um zip/XLSX", buf1[0] === 0x50 && buf1[1] === 0x4B && b1.blob.type.includes("spreadsheetml"));
-    fs.writeFileSync("/tmp/centro_sel.xlsx", buf1);
-
-    // selecionar todos os filtrados + CSV do filtro
-    overlay.querySelector("#viva-sel-clear").click(); await sleep(100);
-    check("limpar seleção volta ao filtro atual", overlay.querySelector("#viva-sel-info").textContent === `${esperado} ${esperado === 1 ? "criativo" : "criativos"} no filtro atual` && overlay.querySelector("#viva-exp-escopo").value === "filtro", overlay.querySelector("#viva-sel-info").textContent);
-    overlay.querySelector("#viva-exp-csv").click();
-    await sleep(500);
-    const b2 = baixados[baixados.length - 1];
-    check("CSV do filtro atual com a contagem certa no nome", b2 && new RegExp(`_${esperado}-criativos\\.csv$`).test(b2.nome || ""), JSON.stringify(b2 && b2.nome));
-    const txt = Buffer.from(await b2.blob.arrayBuffer()).toString("utf8");
-    check("CSV tem BOM, cabeçalho e uma linha por criativo", txt.charCodeAt(0) === 0xFEFF && txt.split("\r\n").length === esperado + 2, String(txt.split("\r\n").length));
-    overlay.querySelector("#viva-sel-all").click(); await sleep(150);
-    check("'Selecionar os filtrados' marca todos do filtro", overlay.querySelector("#viva-sel-info").textContent === `${esperado} criativos selecionados`, overlay.querySelector("#viva-sel-info").textContent);
-    overlay.querySelector("#viva-sel-clear").click(); await sleep(100);
-    const esc = overlay.querySelector("#viva-exp-escopo"); esc.value = "tudo"; esc.dispatchEvent(new win.Event("change", { bubbles: true }));
-    overlay.querySelector("#viva-exp-csv").click(); await sleep(500);
-    const b3 = baixados[baixados.length - 1];
-    check("'acervo inteiro' baixa tudo", new RegExp(`acervo-completo_.*_${acervo.length}-criativos\\.csv$`).test(b3.nome || ""), b3.nome);
-    overlay.querySelector("#viva-adv-clear").click(); await sleep(100);
-  }
-  // ── equipe: quem achou, status compartilhado e estado do sync ──
-  Array.from(overlay.querySelectorAll(".viva-intel-filter")).find(b => b.textContent.includes("Todos")).click();
+  check("botão abre o Centro em aba própria", env.tabsAlive.size === abasAntes + 1, `${abasAntes}/${env.tabsAlive.size}`);
+  check("nada é desenhado por cima da Biblioteca", !win.document.querySelector("#viva-ranking-overlay") && win.document.querySelector("div[role='main']").style.display !== "none");
+  await env.chromeBase.storage.local.set({ viva_vault_info: { versao: 2, total: 150200 } });
   await sleep(100);
-  const itemId = env.store.viva_acervo.find(c => c.id);
-  const itemKey = `id:${itemId.id}`;
-  await env.chromeBase.storage.local.set({ viva_team_meta: { [itemKey]: { by: "Ana", status: "nova", statusBy: "", statusMs: 0 } }, viva_sync_state: { ok: true, at: Date.now(), pushed: 0, pulled: 1, error: "" } });
-  await sleep(1100);
-  check("Centro mostra 'achado por Ana'", overlay.textContent.includes("👤 Ana"));
-  check("Centro mostra estado do sync da equipe", win.document.querySelector("#viva-intel-summary").textContent.includes("equipe sincronizada"), win.document.querySelector("#viva-intel-summary").textContent);
-  const totalAntes = overlay.querySelectorAll(".viva-intel-card").length;
-  const selects = overlay.querySelectorAll(".viva-intel-status");
-  check("cada card tem seletor de status", selects.length === totalAntes && totalAntes > 0, `${selects.length}/${totalAntes}`);
-  const cardDoItem = Array.from(overlay.querySelectorAll(".viva-intel-card")).find(c => c.textContent.includes("👤 Ana"));
-  const selItem = cardDoItem.querySelector(".viva-intel-status");
-  selItem.value = "descartada";
-  selItem.dispatchEvent(new win.Event("change", { bubbles: true }));
-  await sleep(1300);
-  check("status gravado pelo background", env.store.viva_team_meta && env.store.viva_team_meta[itemKey] && env.store.viva_team_meta[itemKey].status === "descartada", JSON.stringify(env.store.viva_team_meta));
-  check("status entrou na fila de envio da equipe", (env.store.viva_sync_dirty_status || []).includes(itemKey));
-  check("descartada some da lista padrão", overlay.querySelectorAll(".viva-intel-card").length === totalAntes - 1, `${overlay.querySelectorAll(".viva-intel-card").length} vs ${totalAntes}`);
-  const filtroStatus = overlay.querySelector("#viva-intel-status");
-  filtroStatus.value = "todas"; filtroStatus.dispatchEvent(new win.Event("change", { bubbles: true }));
+  check("com o banco ligado o contador mostra o banco e avisa o limite", dockBadge.textContent === "150 mil" && dockBadge.classList.contains("is-full") && /LIMITE ATINGIDO/.test(dockBadge.title), `${dockBadge.textContent} ${dockBadge.title}`);
+  await env.chromeBase.storage.local.remove("viva_vault_info");
   await sleep(100);
-  check("filtro 'Todos os status' traz de volta", overlay.querySelectorAll(".viva-intel-card").length === totalAntes);
-  filtroStatus.value = "ativas"; filtroStatus.dispatchEvent(new win.Event("change", { bubbles: true }));
-
-  // fechar restaura feed
-  win.document.querySelector("#viva-close-ranking").click();
-  await sleep(100);
-  check("fechar remove o overlay", !win.document.querySelector("#viva-ranking-overlay"));
-  check("fechar devolve o feed", win.document.querySelector("div[role='main']").style.display !== "none");
 
   // ── regressão: gatilho de auto-descoberta do Instagram não pode dar ReferenceError (cachedIgUrl) ──
   {
@@ -445,18 +234,9 @@ function makeChrome() {
   }
 
   // ── 5) limpar acervo ──
-  win.document.querySelector("#viva-btn-show-ranking").click(); await sleep(100);
-  const clear = win.document.querySelector("#viva-intel-clear");
-  clear.click(); await sleep(250);
-  const modalLimpar = win.document.querySelector("#viva-intel-confirm");
-  check("Limpar acervo abre pop-up de confirmação (não apaga no 1º clique)", !!modalLimpar && ("viva_acervo" in env.store) && /Apagar TODO o acervo/.test(modalLimpar.textContent));
-  check("pop-up mostra a contagem e o botão perigoso", /criativos/.test(modalLimpar.textContent) && !!modalLimpar.querySelector(".viva-intel-confirm-btn.danger"));
-  modalLimpar.querySelectorAll(".viva-intel-confirm-btn")[0].click(); await sleep(400);
-  check("Cancelar mantém o acervo e fecha o pop-up", ("viva_acervo" in env.store) && !win.document.querySelector("#viva-intel-confirm"));
-  clear.click(); await sleep(250);
-  win.document.querySelector("#viva-intel-confirm .viva-intel-confirm-btn.danger").click(); await sleep(600);
-  check("limpar acervo (confirmado) apaga o storage", !("viva_acervo" in env.store));
-  check("Centro mostra estado vazio", !!win.document.querySelector(".viva-intel-empty"));
+  await sendToBg({ action: "ACERVO_CLEAR" }, 7);
+  await sleep(300);
+  check("limpar acervo apaga o storage", !("viva_acervo" in env.store));
 
   console.log(fails ? `\n${fails} FALHAS` : "\nTODOS OS TESTES DE INTEGRAÇÃO PASSARAM");
   process.exit(fails ? 1 : 0);

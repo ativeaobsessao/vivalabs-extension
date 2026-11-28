@@ -80,6 +80,11 @@ async function aexpGerarEBaixar(origem, rotulo) {
   return { nome: arquivo.nome, linhas: arquivo.linhas, formato: cfg.formato, at: agora };
 }
 
+async function aexpBancoAtivo() {
+  const data = await chrome.storage.local.get(["viva_vault_info", "viva_team_code"]);
+  return Boolean(data.viva_vault_info) && String(data.viva_team_code || "").trim().length >= 8;
+}
+
 // Verifica se é hora do download automático. Seguro para chamar à vontade (não roda duas vezes ao mesmo tempo).
 function aexpVerificar() {
   if (_aexpRodando) return _aexpRodando;
@@ -87,6 +92,8 @@ function aexpVerificar() {
     try {
       const cfg = await aexpLerConfig();
       if (!cfg.auto) return { status: "off" };
+      // Com o banco de 150 mil ligado, nada se perde no computador: quem cuida da planilha é intel_espaco.js.
+      if (await aexpBancoAtivo()) return { status: "banco" };
       const dados = await chrome.storage.local.get(VIVA_ACERVO_KEY);
       const acervo = Array.isArray(dados[VIVA_ACERVO_KEY]) ? dados[VIVA_ACERVO_KEY] : [];
       if (acervo.length < AEXP_LIMITE) return { status: "abaixo", total: acervo.length };

@@ -380,7 +380,8 @@ function _exLeiaMe(info, linhas, nOfertas, nPaginas, agora) {
   EXPORT_COLUNAS_CRIATIVOS.forEach(c => L.push([{ v: c.t, s: EXS.NEGRITO }, c.d]));
   L.push([]);
   L.push([{ v: "Limites a ter em mente", s: EXS.TITULO }]);
-  L.push(["•", "O acervo guarda até 10.000 criativos e esquece os que não aparecem há 30 dias."]);
+  L.push(["•", "Banco da equipe: limite de 150 mil anúncios; nada é apagado sozinho — a limpeza é manual, no Centro de Inteligência."]);
+  L.push(["•", "Em cada computador ficam até 10.000 criativos, e saem os que não aparecem há 30 dias."]);
   L.push(["•", "“Dias no ar” é calculado no momento do download. Links de imagem da Meta expiram com o tempo."]);
   L.push(["•", "“Em escala” é uma heurística (duplicados + tempo no ar), não garantia de lucro: valide a oferta antes de investir."]);
   return L;

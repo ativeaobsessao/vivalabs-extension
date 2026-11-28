@@ -48,7 +48,7 @@ function makeEnv() {
   const ctx = { console: { log() {}, info() {}, warn() {}, error: (...a) => console.log("[BG ERR]", ...a) }, chrome, setTimeout, clearTimeout, URL, URLSearchParams, Promise, Date, Math, JSON, crypto: require("crypto").webcrypto, fetch: async () => ({ ok: true, json: async () => ({}) }), AbortController, importScripts: () => {} };
   ctx.self = ctx;
   vm.createContext(ctx);
-  for (const f of ["intelligent_parser.js", "ranking_engine.js", "export_data.js", "team_sync.js", "notify.js", "auto_export.js", "radar.js", "background.js"]) vm.runInContext(read(f), ctx);
+  for (const f of ["intelligent_parser.js", "ranking_engine.js", "export_data.js", "intel_core.js", "team_sync.js", "notify.js", "auto_export.js", "intel_espaco.js", "intel_abas.js", "radar.js", "background.js"]) vm.runInContext(read(f), ctx);
   const send = (message, tabId) => new Promise(resolve => {
     let answered = false;
     const keep = listeners[0](message, tabId ? { tab: { id: tabId } } : {}, r => { answered = true; resolve(r); });
